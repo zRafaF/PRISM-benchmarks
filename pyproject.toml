@@ -1,0 +1,39 @@
+[project]
+name = "prism-benchmarks"
+version = "0.1.0"
+description = "Neutral cross-method benchmark orchestrator for PRISM-VGGT vs. streaming baselines"
+readme = "README.md"
+requires-python = ">=3.11"
+
+# --- ORCHESTRATOR ENV ONLY ---
+# Deliberately light: NO torch, NO nvblox, NO GTSAM, NO method deps.
+# The eval layer imports no method; each method runs in its own submodule env.
+# This env only renders the dataset, builds masks, evaluates outputs, samples
+# GPU/CPU resources, and aggregates the report.
+dependencies = [
+    "numpy>=1.26",
+    "scipy",
+    "pandas",
+    "pyyaml",
+    "open3d>=0.18",       # RaycastingScene rendering + recon metrics
+    "evo",                # ATE/RPE (Sim(3) alignment)
+    "pynvml",             # GPU memory / util / power sampling
+    "matplotlib",         # report plots
+    "pillow",
+    "imageio",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+docs = [
+    "mkdocs-material",
+    "mkdocs",
+]
+
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Namespace-style: the top-level dirs are script packages, not an installable lib.
+py-modules = []

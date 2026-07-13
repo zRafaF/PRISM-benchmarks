@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# uv
+.uv/
+
+# Datasets, weights, and run outputs — NEVER commit (brief §9)
+dataset/raw/
+dataset/exports/
+results/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.ply
+*.npy
+*.npz
+*.glb
+
+# Submodule build artifacts (the repos themselves are tracked as gitlinks)
+submodules/**/.venv/
+submodules/**/build/
+submodules/**/*.so
+
+# Docs build
+site/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

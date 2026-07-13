@@ -1,0 +1,128 @@
+# ============================================================================
+# PRISM-benchmarks — single source of truth for every script.
+# Every dataset/render/adapter/eval/report script reads THIS file.
+# Label everything "preliminary": few scenes, fixed seed, no variance study yet.
+# ============================================================================
+
+hardware:
+  hw_id: "RTX PRO 6000"      # stamped into perf tables; we benchmark on the 6000 only
+  device: cuda
+
+# ── Datasets ────────────────────────────────────────────────────────────────
+# ScanNet++ is the starting dataset (go straight to ++; higher-fidelity meshes).
+# KITTI-360 (outdoor, fisheye->equirect) + Matterport3D & Stanford2D3D
+# (panorama-native equirectangular RGB-D with GT) added as they come online.
+datasets:
+  active: [replica]          # TODAY: Replica (no approval). Later: scannetpp, kitti360, ...
+  seed: 1234
+  root: dataset/raw
+
+  replica:                   # fastest zero-approval indoor meshes (NICE-SLAM/iMAP standard)
+    kind: mesh_render        # render pano + pinhole from the scene mesh (textured)
+    root: dataset/raw/replica
+    scenes: []               # frozen by make_split; start with ONE room
+    n_scenes_start: 1
+    mesh_glob: "*/mesh.ply"
+
+  scannetpp:
+    kind: mesh_render        # render pano + pinhole from the scene mesh
+    root: dataset/raw/scannetpp
+    scenes: []               # frozen list; start with ONE room (make_split fills this)
+    n_scenes_start: 1
+    mesh_glob: "*/scans/mesh_aligned_0.05.ply"
+
+  kitti360:
+    kind: fisheye_stitch     # stitch the 2 fisheye cams -> equirect for ours; perspective for baselines
+    root: dataset/raw/kitti360
+    sequences: []            # one short sequence to start (stretch)
+
+  matterport3d:
+    kind: equirect_native    # already equirectangular RGB-D + GT geometry
+    root: dataset/raw/matterport3d
+    scenes: []
+
+  stanford2d3d:
+    kind: equirect_native
+    root: dataset/raw/stanford2d3d
+    scenes: []
+
+# ── Camera models ─────────────────────────────────────────────────────────────
+# Rendered from the SAME poses so any metric gap is method, not data.
+camera:
+  pano:
+    width: 1036
+    height: 518
+    projection: equirect     # matches the live PRISM config
+  pinhole:
+    # Two intrinsics variants are rendered & benchmarked SEPARATELY so we can
+    # report both a "fairest common FOV" number and a "real-sensor intrinsics"
+    # number (see docs/decisions.md, D7).
+    variants:
+      synthetic_fov:         # a fixed, fair FOV shared across datasets
+        width: 640
+        height: 480
+        fov_deg: 90
+      real_intrinsics:       # reuse the dataset's own perspective K when it has one
+        use_dataset_k: true
+  camera_height_m: 1.7       # PRISM metric-scale anchor (known robot camera height)
+
+# ── Trajectories (both variants rendered) ─────────────────────────────────────
+trajectories:
+  variants: [dataset_path, synthetic_spline]
+  n_frames: 200              # cap length -> bounded drift (report ATE on bounded seqs)
+  synthetic_spline:
+    speed_mps: 0.5
+    min_clearance_m: 0.30    # collision-free sampling against the mesh occupancy
+    loop: false
+
+# ── PRISM engine knobs (mirror the live/report config) ────────────────────────
+engine:
+  window_size: 16
+  overlap: 4
+  voxel_size: 0.02
+  max_depth: 4.5
+  face_size: 768
+  processing_mode: parallel
+  tsdf_prune_radius: 0       # full accumulation for quality runs
+
+# ── Streaming harness ─────────────────────────────────────────────────────────
+# We test STREAMING performance. Every method is driven incrementally (frame- or
+# window-fed); non-streaming methods are windowed to match. Full-batch runs are
+# NOT benchmarked (that would only measure the underlying feed-forward net).
+streaming:
+  enabled: true
+  feed: window               # window | frame
+  window_size: 16
+  overlap: 4
+
+# ── Methods under test (each a submodule + adapter; run in its OWN env) ────────
+# stream=true means the method is evaluated in the streaming harness.
+# metric=true means the method produces metric-scale output (else scale-free ->
+# Sim(3)+scale alignment for traj, and it is excluded from absolute-scale accuracy).
+methods:
+  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, stream: true,  metric: true,  role: ours}
+  - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        stream: true,  metric: false, role: baseline}
+  - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  stream: true,  metric: false, role: baseline}
+  - {name: mapanything, camera: pinhole,  env: submodules/map-anything, stream: true, metric: false, role: optional}
+  - {name: laser,       camera: pano,     env: submodules/LASER,      stream: true,  metric: false, role: optional}
+  # PanoVGGT-no-SLAM ablation intentionally EXCLUDED: full-batch = benchmarking
+  # PanoVGGT alone, not the streaming engine. (Decision 2026-07-13.)
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+eval:
+  fscore_threshold_m: 0.05
+  mask:
+    mode: rigorous           # rigorous (GT-depth occlusion) | containment
+    frustum_far_m: 4.5
+    occlusion_tol_m: 0.05
+  align:
+    type: sim3               # monocular convention; Umeyama with scale
+    correct_scale: true
+  metric_accuracy:
+    enabled: true            # OUR benchmark: absolute-scale error vs. rendered GT
+    # measured only for methods with metric=true; scale-free methods reported as N/A
+
+# ── Report ────────────────────────────────────────────────────────────────────
+report:
+  label: preliminary
+  out_dir: results/report

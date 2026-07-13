@@ -1,0 +1,66 @@
+"""Trajectory eval — ATE (RMSE) + RPE with Sim(3) Umeyama alignment, via evo.
+
+Reads each method's results/<...>/poses.tum vs the shared GT poses_gt.tum in the
+matching export dir. Writes ate.json next to each run. Imports NO method.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from bench.config import REPO_ROOT, load_config
+
+
+def _gt_for(run_dir: Path) -> Path:
+    # results/<method>/<dataset>/<scene>/<traj>/<variant> -> exports/.../poses_gt.tum
+    parts = run_dir.parts
+    i = parts.index("results")
+    _, dataset, scene, traj, _variant = parts[i + 1:i + 6]
+    return REPO_ROOT / "dataset" / "exports" / dataset / scene / traj / "poses_gt.tum"
+
+
+def eval_one(pred: Path, gt: Path, correct_scale: bool) -> dict:
+    from evo.core import metrics, sync
+    from evo.tools import file_interface
+    traj_ref = file_interface.read_tum_trajectory_file(str(gt))
+    traj_est = file_interface.read_tum_trajectory_file(str(pred))
+    traj_ref, traj_est = sync.associate_trajectories(traj_ref, traj_est)
+    traj_est.align(traj_ref, correct_scale=correct_scale)
+
+    ate = metrics.APE(metrics.PoseRelation.translation_part)
+    ate.process_data((traj_ref, traj_est))
+    rpe = metrics.RPE(metrics.PoseRelation.translation_part, delta=1, delta_unit=metrics.Unit.frames)
+    rpe.process_data((traj_ref, traj_est))
+    return {
+        "ate_rmse_m": float(ate.get_statistic(metrics.StatisticsType.rmse)),
+        "ate_mean_m": float(ate.get_statistic(metrics.StatisticsType.mean)),
+        "rpe_rmse_m": float(rpe.get_statistic(metrics.StatisticsType.rmse)),
+        "n_poses": int(traj_est.num_poses),
+        "aligned_scale_corrected": correct_scale,
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="config.yaml")
+    args = ap.parse_args()
+    cfg = load_config(args.config)
+    cs = cfg["eval"]["align"]["correct_scale"]
+
+    for pred in (REPO_ROOT / "results").glob("*/*/*/*/*/poses.tum"):
+        gt = _gt_for(pred.parent)
+        if not gt.exists():
+            print(f"[eval_traj] no GT for {pred} — skip"); continue
+        try:
+            res = eval_one(pred, gt, cs)
+            (pred.parent / "ate.json").write_text(json.dumps(res, indent=2))
+            print(f"[eval_traj] {pred.parent.relative_to(REPO_ROOT)}: ATE {res['ate_rmse_m']*100:.1f} cm")
+        except Exception as e:
+            print(f"[eval_traj] {pred}: FAILED — {e}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,25 @@
+site_name: PRISM-benchmarks
+site_description: Cross-method benchmark orchestrator for PRISM-VGGT vs. streaming baselines
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: teal
+  features:
+    - navigation.sections
+    - content.code.copy
+docs_dir: docs
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Design decisions: decisions.md
+  - Adapter contract: adapter_contract.md
+  - Datasets: datasets.md
+  - Metrics & fairness: metrics.md
+  - Roadmap: roadmap.md
+markdown_extensions:
+  - admonition
+  - tables
+  - fenced_code
+  - toc:
+      permalink: true

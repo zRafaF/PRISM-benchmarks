@@ -1,0 +1,15 @@
+[submodule "submodules/PRISM-VGGT"]
+	path = submodules/PRISM-VGGT
+	url = https://github.com/zRafaF/PRISM-VGGT
+[submodule "submodules/Pi3"]
+	path = submodules/Pi3
+	url = https://github.com/yyfz/Pi3
+[submodule "submodules/VGGT-SLAM"]
+	path = submodules/VGGT-SLAM
+	url = https://github.com/MIT-SPARK/VGGT-SLAM
+[submodule "submodules/map-anything"]
+	path = submodules/map-anything
+	url = https://github.com/facebookresearch/map-anything
+[submodule "submodules/LASER"]
+	path = submodules/LASER
+	url = https://github.com/neu-vi/LASER
