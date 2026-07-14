@@ -11,13 +11,15 @@ cd "$REPO_ROOT/submodules/Pi3"
 echo "[pi3] creating isolated venv (Python 3.11)"
 uv venv --python 3.11 .venv
 
-# Install per the repo's own manifest, in priority order.
-if [ -f pyproject.toml ]; then
-    uv pip install --python .venv -e .
-elif [ -f requirements.txt ]; then
+# Pi3's real deps (torch==2.5.1, torchvision, numpy, opencv, plyfile, hf_hub, ...) live
+# in requirements.txt — its pyproject.toml is minimal. Install requirements FIRST, then
+# the pi3 package itself without re-resolving deps.
+if [ -f requirements.txt ]; then
+    echo "[pi3] installing requirements.txt (torch etc.)"
     uv pip install --python .venv -r requirements.txt
-else
-    echo "[pi3][!] no pyproject/requirements found — check the repo README and pin deps here." >&2
 fi
-# Pi3 weights are auto-pulled from HF at first run (huggingface_hub); no manual step.
+if [ -f pyproject.toml ]; then
+    uv pip install --python .venv -e . --no-deps
+fi
+# Pi3/Pi3X weights are auto-pulled from HF at first run (huggingface_hub); no manual step.
 echo "[pi3] done.  (weights: pulled from HuggingFace on first inference)"

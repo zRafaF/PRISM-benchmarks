@@ -43,10 +43,18 @@ def main():
     stream = cfg["streaming"]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    from pi3.models.pi3 import Pi3
     from pi3.utils.basic import load_images_as_tensor
 
-    model = Pi3.from_pretrained("yyfz233/Pi3").to(device).eval()
+    # Prefer Pi3X (smoother clouds, reliable confidence, approximate metric scale);
+    # fall back to the original Pi3 if this commit lacks it. Same output dict keys.
+    try:
+        from pi3.models.pi3x import Pi3X
+        model = Pi3X.from_pretrained("yyfz233/Pi3X").to(device).eval()
+        print("[pi3_runner] using Pi3X (approximate metric scale)")
+    except Exception as e:
+        from pi3.models.pi3 import Pi3
+        model = Pi3.from_pretrained("yyfz233/Pi3").to(device).eval()
+        print(f"[pi3_runner] Pi3X unavailable ({e}); using original Pi3 (scale-free)")
 
     # Load frames at Pi3's expected resolution via the repo's own loader, so sizes
     # are always valid. Colours for fusion come from these SAME (resized) frames.

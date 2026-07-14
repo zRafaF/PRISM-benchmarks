@@ -20,7 +20,7 @@ directly). Pins in `bench.env`:
 
 | Method | Repo | Commit |
 |---|---|---|
-| Pi3 | yyfz/Pi3 | `9fa3ddb3f8d53041f8b2738df404f62223bbaa7b` |
+| Pi3 | yyfz/Pi3 | `9fa3ddb…` (latest; includes **Pi3X**) |
 | VGGT-SLAM | MIT-SPARK/VGGT-SLAM | `35327ac28b7d193df9ccc39ba6346052bb6f1207` |
 | MapAnything | facebookresearch/map-anything | `c845b8f4f6cde0c20aecd87573656c3f69f5b2b0` |
 | LASER | neu-vi/LASER | `7adbb7d5c1558f0446398310f31ee92fb4bc2de1` |

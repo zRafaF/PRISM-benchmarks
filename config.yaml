@@ -102,7 +102,7 @@ streaming:
 # Sim(3)+scale alignment for traj, and it is excluded from absolute-scale accuracy).
 methods:
   - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, stream: true,  metric: true,  role: ours}
-  - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        stream: true,  metric: false, role: baseline}
+  - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        stream: true,  metric: true,  role: baseline}   # Pi3X: approximate metric scale
   - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  stream: true,  metric: false, role: baseline}
   - {name: mapanything, camera: pinhole,  env: submodules/map-anything, stream: true, metric: false, role: optional}
   - {name: laser,       camera: pano,     env: submodules/LASER,      stream: true,  metric: false, role: optional}
