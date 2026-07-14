@@ -25,7 +25,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench import cameras
-from bench.config import REPO_ROOT, common_args, export_dir, load_config, resolve_scenes, resolve_trajs
+from bench.config import (REPO_ROOT, common_args, export_dir, load_config,
+                          resolve_scenes, resolve_trajs, traj_rate_hz)
 import trajectories as traj_mod
 
 
@@ -230,13 +231,17 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
           f"(raw min {lo[2]:.2f}) camera_height={ch} -> cam_z={cam_z:.2f}")
     print(f"[mesh] room extent XYZ = {np.round(hi-lo,2)} m")
 
-    if traj == "synthetic_spline":
+    if traj.startswith("synthetic_"):
         sp = cfg["trajectories"]["synthetic_spline"]
+        rate = traj_rate_hz(traj, default=2.0)
         wps = traj_mod.free_space_waypoints(mesh, n_waypoints=8,
                                             min_clearance_m=sp["min_clearance_m"],
                                             seed=cfg["datasets"]["seed"],
                                             probe_z=cam_z, floor_z=floor_z)
-        poses = traj_mod.synthetic_spline(wps, n, camera_height=cam_z)
+        poses = traj_mod.synthetic_spline(wps, camera_height=cam_z,
+                                          speed_mps=sp.get("speed_mps", 0.5),
+                                          rate_hz=rate,
+                                          max_frames=n)
     else:  # dataset_path — loaded by the dataset-specific downloader/importer
         src = _load_dataset_poses(cfg, dataset, scene)
         poses = traj_mod.resample_path(src, n)

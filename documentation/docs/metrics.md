@@ -3,6 +3,22 @@
 Every metric is computed in the orchestrator env from the common results layout; no
 method is imported.
 
+## Cloud cleanliness & size (Table D)
+Complements F-score, which rewards coverage but ignores stray floaters:
+
+- **Point count** and **map size (MB)** — compactness / deployment cost.
+- **Noise fraction** — % of predicted points farther than `cleanliness.noise_threshold_m`
+  (10 cm) from any GT surface. Directly measures the "fluffy dots"; PRISM's edge-masked
+  TSDF surface scores low, per-pixel feed-forward pointmaps higher.
+- **Precision@2cm** — % of predicted points within 2 cm of GT (sharpness).
+
+## Temporal sampling — capture-rate sweep
+Frames are sampled at **constant velocity** (`speed_mps`) along the path at spacing
+`speed / rate`, so each trajectory simulates a real capture at `rate` Hz. We render one
+trajectory per rate in `trajectories.rates_hz` (`synthetic_<rate>hz`) to sweep 0.5–2.5 Hz.
+All methods consume the same frames (fair); frame count is capped at `n_frames`. Low rate =
+sparse wide-baseline; high rate = dense overlap and higher full-batch memory.
+
 ## Trajectory (`eval_traj.py`)
 ATE (RMSE) + RPE with **Sim(3) Umeyama alignment** (`--correct_scale`), via `evo`.
 Method `poses.tum` vs. shared GT `poses_gt.tum`. Report ATE on bounded-length

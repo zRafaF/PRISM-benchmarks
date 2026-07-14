@@ -59,10 +59,31 @@ def resolve_scenes(cfg: dict, dataset: str, cli_scenes: str) -> list[str]:
 
 
 def resolve_trajs(cfg: dict, cli_traj: str) -> list[str]:
-    variants = cfg["trajectories"]["variants"]
+    """Expand trajectory 'kinds' into concrete traj ids. `synthetic_spline` fans out
+    into one id per capture rate: 'synthetic_<rate>hz' (the rate sweep)."""
+    kinds = cfg["trajectories"]["variants"]
+    rates = cfg["trajectories"].get("rates_hz", [2.0])
+    concrete = []
+    for k in kinds:
+        if k == "synthetic_spline":
+            concrete += [f"synthetic_{r}hz" for r in rates]
+        else:
+            concrete.append(k)
     if cli_traj in ("all", ""):
-        return list(variants)
-    return [cli_traj]
+        return concrete
+    if cli_traj == "synthetic_spline":                 # 'the sweep'
+        return [c for c in concrete if c.startswith("synthetic_")]
+    return [cli_traj]                                  # a single concrete id or dataset_path
+
+
+def traj_rate_hz(traj: str, default: float = 2.0) -> float:
+    """Parse the capture rate from a 'synthetic_<rate>hz' traj id."""
+    if traj.startswith("synthetic_") and traj.endswith("hz"):
+        try:
+            return float(traj[len("synthetic_"):-2])
+        except ValueError:
+            return default
+    return default
 
 
 # ── Common results layout (the ONLY thing eval/* reads) ──────────────────────

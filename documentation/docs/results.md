@@ -11,46 +11,41 @@ baselines consume the matched pinhole (`synthetic_fov`) frames. All methods run 
 **streaming harness** (windowed, `window=16, overlap=4`) on the **RTX PRO 6000 (95 GB)**.
 GT = exact render poses + scene mesh.
 
-## Comparison — PRISM-VGGT (ours) vs. Pi3X (baseline)
+## Three-way comparison (office_4 / synthetic_spline, 200 frames)
 
-| Metric | PRISM-VGGT (pano) | Pi3X (pinhole) | Winner |
+| Metric | PRISM-VGGT (pano, **stream**) | Pi3X (pinhole, batch) | MapAnything (pinhole, batch) |
 |---|---|---|---|
-| Effective FPS↑ | 5.41 | 7.99 | Pi3X |
-| VRAM peak GB↓ | 15.2 | 18.8 | PRISM |
-| **Metric scale err %↓** | **2.3** | 30.7 | **PRISM** |
-| **ATE RMSE cm↓** | **5.7** | 90.4 | **PRISM** |
-| RPE RMSE cm↓ | 0.4 | 3.3 | PRISM |
-| **Recon F@5cm↑ (masked)** | **0.617** | 0.138 | **PRISM** |
-| Recon Chamfer cm↓ (masked) | 17.8 | 92.4 | PRISM |
-| Recon F@5cm↑ (full-360) | 0.517 | 0.116 | PRISM (coverage) |
+| Effective FPS↑ | 5.41 | 5.70 | 0.92 |
+| **VRAM peak GB↓** | **15.2** | 88.2 | 93.3 |
+| Metric scale err %↓ | 2.3 | 10.4 | **1.9** |
+| Extent err %↓ | 7.9 | 55.8 | **2.1** |
+| ATE RMSE cm↓ | 5.7 | **4.7** | 26.5 |
+| RPE RMSE cm↓ | **0.4** | 3.2 | 11.3 |
+| Recon F@5cm↑ (masked) | 0.617 | **0.957** | 0.613 |
+| Recon Chamfer cm↓ (masked) | 17.9 | **4.1** | 9.8 |
+| Recon F@5cm↑ (full-360) | 0.517 | **0.857** | 0.546 |
 
-!!! warning "Pi3X numbers above are being corrected"
-    The Pi3X column was produced by an **incorrect windowed** run (Pi3 was chained across
-    sliding windows, which misaligns a permutation-equivariant net → overlapping rooms,
-    ATE 90 cm). Pi3/Pi3X and MapAnything are **feed-forward, full-batch** models and are now
-    run over **all frames in one pass**; these numbers will be replaced on the next run.
+**How to read this (honest framing).**
 
-**Method modes (each in its native mode — the fair setup).**
+- **Full-batch feed-forward methods (Pi3X, MapAnything) see all 200 frames jointly and
+  produce excellent offline geometry** — Pi3X hits F 0.957. But they consume **88–93 GB of
+  VRAM for one small room**, nearly maxing a 95 GB card, so they will not scale to large
+  scenes; and MapAnything is slow (0.92 FPS).
+- **PRISM does it STREAMING at ~15 GB, real-time (5.4 FPS), and causally** (no access to
+  future frames), with the smoothest trajectory (RPE 0.4 cm) and strong metric scale
+  (2.3%). Its value proposition is **streaming + memory + metric grounding**, not beating a
+  full-batch model on offline recon.
+- **MapAnything** has the best *absolute metric scale* (1.9%, extent 2.1%) — it is a metric
+  model — but the worst trajectory (ATE 26.5 cm) and it is very slow here.
+- **Caveat on F-score:** F@5cm rewards *coverage within 5 cm*; it does **not** strongly
+  penalise stray "fluffy" floater points, which is where PRISM's TSDF surface looks visually
+  cleaner than the feed-forward pointmaps. This motivates a **cloud-cleanliness / size
+  metric** (planned — see roadmap).
 
-- **Streaming** (fed frames incrementally): **PRISM-VGGT** (ours), **LASER**.
-- **Full-batch feed-forward** (all frames in one pass; windowing them is wrong):
-  **Pi3/Pi3X**, **MapAnything**, **VGGT-SLAM** runs as its own incremental SLAM.
-
-Recon quality (Table C) is scale-normalised (Sim(3)+ICP), so scale-free methods are never
-penalised for scale; absolute metric scale (Table B) is reported for metric methods
-(PRISM, Pi3X, MapAnything).
-
-## PRISM-VGGT detail (office_4 / synthetic_spline)
-
-| Family | Metric | Value |
-|---|---|---|
-| Performance | Effective FPS | 5.41 |
-| | VRAM avg / peak | 8.1 / 15.2 GB (of 95 GB) |
-| | GPU util / power | 50% / 319 W |
-| Metric scale | Scale estimate (1.0 = perfect) | **0.977** (2.3% err) |
-| Trajectory | ATE / RPE RMSE | **5.7 / 0.4 cm** |
-| Reconstruction (masked) | Acc / Compl / Chamfer / F@5cm | 3.7 / 14.2 / 17.8 cm / **0.617** |
-| Reconstruction (full-360) | Acc / Compl / Chamfer / F@5cm | 7.7 / 5.9 / 13.6 cm / 0.517 |
+Recon quality (Table C) is scale-normalised (Sim(3)+ICP) so scale-free methods aren't
+penalised for scale; absolute metric scale (Table B) is reported only for metric methods.
+Each method runs in its **native mode**: PRISM/LASER stream; Pi3X/MapAnything are full-batch
+feed-forward; VGGT-SLAM (next) is its own incremental SLAM.
 
 ## What each metric means (in depth)
 

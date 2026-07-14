@@ -118,6 +118,24 @@ def main():
            _md_table(["Method", "Run", "Acc cm↓", "Compl cm↓", "Chamfer cm↓", f"F@{thr}cm↑"],
                      recon_rows("full_360")), ""]
 
+    # Table D — cloud cleanliness & size (sharpness / fluffiness / compactness)
+    d_rows = []
+    for r in runs:
+        rc = r["recon"]
+        if not rc:
+            continue
+        mm = rc.get("masked", rc.get("full_360", {}))
+        d_rows.append([r["method"], f"{r['scene']}/{r['traj']}/{r['variant']}",
+                       rc.get("point_count", "—"),
+                       _fmt(rc.get("map_size_mb"), 1, 1),
+                       _fmt(mm.get("noise_frac"), 100, 1),
+                       _fmt(mm.get("precision_tight"), 100, 1)])
+    md += ["## Table D — Cloud cleanliness & size\n",
+           "*noise% = pred points far from any GT surface (fluffy floaters); "
+           "precision@2cm = pred points within 2 cm of GT (sharpness).*\n",
+           _md_table(["Method", "Run", "Points", "Size MB↓", "Noise %↓", "Prec@2cm %↑"],
+                     d_rows), ""]
+
     md += ["## Trajectory (ATE/RPE, Sim(3)-aligned)\n"]
     t_rows = []
     for r in runs:

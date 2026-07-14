@@ -47,24 +47,43 @@ def resample_path(poses: np.ndarray, n_frames: int) -> np.ndarray:
     return out
 
 
-def synthetic_spline(waypoints: np.ndarray, n_frames: int, camera_height: float = 1.7) -> np.ndarray:
-    """Variant B: Catmull-Rom spline through free-space waypoints (N>=4, world XY).
+def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
+                     speed_mps: float = 0.5, rate_hz: float = 2.0,
+                     max_frames: int = 200) -> np.ndarray:
+    """Variant B: constant-velocity walkthrough on a Catmull-Rom spline.
 
-    `waypoints` are (K,2) floor positions chosen by the caller to be collision-free
-    (see free_space_waypoints). Camera height is fixed; each pose looks along the
-    path tangent. Returns (n_frames,4,4) camera-to-world poses.
+    Frames are sampled by ARC LENGTH at spacing = speed/rate (so they simulate a
+    capture at `rate_hz` while moving at `speed_mps` — the real Theta-X operating
+    point), capped at `max_frames`. This makes the inter-frame baseline physical and
+    identical for every method (they all consume these same frames). Returns
+    (n,4,4) camera-to-world poses.
     """
     wp = np.asarray(waypoints, dtype=np.float64)
     if len(wp) < 4:
         raise ValueError("need >= 4 waypoints for Catmull-Rom")
-    xy = _catmull_rom(wp, n_frames)
-    z = np.full(len(xy), camera_height)
-    eyes = np.column_stack([xy, z])
-    poses = np.empty((len(eyes), 4, 4))
-    for i in range(len(eyes)):
-        nxt = eyes[min(i + 1, len(eyes) - 1)]
+    dense = _catmull_rom(wp, 4000)                       # dense polyline
+    seg = np.linalg.norm(np.diff(dense, axis=0), axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    total_len = float(cum[-1])
+    spacing = max(speed_mps / max(rate_hz, 1e-6), 1e-3)
+    n = min(int(max_frames), max(4, int(total_len / spacing) + 1))
+    targets = np.minimum(np.arange(n) * spacing, total_len)
+
+    xy = np.empty((n, 2))
+    for k, tt in enumerate(targets):
+        j = int(np.clip(np.searchsorted(cum, tt), 1, len(dense) - 1))
+        seg_len = cum[j] - cum[j - 1]
+        frac = 0.0 if seg_len < 1e-9 else (tt - cum[j - 1]) / seg_len
+        xy[k] = dense[j - 1] * (1 - frac) + dense[j] * frac
+
+    eyes = np.column_stack([xy, np.full(n, camera_height)])
+    poses = np.empty((n, 4, 4))
+    for i in range(n):
+        nxt = eyes[min(i + 1, n - 1)]
         tgt = nxt if not np.allclose(nxt, eyes[i]) else eyes[i] + np.array([1.0, 0, 0])
         poses[i] = _look_at(eyes[i], tgt)
+    print(f"[traj] path_len={total_len:.1f}m spacing={spacing:.2f}m "
+          f"(speed {speed_mps} m/s @ {rate_hz} Hz) -> {n} frames (cap {max_frames})")
     return poses
 
 

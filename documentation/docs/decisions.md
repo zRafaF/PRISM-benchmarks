@@ -82,6 +82,23 @@ only samples waypoints where a downward ray hits the floor (not furniture) and f
 PRISM the down-ray-measured camera height. Fixed the "first frame over a sofa -> 27%
 scale error" issue.
 
+## D13 — Physical capture-rate sweep (constant velocity)
+Trajectory frames are sampled by **arc length** at spacing `speed / rate` (constant
+velocity), simulating a real capture at `rate` Hz. We sweep **rates_hz = [0.5, 1, 2, 2.5]**
+(the Theta-X operating point is ~2–2.5 Hz), each rendered as its own traj id
+`synthetic_<rate>hz`, so the report shows every method across the spectrum. Frame count is
+capped at `n_frames` (200) because full-batch baselines are near the VRAM ceiling there.
+The same frames feed every method, so the sweep is inherently fair; low rate = sparse
+wide-baseline (favours feed-forward), high rate = dense overlap (favours streaming, and
+pushes full-batch toward the memory wall).
+
+## D14 — Cloud cleanliness & size metrics
+F-score@5cm rewards coverage but ignores stray floaters, so we add: **point count** and
+**map size (MB)** (compactness), **noise fraction** (% of pred points > 10 cm from any GT
+surface — the "fluffy dots"), and **precision@2cm** (sharpness). Computed on the saved
+cloud (identical voxel dedup for all). These quantify the visible sharpness advantage of
+PRISM's TSDF surface over per-pixel feed-forward pointmaps.
+
 ## Conflict note (brief vs. 05)
 05 marked the ScanNet-render pipeline "build deferred" and prioritised perf + lab
 tape-measure first. Rafael's 2026-07-13 direction supersedes: build the render

@@ -69,10 +69,15 @@ camera:
 
 # ── Trajectories (both variants rendered) ─────────────────────────────────────
 trajectories:
-  variants: [dataset_path, synthetic_spline]
-  n_frames: 200              # cap length -> bounded drift (report ATE on bounded seqs)
+  variants: [synthetic_spline]   # (+ dataset_path once the per-dataset pose importer lands)
+  n_frames: 200              # CEILING: max frames even if speed/rate would give more
+                             # (full-batch baselines are near the VRAM limit at 200)
+  # RATE SWEEP: one trajectory per capture rate -> traj id "synthetic_<rate>hz".
+  # Low rate = sparse, wide-baseline (favours feed-forward); high rate = dense overlap
+  # (favours streaming, and pushes full-batch toward the VRAM ceiling). Covers the spectrum.
+  rates_hz: [0.5, 1.0, 2.0, 2.5]
   synthetic_spline:
-    speed_mps: 0.5
+    speed_mps: 0.5           # constant walking speed; inter-frame baseline = speed/rate
     min_clearance_m: 0.30    # collision-free sampling against the mesh occupancy
     loop: false
 
@@ -132,6 +137,9 @@ eval:
   metric_accuracy:
     enabled: true            # OUR benchmark: absolute-scale error vs. rendered GT
     # measured only for methods with metric=true (prism, mapanything); others N/A
+  cleanliness:               # cloud sharpness/size — captures "fluffy floaters" F-score misses
+    noise_threshold_m: 0.10  # a pred point > this from GT counts as a noise floater
+    precision_threshold_m: 0.02   # tight precision (pred within 2 cm of GT surface)
 
 # ── Report ────────────────────────────────────────────────────────────────────
 report:

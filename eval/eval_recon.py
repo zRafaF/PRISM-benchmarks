@@ -33,7 +33,7 @@ def _export_base(dataset, scene, traj) -> Path:
     return REPO_ROOT / "dataset" / "exports" / dataset / scene / traj
 
 
-def _metrics(pred_pts, gt_pts, thr):
+def _metrics(pred_pts, gt_pts, thr, clean=None):
     import open3d as o3d
     pred = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pred_pts))
     gt = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(gt_pts))
@@ -45,8 +45,14 @@ def _metrics(pred_pts, gt_pts, thr):
     prec = float((d_pred_gt < thr).mean())
     rec = float((d_gt_pred < thr).mean())
     f = float(2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
-    return {"accuracy_m": acc, "completeness_m": comp, "chamfer_m": chamfer,
-            "precision": prec, "recall": rec, "fscore": f}
+    m = {"accuracy_m": acc, "completeness_m": comp, "chamfer_m": chamfer,
+         "precision": prec, "recall": rec, "fscore": f}
+    if clean is not None:
+        # Cleanliness: fraction of pred points that are noise floaters (far from GT),
+        # and tight precision. Captures the "fluffy dots" F-score@5cm ignores.
+        m["noise_frac"] = float((d_pred_gt > clean["noise_threshold_m"]).mean())
+        m["precision_tight"] = float((d_pred_gt < clean["precision_threshold_m"]).mean())
+    return m
 
 
 def _gt_cloud(dataset, scene, traj, n_sample=400000):
@@ -130,6 +136,7 @@ def main():
     thr = cfg["eval"]["fscore_threshold_m"]
     correct_scale = cfg["eval"]["align"]["correct_scale"]
     icp_cfg = cfg["eval"].get("icp", {"enabled": True, "max_dist_m": 0.15})
+    clean = cfg["eval"].get("cleanliness", {"noise_threshold_m": 0.10, "precision_threshold_m": 0.02})
 
     for cloud in (REPO_ROOT / "results").glob("*/*/*/*/*/cloud.ply"):
         import open3d as o3d
@@ -153,19 +160,24 @@ def main():
             pred_pts = _icp_refine(pred_pts, gt_pts, icp_cfg.get("max_dist_m", 0.15))
 
         pin_variants = list((_export_base(dataset, scene, traj) / "pinhole").glob("*"))
-        out = {"threshold_m": thr}
+        # Cloud size / compactness (on the saved cloud; voxel-deduped identically for all).
+        out = {"threshold_m": thr,
+               "point_count": int(len(pred_pts)),
+               "map_size_mb": round(cloud.stat().st_size / 1e6, 2)}
         if pin_variants:
             keep_pred = build_mask(pred_pts, pin_variants[0], cfg)
             keep_gt = build_mask(gt_pts, pin_variants[0], cfg)
             print(f"[eval_recon]   co-vis mask: pred {keep_pred.sum()}/{len(keep_pred)}, "
                   f"GT {keep_gt.sum()}/{len(keep_gt)} points kept")
-            out["masked"] = _metrics(pred_pts[keep_pred], gt_pts[keep_gt], thr)
-        out["full_360"] = _metrics(pred_pts, gt_pts, thr)
+            out["masked"] = _metrics(pred_pts[keep_pred], gt_pts[keep_gt], thr, clean)
+        out["full_360"] = _metrics(pred_pts, gt_pts, thr, clean)
 
         (cloud.parent / "recon.json").write_text(json.dumps(out, indent=2))
         m = out.get("masked", out["full_360"])
         print(f"[eval_recon]   -> masked F@{int(thr*100)}cm={m['fscore']:.3f} "
-              f"acc={m['accuracy_m']*100:.1f}cm compl={m['completeness_m']*100:.1f}cm")
+              f"acc={m['accuracy_m']*100:.1f}cm compl={m['completeness_m']*100:.1f}cm "
+              f"noise={m.get('noise_frac',0)*100:.1f}% pts={out['point_count']} "
+              f"size={out['map_size_mb']}MB")
 
 
 if __name__ == "__main__":
