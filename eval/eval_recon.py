@@ -106,6 +106,22 @@ def _align_pred_to_gt(pred_pts, pred_tum: Path, gt_tum: Path, correct_scale: boo
     return aligned, (s, R, t)
 
 
+def _icp_refine(pred_pts, gt_pts, max_dist):
+    """Tighten the pred->GT registration with point-to-point ICP after the coarse
+    trajectory Sim(3). Standard in recon benchmarks so quality isn't penalised by a
+    small residual misalignment. Returns the refined pred points."""
+    import open3d as o3d
+    src = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pred_pts))
+    tgt = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(gt_pts))
+    reg = o3d.pipelines.registration.registration_icp(
+        src, tgt, max_dist, np.eye(4),
+        o3d.pipelines.registration.TransformationEstimationPointToPoint())
+    src.transform(reg.transformation)
+    print(f"[eval_recon]   ICP refine: fitness={reg.fitness:.3f} "
+          f"inlier_rmse={reg.inlier_rmse*100:.1f}cm")
+    return np.asarray(src.points)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
@@ -113,6 +129,7 @@ def main():
     cfg = load_config(args.config)
     thr = cfg["eval"]["fscore_threshold_m"]
     correct_scale = cfg["eval"]["align"]["correct_scale"]
+    icp_cfg = cfg["eval"].get("icp", {"enabled": True, "max_dist_m": 0.15})
 
     for cloud in (REPO_ROOT / "results").glob("*/*/*/*/*/cloud.ply"):
         import open3d as o3d
@@ -132,6 +149,8 @@ def main():
         gt_tum = _export_base(dataset, scene, traj) / "poses_gt.tum"
         pred_tum = cloud.parent / "poses.tum"
         pred_pts, _sim3 = _align_pred_to_gt(pred_pts, pred_tum, gt_tum, correct_scale)
+        if icp_cfg.get("enabled", True) and len(pred_pts) and len(gt_pts):
+            pred_pts = _icp_refine(pred_pts, gt_pts, icp_cfg.get("max_dist_m", 0.15))
 
         pin_variants = list((_export_base(dataset, scene, traj) / "pinhole").glob("*"))
         out = {"threshold_m": thr}

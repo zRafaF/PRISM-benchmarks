@@ -63,6 +63,25 @@ reported **N/A**. Metric = Umeyama scale-to-GT (|s−1|) + room-extent error.
 We do **not** use the Theta-X lab captures. Rendered ScanNet++ (+ KITTI-360,
 Matterport3D, Stanford2D3D) only.
 
+## D11 — Scale: quality is scale-normalised; metric accuracy is separate
+Two distinct axes, never conflated:
+
+- **Reconstruction quality** (acc/compl/Chamfer/F-score) is measured after aligning each
+  cloud to GT with a **scale-corrected Sim(3) + ICP**. Scale is normalised out, so
+  scale-free baselines (Pi3, VGGT-SLAM, LASER) are judged purely on geometry — the fair
+  cross-method comparison.
+- **Absolute metric-scale accuracy** (Table B) is a *separate* metric reported only for
+  **metric-capable** methods (PRISM, MapAnything). Scale-free methods are N/A there.
+
+So we do "disregard scaling" for the quality comparison, while still crediting metric
+methods for getting real-world size right.
+
+## D12 — Trajectory waypoints over bare floor + measured camera height
+PRISM's metric scale is anchored by a RANSAC floor fit under the camera. The renderer
+only samples waypoints where a downward ray hits the floor (not furniture) and feeds
+PRISM the down-ray-measured camera height. Fixed the "first frame over a sofa -> 27%
+scale error" issue.
+
 ## Conflict note (brief vs. 05)
 05 marked the ScanNet-render pipeline "build deferred" and prioritised perf + lab
 tape-measure first. Rafael's 2026-07-13 direction supersedes: build the render

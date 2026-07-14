@@ -118,10 +118,13 @@ eval:
     occlusion_tol_m: 0.05
   align:
     type: sim3               # monocular convention; Umeyama with scale
-    correct_scale: true
+    correct_scale: true      # recon QUALITY is scale-normalised so scale-free methods compare fairly
+  icp:
+    enabled: true            # refine pred->GT registration with ICP before scoring recon
+    max_dist_m: 0.15
   metric_accuracy:
     enabled: true            # OUR benchmark: absolute-scale error vs. rendered GT
-    # measured only for methods with metric=true; scale-free methods reported as N/A
+    # measured only for methods with metric=true (prism, mapanything); others N/A
 
 # ── Report ────────────────────────────────────────────────────────────────────
 report:

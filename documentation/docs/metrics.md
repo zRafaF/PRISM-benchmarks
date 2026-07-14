@@ -16,6 +16,18 @@ variants:
 - **masked** — both pred and GT restricted to the co-visibility support (fair vs. pinhole).
 - **full_360** — no mask; credits pano coverage (pano-capable methods).
 
+**Registration first (critical).** A method's cloud is in its OWN world frame, so it
+must be aligned to GT before any distance is meaningful. `eval_recon`:
+
+1. computes a **Sim(3)** (scale, rotation, translation) from the method's trajectory to
+   GT (Umeyama over matched poses) and applies it to the cloud, then
+2. **refines with ICP** (point-to-point, `eval.icp`) to remove residual misalignment.
+
+Because the Sim(3) is **scale-corrected**, recon quality is **scale-normalised** — a
+scale-free method (Pi3, VGGT-SLAM, LASER) is judged purely on geometry, not on whether
+it recovered absolute size. This is the fair cross-method quality comparison. F-score@τ
+is the SOTA headline metric (as in Tanks & Temples / ScanNet).
+
 ## Performance & resources (`bench/perf.py` → `collect_perf.py`)
 Uniform across every method (the sampler wraps each subprocess):
 effective FPS, per-window + end-to-end latency, **average & peak VRAM**, GPU util %,
@@ -23,11 +35,20 @@ GPU power, CPU RAM peak, checkpoint size, and (ours) TSDF block count. For PRISM
 runner also surfaces the engine's `VRAMProfiler` numbers via `perf_runner.json`.
 
 ## Absolute metric-scale accuracy (`metric_accuracy.py`)
-Our differentiator. Using the rendered GT (exact scale), recover the similarity scale
-`s` that aligns each method's trajectory to GT: metric-capable PRISM should give s≈1,
-reported as **metric-scale error |s−1|** plus room-extent (bbox-diagonal) error.
-Scale-free baselines (Pi3, VGGT-SLAM, MapAnything, LASER) are reported **N/A** — they
-recover geometry only up to scale.
+Separate from quality: does the method reconstruct at TRUE real-world size? Using the
+rendered GT (exact scale), recover the similarity scale `s` aligning the method's
+trajectory to GT: a metric method gives s≈1, reported as **metric-scale error |s−1|**
+plus room-extent (bbox-diagonal) error. Reported only for **metric-capable** methods
+(PRISM via floor+camera-height; MapAnything). Scale-free methods (Pi3, VGGT-SLAM,
+LASER) are **N/A** — they recover geometry only up to scale, so absolute size is
+undefined and must not be scored against them.
+
+**Floor anchor (PRISM).** PRISM's scale comes from a RANSAC floor fit under the camera
+against a known camera height. The renderer therefore (a) only places trajectory
+waypoints **over bare floor** (a downward ray must hit the floor, not furniture) and
+(b) measures the true camera-to-floor height by that downward ray and feeds it to
+PRISM (`measured_camera_height.json`). Starting over a sofa was the cause of an early
+~27% scale error.
 
 ## Fairness — co-visibility masking (`visibility_mask.py`)
 Pano sees 360°, pinhole baselines see a frustum. Build the **union of bounded pinhole

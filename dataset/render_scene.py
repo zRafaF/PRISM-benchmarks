@@ -232,7 +232,7 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
         wps = traj_mod.free_space_waypoints(mesh, n_waypoints=8,
                                             min_clearance_m=sp["min_clearance_m"],
                                             seed=cfg["datasets"]["seed"],
-                                            probe_z=cam_z)
+                                            probe_z=cam_z, floor_z=floor_z)
         poses = traj_mod.synthetic_spline(wps, n, camera_height=cam_z)
     else:  # dataset_path — loaded by the dataset-specific downloader/importer
         src = _load_dataset_poses(cfg, dataset, scene)
@@ -246,6 +246,17 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     # GT lives in the trajectory dir (eval reads .../<dataset>/<scene>/<traj>/).
     out_root = REPO_ROOT / "dataset" / "exports" / dataset / scene / traj
     out_root.mkdir(parents=True, exist_ok=True)
+
+    # Measure the TRUE camera height at the first pose by casting a ray straight
+    # down to the floor. This is what PRISM's floor-RANSAC should recover, so we
+    # feed it as camera_height (fixes the "started over a sofa -> wrong scale" bug).
+    p0 = poses[0][:3, 3]
+    gz = traj_mod.ground_hit_z(raycast, float(p0[0]), float(p0[1]), float(p0[2]))
+    measured_h = float(p0[2] - gz) if gz is not None else float(ch)
+    print(f"[traj] first-pose down-ray floor_z={gz if gz is None else round(gz,2)} "
+          f"-> measured camera_height={measured_h:.3f} m (fed to PRISM)")
+    (out_root / "measured_camera_height.json").write_text(
+        json.dumps({"camera_height_m": measured_h}, indent=2))
 
     # GT poses (TUM) + GT mesh copy
     _write_tum(out_root / "poses_gt.tum", poses)

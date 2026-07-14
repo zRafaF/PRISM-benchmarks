@@ -106,14 +106,25 @@ def _interior_score(scene, point, max_range=30.0, n_dirs=24):
     return float(np.mean(np.isfinite(t_hit) & (t_hit <= max_range)))
 
 
-def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: int,
-                         probe_z: float | None = None, debug: bool = True) -> np.ndarray:
-    """Sample n collision-free INTERIOR waypoints from a mesh's XY bounds.
+def ground_hit_z(scene, x: float, y: float, z_top: float):
+    """Cast a ray straight DOWN from (x,y,z_top); return the world-Z of the first
+    surface hit (the floor/furniture directly below), or None if nothing is hit."""
+    import open3d as o3d
+    ray = o3d.core.Tensor([[x, y, z_top, 0.0, 0.0, -1.0]], dtype=o3d.core.float32)
+    t = scene.cast_rays(ray)["t_hit"].numpy()[0]
+    return None if not np.isfinite(t) else float(z_top - t)
 
-    Rejection-sample XY inside the AABB at `probe_z` (camera height); keep a point
-    only if it is (a) >= min_clearance from any surface AND (b) interior — most rays
-    cast from it hit the mesh (see `_interior_score`). The interior test is what
-    fixes the "camera outside the room -> tiny spec" render bug.
+
+def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: int,
+                         probe_z: float | None = None, floor_z: float | None = None,
+                         ground_tol_m: float = 0.12, debug: bool = True) -> np.ndarray:
+    """Sample n collision-free INTERIOR waypoints that sit OVER BARE FLOOR.
+
+    A point is kept only if it is (a) >= min_clearance from any surface, (b) interior
+    (most rays hit the mesh), AND (c) over bare floor — a ray cast straight down hits
+    a surface within `ground_tol_m` of the global floor_z (i.e. NOT over furniture).
+    (c) matters because PRISM's metric scale comes from a RANSAC floor fit under the
+    camera; starting over a sofa gives the wrong camera-to-floor height (scale error).
     """
     import open3d as o3d  # local import: renderer env only
 
@@ -122,32 +133,38 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
     lo = aabb.get_min_bound()
     hi = aabb.get_max_bound()
     z = probe_z if probe_z is not None else (lo[2] + hi[2]) / 2
+    fz = floor_z if floor_z is not None else float(lo[2])
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
 
     if debug:
-        print(f"[waypoints] AABB lo={np.round(lo,2)} hi={np.round(hi,2)} probe_z={z:.2f}")
+        print(f"[waypoints] AABB lo={np.round(lo,2)} hi={np.round(hi,2)} "
+              f"probe_z={z:.2f} floor_z={fz:.2f} ground_tol={ground_tol_m}")
 
     kept, kept_scores, tries, shown = [], [], 0, 0
-    while len(kept) < n_waypoints and tries < n_waypoints * 400:
+    while len(kept) < n_waypoints and tries < n_waypoints * 800:
         tries += 1
         xy = rng.uniform(lo[:2], hi[:2])
         pt = np.array([xy[0], xy[1], z], dtype=np.float32)
         dist = scene.compute_distance(o3d.core.Tensor(pt[None])).numpy()[0]
         score = _interior_score(scene, pt)
-        if debug and shown < 12:
-            print(f"[waypoints] cand xy={np.round(xy,2)} clearance={dist:.2f} interior={score:.2f}"
-                  f" -> {'KEEP' if (dist >= min_clearance_m and score >= 0.8) else 'reject'}")
+        gz = ground_hit_z(scene, xy[0], xy[1], z)
+        over_floor = gz is not None and abs(gz - fz) <= ground_tol_m
+        ok = dist >= min_clearance_m and score >= 0.8 and over_floor
+        if debug and shown < 14:
+            gzs = f"{gz:.2f}" if gz is not None else "none"
+            print(f"[waypoints] cand xy={np.round(xy,2)} clearance={dist:.2f} "
+                  f"interior={score:.2f} ground_z={gzs} over_floor={over_floor} "
+                  f"-> {'KEEP' if ok else 'reject'}")
             shown += 1
-        if dist >= min_clearance_m and score >= 0.8:
+        if ok:
             kept.append(xy)
             kept_scores.append(score)
     if debug:
-        print(f"[waypoints] kept {len(kept)}/{n_waypoints} after {tries} tries "
-              f"(interior scores {np.round(kept_scores,2) if kept_scores else '[]'})")
+        print(f"[waypoints] kept {len(kept)}/{n_waypoints} after {tries} tries")
     if len(kept) < 4:
         raise RuntimeError(
-            f"free-space sampling failed (kept {len(kept)} in {tries} tries). The mesh may "
-            f"not be Z-up, or probe_z={z:.2f} is outside the room. Check [mesh]/[waypoints] "
-            f"debug above.")
+            f"free-space-over-floor sampling failed (kept {len(kept)} in {tries} tries). "
+            f"Loosen ground_tol_m/min_clearance, or check the [mesh] floor_z. Debug above.")
+    # Put the flattest-ground point first so PRISM locks scale over bare floor.
     return np.array(kept)
