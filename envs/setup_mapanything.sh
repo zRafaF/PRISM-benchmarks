@@ -7,13 +7,10 @@ require_submodule map-anything
 ensure_uv
 cd "$REPO_ROOT/submodules/map-anything"
 
-echo "[mapanything] isolated venv (Python 3.11)"
-[ -d .venv ] || uv venv --python 3.11 .venv     # reuse if it already exists (idempotent)
-if [ -f pyproject.toml ]; then
-    uv pip install --python .venv -e .
-elif [ -f requirements.txt ]; then
-    uv pip install --python .venv -r requirements.txt
-else
-    echo "[mapanything][!] confirm repo README install steps and encode them here." >&2
-fi
-echo "[mapanything] done."
+echo "[mapanything] isolated venv (Python 3.12 — repo requires 3.12)"
+[ -d .venv ] || uv venv --python 3.12 .venv     # reuse if it already exists (idempotent)
+# Torch first (cu128 for Blackwell sm_120); MapAnything doesn't pin torch, so -e . keeps it.
+install_torch_cu128 .venv
+echo "[mapanything] installing package (pip install -e .)"
+uv pip install --python .venv -e .
+echo "[mapanything] done.  (weights auto-pulled from HF: facebook/map-anything)"

@@ -89,6 +89,11 @@ def fuse_pointmaps(points_world, colors, voxel_size: float):
     cols = None
     if colors and any(c is not None for c in colors):
         cols = np.concatenate([c for c in colors if c is not None], axis=0)
+    finite = np.isfinite(pts).all(axis=1)      # drop masked/NaN points (feed-forward masks)
+    pts = pts[finite]
+    cols = cols[finite] if cols is not None else None
+    if len(pts) == 0:
+        return np.zeros((0, 3)), None
     keys = np.floor(pts / voxel_size).astype(np.int64)
     h = (keys[:, 0] * 73856093) ^ (keys[:, 1] * 19349663) ^ (keys[:, 2] * 83492791)
     _, idx = np.unique(h, return_index=True)   # one point per occupied voxel

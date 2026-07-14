@@ -21,10 +21,16 @@
 
 ## Runner API status
 - **PRISM** — verified public API. ✅
-- **Pi3** — verified against the pinned commit's README (`Pi3.from_pretrained("yyfz233/Pi3")`,
-  `model(imgs[None])`, outputs `camera_poses`/`points`). ✅
-- **VGGT-SLAM, MapAnything, LASER** — runner seams still marked `<-- API line N`;
-  confirm against each repo after `make init` before running.
+- **Pi3 / Pi3X** — verified against the pinned commit. Run **full-batch** (all frames one
+  pass); it is permutation-equivariant, NOT a streamer. ✅
+- **MapAnything** — verified (`MapAnything.from_pretrained("facebook/map-anything")`,
+  `model.infer(views)`, outputs `pts3d`/`camera_poses`). Feed-forward metric, **full-batch**. ✅
+- **VGGT-SLAM, LASER** — streaming runners; seams still marked `<-- API line N`, confirm
+  against each repo after `make init` before running.
+
+## Method modes
+Streaming (incremental): PRISM (ours), LASER, VGGT-SLAM. Full-batch feed-forward: Pi3/Pi3X,
+MapAnything. Windowing a feed-forward net misaligns it (overlapping submaps) — don't.
 
 ## First comparison
 PRISM (pano) vs. Pi3 (pinhole) on Replica `office_4`. See **Preliminary results** for

@@ -100,14 +100,21 @@ streaming:
 # stream=true means the method is evaluated in the streaming harness.
 # metric=true means the method produces metric-scale output (else scale-free ->
 # Sim(3)+scale alignment for traj, and it is excluded from absolute-scale accuracy).
+# mode: stream = native online SLAM (fed incrementally); batch = feed-forward, all frames
+# in one pass (permutation-equivariant nets like Pi3/MapAnything — windowing misaligns them).
 methods:
-  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, stream: true,  metric: true,  role: ours}
-  - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        stream: true,  metric: true,  role: baseline}   # Pi3X: approximate metric scale
-  - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  stream: true,  metric: false, role: baseline}
-  - {name: mapanything, camera: pinhole,  env: submodules/map-anything, stream: true, metric: false, role: optional}
-  - {name: laser,       camera: pano,     env: submodules/LASER,      stream: true,  metric: false, role: optional}
-  # PanoVGGT-no-SLAM ablation intentionally EXCLUDED: full-batch = benchmarking
-  # PanoVGGT alone, not the streaming engine. (Decision 2026-07-13.)
+  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours}
+  - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        mode: batch,  metric: true,  role: baseline}   # Pi3X: approx metric scale
+  - {name: mapanything, camera: pinhole,  env: submodules/map-anything, mode: batch, metric: true, role: baseline}  # feed-forward metric
+  - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
+  - {name: laser,       camera: pano,     env: submodules/LASER,      mode: stream, metric: false, role: baseline}   # streaming (like ours)
+
+# Feed-forward baselines process every frame at once; cap frames only if GPU memory is
+# tight (null = use all). Subsampling keeps global frame indices as TUM timestamps.
+baselines:
+  max_frames: null
+# PanoVGGT-no-SLAM ablation intentionally EXCLUDED: full-batch of ours = benchmarking
+# PanoVGGT alone, not the streaming engine. (Decision 2026-07-13.)
 
 # ── Evaluation ────────────────────────────────────────────────────────────────
 eval:

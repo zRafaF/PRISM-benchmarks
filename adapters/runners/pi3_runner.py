@@ -1,15 +1,15 @@
 #!/usr/bin/env python
-"""Pi3 / π³ runner — executed by submodules/Pi3/.venv/bin/python.
+"""Pi3 / π³ (Pi3X) runner — executed by submodules/Pi3/.venv/bin/python.
 
-Pi3 (yyfz/Pi3 @ 9fa3ddb) is a permutation-equivariant feed-forward pointmap network
-(not natively a streamer). For a fair STREAMING comparison we drive it windowed:
-slide a window of `window_size` frames with `overlap`, run Pi3 per window, and chain
-windows through their shared overlap frames with a Sim(3) Umeyama anchor (the same
-fairness PRISM's own alignment gets). Scale-free -> metric=false in config.
+Pi3/Pi3X is a PERMUTATION-EQUIVARIANT feed-forward model: it must ingest the whole
+set of frames in ONE pass (no fixed reference view), producing a single globally
+consistent reconstruction. It is NOT a streamer — windowing + chaining produces
+misaligned, overlapping submaps. So we run it FULL-BATCH over all frames.
 
-API confirmed against the pinned commit's README:
-  from pi3.models.pi3 import Pi3
-  model = Pi3.from_pretrained("yyfz233/Pi3").to(device).eval()
+(The streaming methods are PRISM and LASER; Pi3/MapAnything are full-batch baselines.)
+
+API (pinned commit README):
+  model = Pi3X.from_pretrained("yyfz233/Pi3X").to(device).eval()   # or Pi3
   out = model(imgs[None])           # imgs (N,3,H,W) in [0,1]
   out["camera_poses"] (1,N,4,4) OpenCV cam->world ; out["points"] (1,N,H,W,3) global
 
@@ -26,7 +26,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 import runner_io as _io
-from _stream import sliding_windows, chain_windows_sim3, fuse_pointmaps
+from _stream import fuse_pointmaps
 
 
 def main():
@@ -40,13 +40,9 @@ def main():
     import torch
     import yaml
     cfg = yaml.safe_load(Path(args.config).read_text())
-    stream = cfg["streaming"]
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     from pi3.utils.basic import load_images_as_tensor
-
-    # Prefer Pi3X (smoother clouds, reliable confidence, approximate metric scale);
-    # fall back to the original Pi3 if this commit lacks it. Same output dict keys.
     try:
         from pi3.models.pi3x import Pi3X
         model = Pi3X.from_pretrained("yyfz233/Pi3X").to(device).eval()
@@ -56,32 +52,36 @@ def main():
         model = Pi3.from_pretrained("yyfz233/Pi3").to(device).eval()
         print(f"[pi3_runner] Pi3X unavailable ({e}); using original Pi3 (scale-free)")
 
-    # Load frames at Pi3's expected resolution via the repo's own loader, so sizes
-    # are always valid. Colours for fusion come from these SAME (resized) frames.
-    imgs = load_images_as_tensor(str(Path(args.in_dir) / "rgb"), interval=1).to(device)  # (N,3,H,W) [0,1]
-    n = int(imgs.shape[0])
-    rgb_list = [(imgs[i].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8) for i in range(n)]
-    seq = {"rgb": rgb_list}
+    imgs = load_images_as_tensor(str(Path(args.in_dir) / "rgb"), interval=1).to(device)  # (N,3,H,W)
+    n_total = int(imgs.shape[0])
+
+    # FULL-BATCH: all frames at once. Optional cap (baselines.max_frames) if a scene is
+    # too big for GPU memory — uniformly subsample, keeping the global frame indices as
+    # TUM timestamps so eval still associates against GT.
+    cap = (cfg.get("baselines") or {}).get("max_frames")
+    idxs = list(range(n_total))
+    if cap and n_total > cap:
+        idxs = np.linspace(0, n_total - 1, int(cap)).astype(int).tolist()
+        imgs = imgs[idxs]
+        print(f"[pi3_runner] subsampled {n_total} -> {len(idxs)} frames (baselines.max_frames={cap})")
 
     dtype = torch.bfloat16 if (device == "cuda" and torch.cuda.get_device_capability()[0] >= 8) else torch.float16
-
-    per_window, t0, win_results = [], time.perf_counter(), []
-    for w in sliding_windows(n, stream["window_size"], stream["overlap"]):
-        t = time.perf_counter()
-        with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype, enabled=(device == "cuda")):
-            res = model(imgs[w][None])
-        poses = res["camera_poses"][0].float().cpu().numpy()   # (len(w),4,4) cam->world
-        points = res["points"][0].float().cpu().numpy()        # (len(w),H,W,3) global (window frame)
-        per_window.append(time.perf_counter() - t)
-        win_results.append((w, poses, points))
+    t0 = time.perf_counter()
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=dtype, enabled=(device == "cuda")):
+        res = model(imgs[None])                              # (1,N,...)
     wall = time.perf_counter() - t0
 
-    global_poses, points_world, colors = chain_windows_sim3(win_results, seq, stream["overlap"])
-    _io.write_tum(out / "poses.tum", list(range(len(global_poses))), global_poses)
-    pts, cols = fuse_pointmaps(points_world, colors, cfg["engine"]["voxel_size"])
+    poses = res["camera_poses"][0].float().cpu().numpy()     # (M,4,4) global
+    points = res["points"][0].float().cpu().numpy()          # (M,H,W,3) global
+    rgb = (imgs.permute(0, 2, 3, 1).cpu().numpy() * 255).astype(np.uint8)  # (M,H,W,3)
+
+    _io.write_tum(out / "poses.tum", idxs, poses)            # timestamps = global frame indices
+    pw = [points[i].reshape(-1, 3) for i in range(len(idxs))]
+    cw = [rgb[i].reshape(-1, 3) for i in range(len(idxs))]
+    pts, cols = fuse_pointmaps(pw, cw, cfg["engine"]["voxel_size"])
     _io.write_cloud(out / "cloud.ply", pts, cols)
-    _io.write_runner_perf(out, per_window_latency_s=per_window, latency_end_to_end_s=wall)
-    print(f"[pi3_runner] {len(global_poses)} poses, {len(pts)} pts, {n} frames, {wall:.1f}s")
+    _io.write_runner_perf(out, per_window_latency_s=[wall], latency_end_to_end_s=wall)
+    print(f"[pi3_runner] FULL-BATCH {len(idxs)} frames -> {len(poses)} poses, {len(pts)} pts, {wall:.1f}s")
 
 
 if __name__ == "__main__":
