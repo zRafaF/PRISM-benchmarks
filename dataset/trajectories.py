@@ -185,6 +185,18 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
         raise RuntimeError(
             f"free-space-over-floor sampling failed (kept {len(kept)} in {tries} tries). "
             f"Loosen ground_tol_m/min_clearance, or check the [mesh] floor_z. Debug above.")
-    # Put the cleanest-floor point FIRST so PRISM locks metric scale over bare floor.
+    # Start at the cleanest-floor point (so PRISM locks metric scale over bare floor),
+    # then visit the rest as a nearest-neighbour tour -> a SMOOTH walkthrough instead
+    # of a spatial zig-zag (a scrambled order inflates drift and wrecks the recon).
     kept.sort(key=lambda kf: -kf[1])
-    return np.array([xy for xy, _ in kept])
+    start = kept[0][0]
+    remaining = [xy for xy, _ in kept[1:]]
+    order, cur = [start], start
+    while remaining:
+        j = int(np.argmin([np.linalg.norm(cur - r) for r in remaining]))
+        cur = remaining.pop(j)
+        order.append(cur)
+    if debug:
+        print(f"[waypoints] tour order (NN from cleanest floor): "
+              f"{[np.round(p, 2).tolist() for p in order]}")
+    return np.array(order)
