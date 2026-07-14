@@ -1,18 +1,23 @@
 #!/usr/bin/env python
-"""Preview + download server for rendered frames and results.
+"""PRISM-benchmarks Studio — a Gradio control panel (run `make preview`).
 
-A small Gradio app (modelled on PRISM's apps/downloader.py) so you can, from a
-browser, (1) eyeball rendered frames — pano RGB, colour-mapped depth, validity
-mask, pinhole RGB — to confirm a render is correct before running a method, and
-(2) download any export/results file or folder (folders come back zipped).
+Tabs:
+  * Run pipeline  — tick make targets, run them, watch stdout live, download the log.
+  * Config        — edit key settings; saved to the gitignored config.local.yaml overlay.
+  * Snapshots     — generate standardized paper images (GT-aligned, ceiling-clipped,
+                    black/white bg) + gallery + zip download.
+  * Point cloud   — interactive Plotly 3D viewer (+ optional GT overlay, aligned).
+  * Frame preview — rendered RGB / depth / mask gallery.
+  * Downloads     — browse & download any file/folder (folders zipped).
 
-Run from the repo root (through uv):  make preview
-It prints a public share URL (share=True), handy when the box is remote.
+Runs from the repo root. `share=True` prints a public URL (handy on a remote box).
+Only a fixed allowlist of make targets can be run — no arbitrary shell.
 """
 from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -20,76 +25,149 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bench.config import REPO_ROOT
+from bench.config import REPO_ROOT, LOCAL_CONFIG, load_config
 
 EXPORTS = REPO_ROOT / "dataset" / "exports"
 RESULTS = REPO_ROOT / "results"
+SNAP_DIR = RESULTS / "report" / "snapshots"
+
+MAKE_TARGETS = [
+    "init", "setup", "setup-prism", "setup-pi3", "setup-mapanything",
+    "setup-vggtslam", "setup-laser", "download", "split", "render", "export",
+    "run-prism", "run-pi3", "run-mapanything", "run-vggtslam", "run-laser",
+    "eval-traj", "eval-recon", "eval-metric", "perf", "report", "snapshots",
+]
 
 
-def list_runs() -> list[str]:
-    """Every rendered camera dir that has frames, as 'dataset/scene/traj/camera[/variant]'."""
-    runs = []
-    for rgb_dir in EXPORTS.glob("*/*/*/**/rgb"):
-        runs.append(str(rgb_dir.parent.relative_to(EXPORTS)))
-    return sorted(set(runs))
+# ── Run pipeline (stream make output) ─────────────────────────────────────────
+def run_targets(targets, scenes, traj):
+    if not targets:
+        yield "Select at least one target.", None
+        return
+    extra = []
+    if scenes and scenes.strip():
+        extra.append(f"SCENES={scenes.strip()}")
+    if traj and traj.strip():
+        extra.append(f"TRAJ={traj.strip()}")
+    cmd = ["make"] + list(targets) + extra
+    logpath = RESULTS / "report" / "studio_run.log"
+    logpath.parent.mkdir(parents=True, exist_ok=True)
+    acc = "$ " + " ".join(cmd) + "\n\n"
+    yield acc, None
+    try:
+        p = subprocess.Popen(cmd, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True, bufsize=1)
+    except Exception as e:
+        yield acc + f"[failed to launch: {e}]", None
+        return
+    for line in p.stdout:
+        acc += line
+        yield acc, None
+    p.wait()
+    acc += f"\n[exit code {p.returncode}]\n"
+    logpath.write_text(acc)
+    yield acc, str(logpath)
 
 
-def _depth_to_rgb(depth: np.ndarray) -> np.ndarray:
+# ── Config overlay editor ─────────────────────────────────────────────────────
+def load_config_fields():
+    cfg = load_config("config.yaml")
+    rates = ", ".join(str(r) for r in cfg["trajectories"].get("rates_hz", []))
+    scenes = " ".join(cfg["datasets"].get("replica", {}).get("scenes") or [])
+    mf = (cfg.get("baselines") or {}).get("max_frames")
+    fscore = cfg["eval"]["fscore_threshold_m"]
+    noise = cfg["eval"].get("cleanliness", {}).get("noise_threshold_m", 0.10)
+    return rates, scenes, (mf or 0), fscore, noise
+
+
+def save_config_fields(rates_str, scenes_str, max_frames, fscore_thr, noise_thr):
+    import yaml
+    overlay = {}
+    if LOCAL_CONFIG.exists():
+        overlay = yaml.safe_load(LOCAL_CONFIG.read_text()) or {}
+    if rates_str.strip():
+        overlay.setdefault("trajectories", {})["rates_hz"] = [
+            float(x) for x in rates_str.replace(" ", "").split(",") if x]
+    if scenes_str.strip():
+        overlay.setdefault("datasets", {}).setdefault("replica", {})["scenes"] = scenes_str.split()
+    overlay.setdefault("baselines", {})["max_frames"] = None if not max_frames else int(max_frames)
+    ev = overlay.setdefault("eval", {})
+    ev["fscore_threshold_m"] = float(fscore_thr)
+    ev.setdefault("cleanliness", {})["noise_threshold_m"] = float(noise_thr)
+    LOCAL_CONFIG.write_text(yaml.safe_dump(overlay, sort_keys=False))
+    return f"Saved -> {LOCAL_CONFIG.name} (gitignored; merged over config.yaml):\n\n" + \
+           yaml.safe_dump(overlay, sort_keys=False)
+
+
+# ── Snapshots ─────────────────────────────────────────────────────────────────
+def make_snapshots(keep_h, max_points):
+    from eval import snapshots
+    cfg = load_config("config.yaml")
+    paths = snapshots.generate(cfg, keep_h=float(keep_h), max_points=int(max_points))
+    return paths, (str(_zip_dir(SNAP_DIR)) if paths else None)
+
+
+def _zip_dir(d: Path):
+    tmp = tempfile.mkdtemp()
+    return shutil.make_archive(os.path.join(tmp, d.name or "snapshots"), "zip", root_dir=str(d))
+
+
+# ── Frame preview ─────────────────────────────────────────────────────────────
+def list_runs():
+    return sorted({str(p.parent.relative_to(EXPORTS)) for p in EXPORTS.glob("*/*/*/**/rgb")})
+
+
+def _frame_names(run):
+    return sorted(p.stem for p in (EXPORTS / run / "rgb").glob("*.png")) if run else []
+
+
+def _depth_to_rgb(depth):
     import matplotlib.cm as cm
-    d = depth.astype(np.float32)
-    valid = d > 0
+    d = depth.astype(np.float32); valid = d > 0
     if valid.any():
         lo, hi = np.percentile(d[valid], [2, 98])
         dn = np.clip((d - lo) / max(hi - lo, 1e-6), 0, 1)
     else:
         dn = np.zeros_like(d)
-    rgb = (cm.turbo(dn)[..., :3] * 255).astype(np.uint8)
-    rgb[~valid] = 0
+    rgb = (cm.turbo(dn)[..., :3] * 255).astype(np.uint8); rgb[~valid] = 0
     return rgb
 
 
-def list_clouds() -> list[str]:
-    """Reconstructed clouds under results/ + the GT meshes under exports/ (viewable
-    as their vertex clouds), labelled so you can compare pred vs. GT."""
-    items = []
-    for p in RESULTS.glob("*/*/*/*/*/cloud.ply"):
-        items.append("pred: " + str(p.relative_to(RESULTS)))
-    for p in EXPORTS.glob("*/*/*/gt_mesh.ply"):
-        items.append("GT:   " + str(p.relative_to(EXPORTS)))
+def preview_frame(run, idx):
+    import imageio.v2 as imageio
+    if not run:
+        return None, None, None, "Pick a run."
+    base = EXPORTS / run
+    names = _frame_names(run)
+    if not names:
+        return None, None, None, f"No frames in {run}"
+    i = int(max(0, min(idx, len(names) - 1)))
+    name = names[i]
+    rgb = np.asarray(imageio.imread(base / "rgb" / f"{name}.png"))
+    depth = np.load(base / "depth" / f"{name}.npy")
+    mp = base / "mask" / f"{name}.png"
+    mask = np.asarray(imageio.imread(mp)) if mp.exists() else np.zeros(depth.shape, np.uint8)
+    valid = depth[depth > 0]
+    dr = (f"depth {valid.min():.2f}-{valid.max():.2f} m, {100*(depth>0).mean():.0f}% valid"
+          if valid.size else "⚠ 0% valid — camera outside / wrong up-axis?")
+    return rgb, _depth_to_rgb(depth), mask, f"{run}\nframe {i+1}/{len(names)} ({name})\n{dr}"
+
+
+# ── Point cloud viewer ────────────────────────────────────────────────────────
+def list_clouds():
+    items = ["pred: " + str(p.relative_to(RESULTS)) for p in RESULTS.glob("*/*/*/*/*/cloud.ply")]
+    items += ["GT:   " + str(p.relative_to(EXPORTS)) for p in EXPORTS.glob("*/*/*/gt_mesh.ply")]
     return sorted(items)
 
 
-def _subsample(pts, cols, max_points, seed=0):
-    if len(pts) > max_points:
-        idx = np.random.default_rng(seed).choice(len(pts), max_points, replace=False)
+def _subsample(pts, cols, n, seed=0):
+    if len(pts) > n:
+        idx = np.random.default_rng(seed).choice(len(pts), n, replace=False)
         return pts[idx], (cols[idx] if cols is not None else None)
     return pts, cols
 
 
-def _align_pred_for_overlay(rel: str, pred_pts):
-    """Register a pred cloud into the GT frame (Sim(3)+ICP, same as eval) so it can
-    be overlaid on the original scene. Returns (aligned_pred, gt_pts, gt_cols) or None."""
-    import open3d as o3d
-    from eval.eval_recon import _align_pred_to_gt, _icp_refine
-    parts = Path(rel).parts                      # method/ds/scene/traj/variant/cloud.ply
-    ds, scene, traj = parts[1], parts[2], parts[3]
-    gt_dir = EXPORTS / ds / scene / traj
-    pred_tum = (RESULTS / rel).parent / "poses.tum"
-    gt_tum = gt_dir / "poses_gt.tum"
-    gt_mesh = gt_dir / "gt_mesh.ply"
-    if not (pred_tum.exists() and gt_tum.exists() and gt_mesh.exists()):
-        return None
-    aligned, _ = _align_pred_to_gt(pred_pts, pred_tum, gt_tum, True)
-    gt = o3d.io.read_point_cloud(str(gt_mesh))
-    gt_pts = np.asarray(gt.points)
-    aligned = _icp_refine(aligned, gt_pts, 0.15)
-    gt_cols = np.asarray(gt.colors) if gt.has_colors() else None
-    return aligned, gt_pts, gt_cols
-
-
-def show_cloud(label: str, max_points: int, overlay_gt: bool = False):
-    """Interactive Plotly 3D scatter of a cloud (RGB if present, else height-coloured).
-    With overlay_gt, a pred cloud is aligned to the GT scene and both are shown."""
+def show_cloud(label, max_points, overlay_gt=False):
     import open3d as o3d
     import plotly.graph_objects as go
     if not label:
@@ -101,67 +179,40 @@ def show_cloud(label: str, max_points: int, overlay_gt: bool = False):
     if len(pts) == 0:
         return go.Figure(layout={"title": f"empty: {path.name}"})
     cols = np.asarray(pcd.colors) if pcd.has_colors() else None
-
-    traces = []
-    title = f"{path.name}: {len(pts):,} pts"
+    traces, title = [], f"{path.name}: {len(pts):,} pts"
     if overlay_gt and label.startswith("pred:"):
         try:
-            res = _align_pred_for_overlay(rel, pts)
-        except Exception as e:
-            res = None
-            title += f"  (overlay failed: {e})"
-        if res is not None:
-            pts, gt_pts, gt_cols = res
-            gpts, _ = _subsample(gt_pts, None, max_points, seed=1)
-            traces.append(go.Scatter3d(x=gpts[:, 0], y=gpts[:, 1], z=gpts[:, 2], mode="markers",
-                                       name="GT scene", marker=dict(size=1.0, color="lightgray")))
+            from eval.eval_recon import _align_pred_to_gt, _icp_refine
+            parts = Path(rel).parts
+            ds, scene, traj = parts[1], parts[2], parts[3]
+            gtd = EXPORTS / ds / scene / traj
+            aligned, _ = _align_pred_to_gt(pts, (RESULTS / rel).parent / "poses.tum",
+                                           gtd / "poses_gt.tum", True)
+            gt = o3d.io.read_point_cloud(str(gtd / "gt_mesh.ply"))
+            gtp = np.asarray(gt.points)
+            aligned = _icp_refine(aligned, gtp, 0.15)
+            pts = aligned
+            gp, _ = _subsample(gtp, None, max_points, 1)
+            traces.append(go.Scatter3d(x=gp[:, 0], y=gp[:, 1], z=gp[:, 2], mode="markers",
+                                       name="GT", marker=dict(size=1.0, color="lightgray")))
             title += " + GT (aligned)"
-
-    spts, scols = _subsample(pts, cols, max_points)
-    if scols is not None:
-        marker = dict(size=1.4, color=["rgb(%d,%d,%d)" % (r * 255, g * 255, b * 255) for r, g, b in scols])
+        except Exception as e:
+            title += f"  (overlay failed: {e})"
+    sp, sc = _subsample(pts, cols, max_points)
+    if sc is not None:
+        mk = dict(size=1.4, color=["rgb(%d,%d,%d)" % (r*255, g*255, b*255) for r, g, b in sc])
     else:
-        marker = dict(size=1.4, color=spts[:, 2], colorscale="Viridis")
-    traces.append(go.Scatter3d(x=spts[:, 0], y=spts[:, 1], z=spts[:, 2], mode="markers",
-                               name="reconstruction", marker=marker))
+        mk = dict(size=1.4, color=sp[:, 2], colorscale="Viridis")
+    traces.append(go.Scatter3d(x=sp[:, 0], y=sp[:, 1], z=sp[:, 2], mode="markers",
+                               name="reconstruction", marker=mk))
     fig = go.Figure(traces)
     fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0, r=0, t=30, b=0),
                       title=title, showlegend=True)
     return fig
 
 
-def _frame_names(run: str) -> list[str]:
-    if not run:
-        return []
-    return sorted(p.stem for p in (EXPORTS / run / "rgb").glob("*.png"))
-
-
-def preview_frame(run: str, idx: int):
-    import imageio.v2 as imageio
-    if not run:
-        return None, None, None, "Pick a run."
-    base = EXPORTS / run
-    names = _frame_names(run)
-    if not names:
-        return None, None, None, f"No frames in {run}"
-    i = int(max(0, min(idx, len(names) - 1)))     # clamp — never index out of range
-    name = names[i]
-    rgb = np.asarray(imageio.imread(base / "rgb" / f"{name}.png"))
-    depth = np.load(base / "depth" / f"{name}.npy")
-    mask_p = base / "mask" / f"{name}.png"
-    mask = np.asarray(imageio.imread(mask_p)) if mask_p.exists() else np.zeros(depth.shape, np.uint8)
-    valid = depth[depth > 0]
-    valid_pct = 100.0 * (depth > 0).mean()
-    if valid.size:
-        drange = f"depth {valid.min():.2f}–{valid.max():.2f} m, {valid_pct:.0f}% valid"
-    else:
-        drange = "⚠ 0% valid — every ray missed the mesh (camera outside / wrong up-axis?)"
-    info = f"{run}\nframe {i+1}/{len(names)} ({name})\n{drange}"
-    return rgb, _depth_to_rgb(depth), mask, info
-
-
-def prepare_download(selected_path: str):
-    """Return a file directly, or zip a directory into a temp file (like downloader.py)."""
+# ── File downloader ───────────────────────────────────────────────────────────
+def prepare_download(selected_path):
     import gradio as gr
     if not selected_path:
         raise gr.Error("Select a file or folder first.")
@@ -171,60 +222,85 @@ def prepare_download(selected_path: str):
     if os.path.isfile(full):
         return full
     tmp = tempfile.mkdtemp()
-    base = os.path.join(tmp, os.path.basename(full) or "archive")
-    return shutil.make_archive(base, "zip", root_dir=full)
+    return shutil.make_archive(os.path.join(tmp, os.path.basename(full) or "archive"), "zip", root_dir=full)
 
 
 def build_app():
     import gradio as gr
-    runs = list_runs()
-    with gr.Blocks(title="PRISM-benchmarks preview") as demo:
-        gr.Markdown("# 🖼️ PRISM-benchmarks — render preview & download")
-        with gr.Tab("Frame preview"):
-            with gr.Row():
-                run = gr.Dropdown(choices=runs, label="Run (dataset/scene/traj/camera)",
-                                  value=(runs[0] if runs else None))
-                n0 = max(len(_frame_names(runs[0])) - 1, 0) if runs else 0
-                idx = gr.Slider(0, max(n0, 1), value=0, step=1, label="Frame index")
-            info = gr.Textbox(label="Info", interactive=False)
-            with gr.Row():
-                img_rgb = gr.Image(label="RGB", type="numpy")
-                img_depth = gr.Image(label="Depth (turbo)", type="numpy")
-                img_mask = gr.Image(label="Validity mask", type="numpy")
+    with gr.Blocks(title="PRISM-benchmarks Studio") as demo:
+        gr.Markdown("# 🛠️ PRISM-benchmarks Studio")
 
-            def on_run(r):
-                # fit the slider to the actual frame count, reset to 0, show frame 0
-                n = max(len(_frame_names(r)) - 1, 0)
-                rgb, dep, msk, txt = preview_frame(r, 0)
-                return gr.update(maximum=max(n, 1), value=0), rgb, dep, msk, txt
+        with gr.Tab("Run pipeline"):
+            gr.Markdown("Tick targets and run. Output streams live; the log is downloadable. "
+                        "Typical order: setup → render → export → run-* → eval-* → report → snapshots.")
+            tsel = gr.CheckboxGroup(MAKE_TARGETS, label="make targets (run in order)")
+            with gr.Row():
+                sc = gr.Textbox(label="SCENES (optional)", scale=1)
+                tj = gr.Textbox(value="all", label="TRAJ", scale=1)
+            run_btn = gr.Button("Run selected", variant="primary")
+            out = gr.Textbox(label="Live output", lines=24, autoscroll=True)
+            logf = gr.File(label="Download log", interactive=False)
+            run_btn.click(run_targets, [tsel, sc, tj], [out, logf])
 
-            run.change(on_run, [run], [idx, img_rgb, img_depth, img_mask, info])
-            idx.change(preview_frame, [run, idx], [img_rgb, img_depth, img_mask, info])
-            demo.load(on_run, [run], [idx, img_rgb, img_depth, img_mask, info])
-            gr.Button("Refresh runs").click(lambda: gr.update(choices=list_runs()), None, run)
+        with gr.Tab("Config"):
+            gr.Markdown("Edits are saved to **config.local.yaml** (gitignored, merged over "
+                        "config.yaml) — survives `git pull`.")
+            r0, s0, m0, f0, n0 = load_config_fields()
+            rates = gr.Textbox(value=r0, label="rates_hz (comma-separated capture rates)")
+            scenes = gr.Textbox(value=s0, label="replica scenes (space-separated; blank = keep)")
+            maxf = gr.Number(value=m0, label="baselines.max_frames (0 = all)", precision=0)
+            fscore = gr.Number(value=f0, label="eval F-score threshold (m)")
+            noise = gr.Number(value=n0, label="cleanliness noise threshold (m)")
+            save_btn = gr.Button("Save overlay", variant="primary")
+            cfg_out = gr.Textbox(label="Saved overlay", lines=10)
+            save_btn.click(save_config_fields, [rates, scenes, maxf, fscore, noise], cfg_out)
+
+        with gr.Tab("Snapshots"):
+            gr.Markdown("Standardized paper images — every cloud aligned to GT (ground on "
+                        "floor), ceiling clipped, on black & white backgrounds.")
+            with gr.Row():
+                keep_h = gr.Slider(0.0, 3.0, value=2.0, step=0.1, label="Keep height above floor (m); ceiling above is removed")
+                snap_maxp = gr.Slider(20000, 300000, value=120000, step=10000, label="Max points")
+            snap_btn = gr.Button("Generate snapshots", variant="primary")
+            gallery = gr.Gallery(label="Snapshots", columns=4, height=520)
+            snap_zip = gr.File(label="Download all (zip)", interactive=False)
+            snap_btn.click(make_snapshots, [keep_h, snap_maxp], [gallery, snap_zip])
+
         with gr.Tab("Point cloud"):
-            gr.Markdown("View a reconstructed cloud (`pred:`) or a GT mesh's vertices "
-                        "(`GT:`). Note: pred is in its OWN frame; eval aligns it to GT, "
-                        "this raw view does not.")
             clouds = list_clouds()
             with gr.Row():
-                cloud_dd = gr.Dropdown(choices=clouds, label="Cloud",
-                                       value=(clouds[0] if clouds else None))
-                maxp = gr.Slider(5000, 300000, value=80000, step=5000, label="Max points")
-                overlay = gr.Checkbox(value=False, label="Overlay GT scene (aligned)")
-            plot = gr.Plot(label="3D view (drag to orbit)")
-            for ev in (cloud_dd.change, maxp.change, overlay.change):
-                ev(show_cloud, [cloud_dd, maxp, overlay], plot)
-            gr.Button("Refresh clouds").click(lambda: gr.update(choices=list_clouds()), None, cloud_dd)
-            demo.load(show_cloud, [cloud_dd, maxp, overlay], plot)
+                cdd = gr.Dropdown(choices=clouds, value=(clouds[0] if clouds else None), label="Cloud")
+                cmax = gr.Slider(5000, 300000, value=80000, step=5000, label="Max points")
+                cov = gr.Checkbox(value=False, label="Overlay GT (aligned)")
+            cplot = gr.Plot(label="3D view (drag to orbit)")
+            for ev in (cdd.change, cmax.change, cov.change):
+                ev(show_cloud, [cdd, cmax, cov], cplot)
+            gr.Button("Refresh clouds").click(lambda: gr.update(choices=list_clouds()), None, cdd)
+            demo.load(show_cloud, [cdd, cmax, cov], cplot)
 
-        with gr.Tab("Download files"):
-            gr.Markdown("Browse `dataset/exports` and `results`. File → direct download; "
-                        "folder → zipped.")
+        with gr.Tab("Frame preview"):
+            runs = list_runs()
+            with gr.Row():
+                run = gr.Dropdown(choices=runs, value=(runs[0] if runs else None), label="Run")
+                n0f = max(len(_frame_names(runs[0])) - 1, 1) if runs else 1
+                idx = gr.Slider(0, n0f, value=0, step=1, label="Frame index")
+            info = gr.Textbox(label="Info", interactive=False)
+            with gr.Row():
+                im_rgb = gr.Image(label="RGB"); im_d = gr.Image(label="Depth"); im_m = gr.Image(label="Mask")
+
+            def on_run(r):
+                n = max(len(_frame_names(r)) - 1, 1)
+                a, b, c, t = preview_frame(r, 0)
+                return gr.update(maximum=n, value=0), a, b, c, t
+            run.change(on_run, [run], [idx, im_rgb, im_d, im_m, info])
+            idx.change(preview_frame, [run, idx], [im_rgb, im_d, im_m, info])
+            demo.load(on_run, [run], [idx, im_rgb, im_d, im_m, info])
+
+        with gr.Tab("Downloads"):
             explorer = gr.FileExplorer(root_dir=str(REPO_ROOT), ignore_glob=".*",
                                        file_count="single", label="Server filesystem")
-            out = gr.File(label="Download ready", interactive=False)
-            gr.Button("Prepare download", variant="primary").click(prepare_download, explorer, out)
+            dl = gr.File(label="Download ready", interactive=False)
+            gr.Button("Prepare download", variant="primary").click(prepare_download, explorer, dl)
     return demo
 
 

@@ -26,7 +26,7 @@ PYCHK    ?= python3
         download split render export \
         run-all run-prism run-pi3 run-vggtslam run-mapanything run-laser \
         eval-traj eval-recon eval-metric perf report all \
-        preview docs docs-serve clean clean-results
+        preview snapshots docs docs-serve clean clean-results
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -54,7 +54,8 @@ help:
 	@echo "  make eval-metric      OUR absolute-scale accuracy (metric methods) -> metric.json"
 	@echo "  make perf             throughput/latency + avg & peak VRAM + GPU util -> perf.csv"
 	@echo "  make report           aggregate everything -> tables + plots (md/csv/png)"
-	@echo "  make preview          browser gallery of rendered frames + file downloader"
+	@echo "  make preview          Studio: browser control panel (run pipeline, config, snapshots, viewers)"
+	@echo "  make snapshots        standardized paper images of every cloud (GT-aligned, ceiling-clipped)"
 	@echo ""
 	@echo "  make all              init -> setup-all -> download -> render -> export ->"
 	@echo "                        run-all -> eval-* -> perf -> report"
@@ -157,10 +158,15 @@ report: setup
 all: init setup-all download render export run-all eval-traj eval-recon eval-metric perf report
 	@echo ">> full pipeline complete — see results/report/"
 
-# ── Preview (browser gallery + downloader; prints a public share URL) ─────────
+# ── Studio (browser control panel: run pipeline, config, snapshots, viewers) ──
 preview: setup
-	@echo ">> preview server on :7860 (share URL printed). Browse renders + download."
+	@echo ">> Studio on :7860 (share URL printed): run pipeline + snapshots + viewers."
 	$(UV) run --extra preview python tools/preview.py
+
+# ── Standardized paper snapshots (GT-aligned, ceiling-clipped, black+white bg) ─
+snapshots: setup
+	@echo ">> rendering standardized cloud snapshots -> results/report/snapshots/"
+	$(ORCH_RUN) eval/snapshots.py --config $(CONFIG)
 
 # ── Docs ──────────────────────────────────────────────────────────────────────
 docs:
