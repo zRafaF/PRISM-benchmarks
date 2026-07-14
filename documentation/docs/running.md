@@ -52,6 +52,16 @@ Use `TRAJ=synthetic_spline` for now — the `dataset_path` (real camera path) va
 needs a per-dataset pose importer that isn't wired yet. Override scenes/params on the
 CLI, e.g. `make render SCENES="room_0" TRAJ=synthetic_spline FACE_SIZE=768`.
 
+**Sanity-check the render** before running a method:
+
+```bash
+make preview        # browser gallery (pano RGB, depth, mask, pinhole) + file downloader
+```
+
+It prints a public share URL (works from a remote box). Confirm the RGB frames look
+like a real textured room; if they're flat grey the mesh had no usable colour and the
+renderer fell back to shading — tell us before spending a run on colourless input.
+
 ## Stage 3 — run methods (each in its own env, streaming harness)
 
 ```bash

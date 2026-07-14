@@ -92,33 +92,65 @@ def _render_rays(scene, mesh_t, origins, directions, width, height, max_depth):
 _TEXTURE_IMG: dict = {"img": None}
 
 
-def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path):
+def _load_mesh_legacy(mesh_path: Path):
+    """Load into an Open3D legacy TriangleMesh, robust to quad/polygon PLYs.
+
+    Open3D's reader aborts on Replica's quad-face meshes ("A polygon in the mesh
+    could not be decomposed into triangles"). We fall back to trimesh, which
+    triangulates and carries per-vertex colours (sampling the texture to vertices
+    if the mesh is textured) across into the Open3D mesh.
+    """
     import open3d as o3d
-    import imageio.v2 as imageio
-
     mesh = o3d.io.read_triangle_mesh(str(mesh_path), enable_post_processing=True)
-    mesh.compute_vertex_normals()
-    mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+    if len(mesh.triangles) > 0:
+        return mesh
+    print(f"[render] Open3D could not read {mesh_path.name} (quad faces?) — using trimesh")
+    import trimesh
+    tm = trimesh.load(str(mesh_path), process=False, force="mesh")
+    m = o3d.geometry.TriangleMesh()
+    m.vertices = o3d.utility.Vector3dVector(np.asarray(tm.vertices, dtype=np.float64))
+    m.triangles = o3d.utility.Vector3iVector(np.asarray(tm.faces, dtype=np.int32))
+    try:
+        vc = np.asarray(tm.visual.vertex_colors)   # (N,4) uint8; textures->vertex sampled
+        if vc.ndim == 2 and len(vc) == len(tm.vertices):
+            m.vertex_colors = o3d.utility.Vector3dVector(vc[:, :3] / 255.0)
+    except Exception as e:
+        print(f"[render] trimesh vertex colours unavailable ({e}); geometry only")
+    return m
 
-    # Cache an albedo texture for textured meshes (Replica). Try, in order: the
-    # texture Open3D loaded with the mesh, then a sibling texture file.
+
+def _cache_texture(mesh, mesh_path: Path):
+    """Cache an albedo texture for textured meshes lacking vertex colours."""
     _TEXTURE_IMG["img"] = None
+    if mesh.has_vertex_colors():
+        return
     try:
         if getattr(mesh, "textures", None):
             for tx in mesh.textures:
                 arr = np.asarray(tx)
                 if arr.ndim == 3 and arr.size:
                     _TEXTURE_IMG["img"] = arr[..., :3].astype(np.uint8)
-                    break
-        if _TEXTURE_IMG["img"] is None:
-            import imageio.v2 as imageio
-            for cand in list(mesh_path.parent.glob("*.jpg")) + list(mesh_path.parent.glob("textures/*.jpg")):
-                _TEXTURE_IMG["img"] = np.asarray(imageio.imread(cand))[..., :3].astype(np.uint8)
-                break
+                    return
+        import imageio.v2 as imageio
+        for cand in list(mesh_path.parent.glob("*.jpg")) + list(mesh_path.parent.glob("textures/*.jpg")):
+            _TEXTURE_IMG["img"] = np.asarray(imageio.imread(cand))[..., :3].astype(np.uint8)
+            return
     except Exception as e:
         print(f"[render] texture load skipped ({e}); falling back to shaded grey")
-    scene = o3d.t.geometry.RaycastingScene()
-    scene.add_triangles(mesh_t)
+
+
+def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path):
+    import open3d as o3d
+    import imageio.v2 as imageio
+
+    mesh = _load_mesh_legacy(mesh_path)     # robust to quad/polygon PLYs (Replica)
+    mesh.compute_vertex_normals()
+    mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+
+    _cache_texture(mesh, mesh_path)         # for textured meshes without vertex colours
+
+    raycast = o3d.t.geometry.RaycastingScene()
+    raycast.add_triangles(mesh_t)
 
     n = cfg["trajectories"]["n_frames"]
     ch = cfg["camera"]["camera_height_m"]
@@ -148,7 +180,7 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
         json.dump({"projection": "equirect", "width": pw, "height": ph}, f, indent=2)
     for i, T in enumerate(poses):
         o, d = cameras.rays_to_world(pano_dirs, T)
-        radial, rgb, mask = _render_rays(scene, mesh_t, o, d, pw, ph, cfg["engine"]["max_depth"])
+        radial, rgb, mask = _render_rays(raycast, mesh_t, o, d, pw, ph, cfg["engine"]["max_depth"])
         _save_frame(pdir, i, rgb, radial, mask)
 
     # ── PINHOLE (both intrinsics variants) ──
@@ -167,7 +199,7 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
             json.dump(intr.to_json(), f, indent=2)
         for i, T in enumerate(poses):
             o, d = cameras.rays_to_world(pin_dirs, T)
-            radial, rgb, mask = _render_rays(scene, mesh_t, o, d, intr.width, intr.height,
+            radial, rgb, mask = _render_rays(raycast, mesh_t, o, d, intr.width, intr.height,
                                              cfg["engine"]["max_depth"])
             optical = cameras.radial_to_optical_z(radial, pin_dirs, intr.width, intr.height)
             _save_frame(vdir, i, rgb, optical, mask)

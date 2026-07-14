@@ -16,6 +16,7 @@ dependencies = [
     "pandas",
     "pyyaml",
     "open3d>=0.18",       # RaycastingScene rendering + recon metrics
+    "trimesh",            # robust mesh loading (Replica quad-face PLYs)
     "evo",                # ATE/RPE (Sim(3) alignment)
     "pynvml",             # GPU memory / util / power sampling
     "matplotlib",         # report plots
@@ -28,6 +29,9 @@ dependencies = [
 docs = [
     "mkdocs-material",
     "mkdocs",
+]
+preview = [
+    "gradio>=4.0",        # browser preview + download server (tools/preview.py)
 ]
 
 [build-system]
