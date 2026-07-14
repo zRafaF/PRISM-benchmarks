@@ -48,24 +48,33 @@ def _depth_to_rgb(depth: np.ndarray) -> np.ndarray:
     return rgb
 
 
+def _frame_names(run: str) -> list[str]:
+    if not run:
+        return []
+    return sorted(p.stem for p in (EXPORTS / run / "rgb").glob("*.png"))
+
+
 def preview_frame(run: str, idx: int):
     import imageio.v2 as imageio
     if not run:
         return None, None, None, "Pick a run."
     base = EXPORTS / run
-    names = sorted(p.stem for p in (base / "rgb").glob("*.png"))
+    names = _frame_names(run)
     if not names:
         return None, None, None, f"No frames in {run}"
-    i = max(0, min(idx, len(names) - 1))
+    i = int(max(0, min(idx, len(names) - 1)))     # clamp — never index out of range
     name = names[i]
     rgb = np.asarray(imageio.imread(base / "rgb" / f"{name}.png"))
     depth = np.load(base / "depth" / f"{name}.npy")
     mask_p = base / "mask" / f"{name}.png"
     mask = np.asarray(imageio.imread(mask_p)) if mask_p.exists() else np.zeros(depth.shape, np.uint8)
+    valid = depth[depth > 0]
     valid_pct = 100.0 * (depth > 0).mean()
-    info = (f"{run}  frame {i+1}/{len(names)} ({name})\n"
-            f"depth: {depth[depth>0].min():.2f}–{depth[depth>0].max():.2f} m, "
-            f"{valid_pct:.0f}% valid")
+    if valid.size:
+        drange = f"depth {valid.min():.2f}–{valid.max():.2f} m, {valid_pct:.0f}% valid"
+    else:
+        drange = "⚠ 0% valid — every ray missed the mesh (camera outside / wrong up-axis?)"
+    info = f"{run}\nframe {i+1}/{len(names)} ({name})\n{drange}"
     return rgb, _depth_to_rgb(depth), mask, info
 
 
@@ -93,14 +102,23 @@ def build_app():
             with gr.Row():
                 run = gr.Dropdown(choices=runs, label="Run (dataset/scene/traj/camera)",
                                   value=(runs[0] if runs else None))
-                idx = gr.Slider(0, 500, value=0, step=1, label="Frame index")
+                n0 = max(len(_frame_names(runs[0])) - 1, 0) if runs else 0
+                idx = gr.Slider(0, max(n0, 1), value=0, step=1, label="Frame index")
             info = gr.Textbox(label="Info", interactive=False)
             with gr.Row():
                 img_rgb = gr.Image(label="RGB", type="numpy")
                 img_depth = gr.Image(label="Depth (turbo)", type="numpy")
                 img_mask = gr.Image(label="Validity mask", type="numpy")
-            for ev in (run.change, idx.change):
-                ev(preview_frame, [run, idx], [img_rgb, img_depth, img_mask, info])
+
+            def on_run(r):
+                # fit the slider to the actual frame count, reset to 0, show frame 0
+                n = max(len(_frame_names(r)) - 1, 0)
+                rgb, dep, msk, txt = preview_frame(r, 0)
+                return gr.update(maximum=max(n, 1), value=0), rgb, dep, msk, txt
+
+            run.change(on_run, [run], [idx, img_rgb, img_depth, img_mask, info])
+            idx.change(preview_frame, [run, idx], [img_rgb, img_depth, img_mask, info])
+            demo.load(on_run, [run], [idx, img_rgb, img_depth, img_mask, info])
             gr.Button("Refresh runs").click(lambda: gr.update(choices=list_runs()), None, run)
         with gr.Tab("Download files"):
             gr.Markdown("Browse `dataset/exports` and `results`. File → direct download; "

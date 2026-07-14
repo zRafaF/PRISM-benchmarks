@@ -45,7 +45,10 @@ def _render_rays(scene, mesh_t, origins, directions, width, height, max_depth):
     prim = ans["primitive_ids"].numpy().reshape(height, width)
     uv = ans["primitive_uvs"].numpy().reshape(height, width, 2)
 
-    valid = np.isfinite(t_hit) & (t_hit <= max_depth)
+    # Validity = ray actually hit the mesh. We do NOT clip by max_depth here: the
+    # rendered frame is ground truth (full depth); max_depth is a fusion-stage knob
+    # each method applies itself. Clipping here blacked out everything past 4.5 m.
+    valid = np.isfinite(t_hit)
     radial = np.where(valid, t_hit, 0.0).astype(np.float32)
 
     # RGB from the hit triangle. Priority: (1) per-vertex colours (ScanNet/ScanNet++),
@@ -146,6 +149,14 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     import imageio.v2 as imageio
 
     mesh = _load_mesh_legacy(mesh_path)     # robust to quad/polygon PLYs (Replica)
+
+    # Normalise to a Z-up world. Replica/Habitat meshes are Y-up; our camera model,
+    # floor logic and PRISM engine all assume Z-up, so rotate Y-up -> Z-up here.
+    up_axis = cfg["datasets"][dataset].get("up_axis", "z")
+    if up_axis == "y":
+        R = o3d.geometry.get_rotation_matrix_from_axis_angle([np.pi / 2, 0, 0])  # Y->Z
+        mesh.rotate(R, center=(0, 0, 0))
+
     mesh.compute_vertex_normals()
     mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
 
@@ -154,6 +165,10 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     raycast = o3d.t.geometry.RaycastingScene()
     raycast.add_triangles(mesh_t)
 
+    # Floor height so the camera sits camera_height ABOVE the floor (not at abs Z).
+    aabb = mesh.get_axis_aligned_bounding_box()
+    floor_z = float(aabb.get_min_bound()[2])
+
     n = cfg["trajectories"]["n_frames"]
     ch = cfg["camera"]["camera_height_m"]
     if traj == "synthetic_spline":
@@ -161,7 +176,7 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
         wps = traj_mod.free_space_waypoints(mesh, n_waypoints=8,
                                             min_clearance_m=sp["min_clearance_m"],
                                             seed=cfg["datasets"]["seed"])
-        poses = traj_mod.synthetic_spline(wps, n, camera_height=ch)
+        poses = traj_mod.synthetic_spline(wps, n, camera_height=floor_z + ch)
     else:  # dataset_path — loaded by the dataset-specific downloader/importer
         src = _load_dataset_poses(cfg, dataset, scene)
         poses = traj_mod.resample_path(src, n)
