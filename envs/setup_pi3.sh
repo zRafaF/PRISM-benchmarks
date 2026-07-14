@@ -8,8 +8,8 @@ require_submodule Pi3
 ensure_uv
 cd "$REPO_ROOT/submodules/Pi3"
 
-echo "[pi3] creating isolated venv (Python 3.11)"
-uv venv --python 3.11 .venv
+echo "[pi3] isolated venv (Python 3.11)"
+[ -d .venv ] || uv venv --python 3.11 .venv     # reuse if it already exists (idempotent)
 
 # Pi3's real deps (torch==2.5.1, torchvision, numpy, opencv, plyfile, hf_hub, ...) live
 # in requirements.txt — its pyproject.toml is minimal. Install requirements FIRST, then

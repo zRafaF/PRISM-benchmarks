@@ -7,8 +7,8 @@ require_submodule map-anything
 ensure_uv
 cd "$REPO_ROOT/submodules/map-anything"
 
-echo "[mapanything] creating isolated venv (Python 3.11)"
-uv venv --python 3.11 .venv
+echo "[mapanything] isolated venv (Python 3.11)"
+[ -d .venv ] || uv venv --python 3.11 .venv     # reuse if it already exists (idempotent)
 if [ -f pyproject.toml ]; then
     uv pip install --python .venv -e .
 elif [ -f requirements.txt ]; then

@@ -9,8 +9,8 @@ require_submodule LASER
 ensure_uv
 cd "$REPO_ROOT/submodules/LASER"
 
-echo "[laser] creating isolated venv (Python 3.11)"
-uv venv --python 3.11 .venv
+echo "[laser] isolated venv (Python 3.11)"
+[ -d .venv ] || uv venv --python 3.11 .venv     # reuse if it already exists (idempotent)
 if [ -f environment.yml ]; then
     echo "[laser][note] repo ships a conda environment.yml — mirror its pins into the venv or use conda; see docs/decisions.md."
 fi

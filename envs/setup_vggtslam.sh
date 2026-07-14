@@ -12,8 +12,8 @@ cd "$REPO_ROOT/submodules/VGGT-SLAM"
 echo "[vggtslam] initialise the repo's own third-party submodules (vggt, salad, ...)"
 git submodule update --init --recursive || true
 
-echo "[vggtslam] creating isolated venv (Python 3.11)"
-uv venv --python 3.11 .venv
+echo "[vggtslam] isolated venv (Python 3.11)"
+[ -d .venv ] || uv venv --python 3.11 .venv     # reuse if it already exists (idempotent)
 
 # Follow the repo README's install (it typically ships an install.sh / requirements).
 if [ -f install.sh ]; then
