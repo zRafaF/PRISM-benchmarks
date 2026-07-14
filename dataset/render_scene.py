@@ -107,10 +107,17 @@ def _load_mesh_legacy(mesh_path: Path):
     """
     import open3d as o3d
     mesh = o3d.io.read_triangle_mesh(str(mesh_path), enable_post_processing=True)
-    if len(mesh.triangles) > 0:
+    nv, nt = len(mesh.vertices), len(mesh.triangles)
+    # Open3D can return a PARTIAL mesh on quad/polygon PLYs: it keeps the vertices
+    # but silently drops the faces it can't triangulate (e.g. Replica -> only 5116
+    # tris for ~1M verts). A real mesh has ~2 triangles per vertex, so treat a very
+    # low tri:vert ratio as a failed read and parse the PLY ourselves.
+    if nt >= max(1, 0.5 * nv):
         return mesh
-    print(f"[render] Open3D could not read {mesh_path.name} (quad faces) — parsing with plyfile")
-    return _load_mesh_plyfile(mesh_path)
+    if mesh_path.suffix.lower() == ".ply":
+        print(f"[render] Open3D read looks partial (verts={nv} tris={nt}) — parsing with plyfile")
+        return _load_mesh_plyfile(mesh_path)
+    return mesh
 
 
 def _load_mesh_plyfile(mesh_path: Path):
