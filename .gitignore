@@ -26,6 +26,9 @@ submodules/**/.venv/
 submodules/**/build/
 submodules/**/*.so
 
+# Per-machine config overlay (frozen scene list from `make split`)
+config.local.yaml
+
 # Docs build
 site/
 

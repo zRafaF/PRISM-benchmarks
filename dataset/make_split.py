@@ -47,11 +47,16 @@ def main():
     random.seed(cfg["datasets"]["seed"])
     chosen = sorted(random.sample(found, min(n, len(found))))
 
-    cfg_path = REPO_ROOT / args.config
-    raw = yaml.safe_load(cfg_path.read_text())
-    raw["datasets"][dataset]["scenes"] = chosen
-    cfg_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    # Write the frozen scene list to the gitignored overlay (config.local.yaml), NOT
+    # the tracked config.yaml — so `git pull` never clobbers it or conflicts.
+    from bench.config import LOCAL_CONFIG
+    overlay = {}
+    if LOCAL_CONFIG.exists():
+        overlay = yaml.safe_load(LOCAL_CONFIG.read_text()) or {}
+    overlay.setdefault("datasets", {}).setdefault(dataset, {})["scenes"] = chosen
+    LOCAL_CONFIG.write_text(yaml.safe_dump(overlay, sort_keys=False))
     print(f"[make_split] {dataset}: froze {len(chosen)} scene(s): {chosen}")
+    print(f"[make_split] -> {LOCAL_CONFIG.name} (gitignored; survives git pull)")
 
 
 if __name__ == "__main__":

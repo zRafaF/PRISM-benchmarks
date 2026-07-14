@@ -15,12 +15,33 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _deep_merge(base: dict, over: dict) -> dict:
+    for k, v in (over or {}).items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            base[k] = _deep_merge(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
+LOCAL_CONFIG = REPO_ROOT / "config.local.yaml"
+
+
 def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
+    """Load config.yaml, then merge a gitignored config.local.yaml on top if present.
+
+    The overlay holds per-machine, non-committed state (e.g. the frozen scene list
+    written by `make split`), so `git pull` never clobbers it or conflicts.
+    """
     p = Path(path)
     if not p.is_absolute():
         p = REPO_ROOT / p
     with open(p, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    if LOCAL_CONFIG.exists():
+        with open(LOCAL_CONFIG, "r", encoding="utf-8") as f:
+            cfg = _deep_merge(cfg, yaml.safe_load(f) or {})
+    return cfg
 
 
 def common_args(description: str) -> argparse.ArgumentParser:
