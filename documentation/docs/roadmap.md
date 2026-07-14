@@ -19,8 +19,15 @@
 - [ ] Proper occupancy/ESDF free-space sampler for synthetic trajectories.
 - [ ] Loop-closure comparison once PRISM grows a working panoramic loop closure.
 
-## Known seams to confirm post-clone
-Baseline runners import each method with the exact API marked by `<-- API line N`
-comments. These are best-effort against the pinned commits and must be verified once
-the repos are cloned (`make init`). PRISM's runner uses the verified public API and
-needs no confirmation.
+## Runner API status
+- **PRISM** — verified public API. ✅
+- **Pi3** — verified against the pinned commit's README (`Pi3.from_pretrained("yyfz233/Pi3")`,
+  `model(imgs[None])`, outputs `camera_poses`/`points`). ✅
+- **VGGT-SLAM, MapAnything, LASER** — runner seams still marked `<-- API line N`;
+  confirm against each repo after `make init` before running.
+
+## First comparison
+PRISM (pano) vs. Pi3 (pinhole) on Replica `office_4`. See **Preliminary results** for
+PRISM's numbers; run `make run-pi3` then re-eval to populate the baseline row. Recon is
+compared in the **masked** (co-visibility) table for fairness; PRISM additionally gets
+the full-360 credit.
