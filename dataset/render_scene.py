@@ -51,7 +51,7 @@ def _render_rays(scene, mesh_t, origins, directions, width, height, max_depth):
     # RGB from the hit triangle. Priority: (1) per-vertex colours (ScanNet/ScanNet++),
     # (2) texture-UV sampling (Replica and other textured meshes), (3) normal-shaded
     # grey fallback so geometry-only meshes still produce non-black frames.
-    tris = np.asarray(mesh_t.triangles.numpy())
+    tris = np.asarray(mesh_t.triangle["indices"].numpy())
     pflat = prim.reshape(-1)
     okf = valid.reshape(-1)
     safe = np.clip(pflat, 0, len(tris) - 1)
@@ -60,7 +60,9 @@ def _render_rays(scene, mesh_t, origins, directions, width, height, max_depth):
     w0 = 1.0 - w1 - w2
     rgb = np.zeros((height, width, 3), dtype=np.uint8)
 
-    vcol = np.asarray(mesh_t.vertex.colors.numpy()) if "colors" in mesh_t.vertex else None
+    vcol = np.asarray(mesh_t.vertex["colors"].numpy()) if "colors" in mesh_t.vertex else None
+    if vcol is not None and vcol.dtype == np.uint8:
+        vcol = vcol.astype(np.float64) / 255.0
     tex_uv = np.asarray(mesh_t.triangle["texture_uvs"].numpy()) if "texture_uvs" in mesh_t.triangle else None
 
     if vcol is not None:
