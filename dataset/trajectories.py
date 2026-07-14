@@ -86,13 +86,34 @@ def _catmull_rom(pts: np.ndarray, n: int) -> np.ndarray:
     return arr[idx]
 
 
-def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: int) -> np.ndarray:
-    """Sample n collision-free floor waypoints from a mesh's XY bounds.
+def _interior_score(scene, point, max_range=30.0, n_dirs=24):
+    """Fraction of rays cast from `point` that hit the mesh within max_range.
 
-    Cheap approach: rejection-sample XY inside the mesh bounding box at the floor
-    level, keep points whose nearest mesh surface is >= min_clearance. Replaced by
-    a proper occupancy/ESDF sampler if the naive version places points in walls.
-    (See docs/decisions.md D5 — open for refinement.)
+    An INTERIOR point (inside a room) hits geometry in essentially every
+    direction -> score ~1.0. An EXTERIOR point (open space beyond the walls) sees
+    the mesh only across a small solid angle -> low score. This distinguishes the
+    two cases that unsigned distance-to-surface CANNOT (both look "far from a wall").
+    """
+    import open3d as o3d
+    az = np.linspace(0, 2 * np.pi, n_dirs, endpoint=False)
+    dirs = [(np.cos(a), np.sin(a), 0.0) for a in az]
+    dirs += [(0, 0, 1), (0, 0, -1),
+             (0.7, 0, 0.7), (-0.7, 0, 0.7), (0, 0.7, 0.7), (0, -0.7, 0.7)]
+    dirs = np.array(dirs, dtype=np.float32)
+    origins = np.tile(np.asarray(point, np.float32), (len(dirs), 1))
+    rays = o3d.core.Tensor(np.concatenate([origins, dirs], axis=1))
+    t_hit = scene.cast_rays(rays)["t_hit"].numpy()
+    return float(np.mean(np.isfinite(t_hit) & (t_hit <= max_range)))
+
+
+def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: int,
+                         probe_z: float | None = None, debug: bool = True) -> np.ndarray:
+    """Sample n collision-free INTERIOR waypoints from a mesh's XY bounds.
+
+    Rejection-sample XY inside the AABB at `probe_z` (camera height); keep a point
+    only if it is (a) >= min_clearance from any surface AND (b) interior — most rays
+    cast from it hit the mesh (see `_interior_score`). The interior test is what
+    fixes the "camera outside the room -> tiny spec" render bug.
     """
     import open3d as o3d  # local import: renderer env only
 
@@ -100,18 +121,33 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
     aabb = mesh.get_axis_aligned_bounding_box()
     lo = aabb.get_min_bound()
     hi = aabb.get_max_bound()
+    z = probe_z if probe_z is not None else (lo[2] + hi[2]) / 2
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
 
-    kept = []
-    tries = 0
-    while len(kept) < n_waypoints and tries < n_waypoints * 200:
+    if debug:
+        print(f"[waypoints] AABB lo={np.round(lo,2)} hi={np.round(hi,2)} probe_z={z:.2f}")
+
+    kept, kept_scores, tries, shown = [], [], 0, 0
+    while len(kept) < n_waypoints and tries < n_waypoints * 400:
         tries += 1
         xy = rng.uniform(lo[:2], hi[:2])
-        probe = np.array([[xy[0], xy[1], (lo[2] + hi[2]) / 2]], dtype=np.float32)
-        dist = scene.compute_distance(o3d.core.Tensor(probe)).numpy()[0]
-        if dist >= min_clearance_m:
+        pt = np.array([xy[0], xy[1], z], dtype=np.float32)
+        dist = scene.compute_distance(o3d.core.Tensor(pt[None])).numpy()[0]
+        score = _interior_score(scene, pt)
+        if debug and shown < 12:
+            print(f"[waypoints] cand xy={np.round(xy,2)} clearance={dist:.2f} interior={score:.2f}"
+                  f" -> {'KEEP' if (dist >= min_clearance_m and score >= 0.8) else 'reject'}")
+            shown += 1
+        if dist >= min_clearance_m and score >= 0.8:
             kept.append(xy)
+            kept_scores.append(score)
+    if debug:
+        print(f"[waypoints] kept {len(kept)}/{n_waypoints} after {tries} tries "
+              f"(interior scores {np.round(kept_scores,2) if kept_scores else '[]'})")
     if len(kept) < 4:
-        raise RuntimeError("free-space sampling failed; loosen min_clearance or use dataset_path")
+        raise RuntimeError(
+            f"free-space sampling failed (kept {len(kept)} in {tries} tries). The mesh may "
+            f"not be Z-up, or probe_z={z:.2f} is outside the room. Check [mesh]/[waypoints] "
+            f"debug above.")
     return np.array(kept)

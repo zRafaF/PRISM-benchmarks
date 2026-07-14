@@ -149,10 +149,17 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     import imageio.v2 as imageio
 
     mesh = _load_mesh_legacy(mesh_path)     # robust to quad/polygon PLYs (Replica)
+    a0 = mesh.get_axis_aligned_bounding_box()
+    print(f"[mesh] {mesh_path}")
+    print(f"[mesh] verts={len(mesh.vertices)} tris={len(mesh.triangles)} "
+          f"has_vertex_colors={mesh.has_vertex_colors()}")
+    print(f"[mesh] pre-rotate AABB lo={np.round(a0.get_min_bound(),2)} "
+          f"hi={np.round(a0.get_max_bound(),2)}")
 
     # Normalise to a Z-up world. Replica/Habitat meshes are Y-up; our camera model,
     # floor logic and PRISM engine all assume Z-up, so rotate Y-up -> Z-up here.
     up_axis = cfg["datasets"][dataset].get("up_axis", "z")
+    print(f"[mesh] up_axis={up_axis} (rotate Y->Z: {up_axis == 'y'})")
     if up_axis == "y":
         R = o3d.geometry.get_rotation_matrix_from_axis_angle([np.pi / 2, 0, 0])  # Y->Z
         mesh.rotate(R, center=(0, 0, 0))
@@ -167,19 +174,32 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
 
     # Floor height so the camera sits camera_height ABOVE the floor (not at abs Z).
     aabb = mesh.get_axis_aligned_bounding_box()
-    floor_z = float(aabb.get_min_bound()[2])
-
+    lo, hi = aabb.get_min_bound(), aabb.get_max_bound()
+    floor_z = float(lo[2])
+    centroid = np.asarray(mesh.get_center())
     n = cfg["trajectories"]["n_frames"]
     ch = cfg["camera"]["camera_height_m"]
+    cam_z = floor_z + ch
+    print(f"[mesh] post-rotate AABB lo={np.round(lo,2)} hi={np.round(hi,2)}")
+    print(f"[mesh] centroid={np.round(centroid,2)} floor_z={floor_z:.2f} "
+          f"camera_height={ch} -> cam_z={cam_z:.2f}")
+    print(f"[mesh] room extent XYZ = {np.round(hi-lo,2)} m")
+
     if traj == "synthetic_spline":
         sp = cfg["trajectories"]["synthetic_spline"]
         wps = traj_mod.free_space_waypoints(mesh, n_waypoints=8,
                                             min_clearance_m=sp["min_clearance_m"],
-                                            seed=cfg["datasets"]["seed"])
-        poses = traj_mod.synthetic_spline(wps, n, camera_height=floor_z + ch)
+                                            seed=cfg["datasets"]["seed"],
+                                            probe_z=cam_z)
+        poses = traj_mod.synthetic_spline(wps, n, camera_height=cam_z)
     else:  # dataset_path — loaded by the dataset-specific downloader/importer
         src = _load_dataset_poses(cfg, dataset, scene)
         poses = traj_mod.resample_path(src, n)
+
+    cam_pos = poses[:, :3, 3]
+    print(f"[traj] {traj}: {len(poses)} poses  cam_pos "
+          f"min={np.round(cam_pos.min(0),2)} max={np.round(cam_pos.max(0),2)}")
+    print(f"[traj] first cam pos={np.round(cam_pos[0],2)} mid={np.round(cam_pos[len(cam_pos)//2],2)}")
 
     out_root = export_dir(dataset, scene, traj, "", "").parent
     out_root.mkdir(parents=True, exist_ok=True)
@@ -199,6 +219,12 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
         o, d = cameras.rays_to_world(pano_dirs, T)
         radial, rgb, mask = _render_rays(raycast, mesh_t, o, d, pw, ph, cfg["engine"]["max_depth"])
         _save_frame(pdir, i, rgb, radial, mask)
+        if i in (0, n // 2, n - 1):
+            valid = radial > 0
+            drng = (f"{radial[valid].min():.2f}-{radial[valid].max():.2f}m"
+                    if valid.any() else "NO HITS")
+            print(f"[pano] frame {i}: cam={np.round(T[:3,3],2)} "
+                  f"valid={100*valid.mean():.0f}% depth={drng}")
 
     # ── PINHOLE (both intrinsics variants) ──
     for vname, vcfg in cfg["camera"]["pinhole"]["variants"].items():
