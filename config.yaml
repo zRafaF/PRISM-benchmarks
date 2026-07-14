@@ -20,7 +20,7 @@ datasets:
   replica:                   # fastest zero-approval indoor meshes (NICE-SLAM/iMAP standard)
     kind: mesh_render        # render pano + pinhole from the scene mesh (textured)
     root: dataset/raw/replica
-    up_axis: y               # Replica/Habitat meshes are Y-up; renderer rotates to Z-up
+    up_axis: auto            # detect up as the shortest AABB extent (room height); rotate to Z-up
     scenes: []               # frozen by make_split; start with ONE room
     n_scenes_start: 1
     mesh_glob: "*/mesh.ply"

@@ -16,7 +16,8 @@ dependencies = [
     "pandas",
     "pyyaml",
     "open3d>=0.18",       # RaycastingScene rendering + recon metrics
-    "trimesh",            # robust mesh loading (Replica quad-face PLYs)
+    "trimesh",            # mesh utilities
+    "plyfile",            # robust PLY parsing (Replica quad-face meshes)
     "evo",                # ATE/RPE (Sim(3) alignment)
     "pynvml",             # GPU memory / util / power sampling
     "matplotlib",         # report plots

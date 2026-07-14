@@ -100,27 +100,55 @@ _TEXTURE_IMG: dict = {"img": None}
 def _load_mesh_legacy(mesh_path: Path):
     """Load into an Open3D legacy TriangleMesh, robust to quad/polygon PLYs.
 
-    Open3D's reader aborts on Replica's quad-face meshes ("A polygon in the mesh
-    could not be decomposed into triangles"). We fall back to trimesh, which
-    triangulates and carries per-vertex colours (sampling the texture to vertices
-    if the mesh is textured) across into the Open3D mesh.
+    Open3D's reader aborts on Replica's quad-face meshes, and trimesh mis-reads the
+    face list (yields only a few triangles). So when Open3D fails we parse the PLY
+    with `plyfile` and fan-triangulate the polygon faces ourselves — reliable and
+    keeps per-vertex colours.
     """
     import open3d as o3d
     mesh = o3d.io.read_triangle_mesh(str(mesh_path), enable_post_processing=True)
     if len(mesh.triangles) > 0:
         return mesh
-    print(f"[render] Open3D could not read {mesh_path.name} (quad faces?) — using trimesh")
-    import trimesh
-    tm = trimesh.load(str(mesh_path), process=False, force="mesh")
+    print(f"[render] Open3D could not read {mesh_path.name} (quad faces) — parsing with plyfile")
+    return _load_mesh_plyfile(mesh_path)
+
+
+def _load_mesh_plyfile(mesh_path: Path):
+    """Parse a PLY (incl. quad/polygon faces + per-vertex colour) via plyfile."""
+    import open3d as o3d
+    from plyfile import PlyData
+
+    ply = PlyData.read(str(mesh_path))
+    v = ply["vertex"]
+    verts = np.column_stack([v["x"], v["y"], v["z"]]).astype(np.float64)
+    names = v.data.dtype.names
+    colors = None
+    if all(c in names for c in ("red", "green", "blue")):
+        colors = np.column_stack([v["red"], v["green"], v["blue"]]).astype(np.float64) / 255.0
+
+    face_el = ply["face"]
+    prop = next(p.name for p in face_el.properties)      # 'vertex_indices' / 'vertex_index'
+    polys = face_el.data[prop]                           # object array of index lists
+    lengths = np.fromiter((len(p) for p in polys), dtype=np.int64, count=len(polys))
+
+    if lengths.min() == lengths.max() and lengths[0] in (3, 4):
+        P = np.vstack([np.asarray(p, np.int64) for p in polys])   # (F, k) — vectorised
+        tris = P if lengths[0] == 3 else np.concatenate([P[:, [0, 1, 2]], P[:, [0, 2, 3]]], 0)
+    else:                                                # mixed polygons -> fan triangulate
+        acc = []
+        for p in polys:
+            p = np.asarray(p, np.int64)
+            for k in range(1, len(p) - 1):
+                acc.append((p[0], p[k], p[k + 1]))
+        tris = np.asarray(acc, dtype=np.int64)
+
     m = o3d.geometry.TriangleMesh()
-    m.vertices = o3d.utility.Vector3dVector(np.asarray(tm.vertices, dtype=np.float64))
-    m.triangles = o3d.utility.Vector3iVector(np.asarray(tm.faces, dtype=np.int32))
-    try:
-        vc = np.asarray(tm.visual.vertex_colors)   # (N,4) uint8; textures->vertex sampled
-        if vc.ndim == 2 and len(vc) == len(tm.vertices):
-            m.vertex_colors = o3d.utility.Vector3dVector(vc[:, :3] / 255.0)
-    except Exception as e:
-        print(f"[render] trimesh vertex colours unavailable ({e}); geometry only")
+    m.vertices = o3d.utility.Vector3dVector(verts)
+    m.triangles = o3d.utility.Vector3iVector(tris.astype(np.int32))
+    if colors is not None:
+        m.vertex_colors = o3d.utility.Vector3dVector(colors)
+    print(f"[render] plyfile: {len(verts)} verts, {len(tris)} tris "
+          f"(faces {lengths.min()}-{lengths.max()}-gon), colours={colors is not None}")
     return m
 
 
@@ -156,13 +184,20 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     print(f"[mesh] pre-rotate AABB lo={np.round(a0.get_min_bound(),2)} "
           f"hi={np.round(a0.get_max_bound(),2)}")
 
-    # Normalise to a Z-up world. Replica/Habitat meshes are Y-up; our camera model,
-    # floor logic and PRISM engine all assume Z-up, so rotate Y-up -> Z-up here.
-    up_axis = cfg["datasets"][dataset].get("up_axis", "z")
-    print(f"[mesh] up_axis={up_axis} (rotate Y->Z: {up_axis == 'y'})")
-    if up_axis == "y":
-        R = o3d.geometry.get_rotation_matrix_from_axis_angle([np.pi / 2, 0, 0])  # Y->Z
-        mesh.rotate(R, center=(0, 0, 0))
+    # Normalise to a Z-up world (our camera model, floor logic and PRISM engine all
+    # assume Z-up). up_axis="auto" picks the shortest AABB extent as the up axis
+    # (room height < footprint) — robust across datasets and per-scene frames.
+    up_axis = cfg["datasets"][dataset].get("up_axis", "auto")
+    ext = np.asarray(a0.get_extent())
+    if up_axis == "auto":
+        up_axis = "xyz"[int(np.argmin(ext))]
+        print(f"[mesh] auto up_axis -> '{up_axis}' (extents X/Y/Z = {np.round(ext,2)})")
+    if up_axis == "y":       # Y -> Z  (rotate +90° about X)
+        mesh.rotate(o3d.geometry.get_rotation_matrix_from_axis_angle([np.pi / 2, 0, 0]), (0, 0, 0))
+    elif up_axis == "x":     # X -> Z  (rotate -90° about Y)
+        mesh.rotate(o3d.geometry.get_rotation_matrix_from_axis_angle([0, -np.pi / 2, 0]), (0, 0, 0))
+    else:
+        print("[mesh] up_axis=z — no rotation needed")
 
     mesh.compute_vertex_normals()
     mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
