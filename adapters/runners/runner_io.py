@@ -48,29 +48,76 @@ def load_sequence(in_dir: Path):
             "meta": meta, "intrinsics": intr}
 
 
+def _mat_to_quat(m: np.ndarray):
+    """Rotation matrix -> (qx, qy, qz, qw). numpy-only (no scipy — method envs lack it)."""
+    tr = m[0, 0] + m[1, 1] + m[2, 2]
+    if tr > 0:
+        s = np.sqrt(tr + 1.0) * 2
+        w = 0.25 * s
+        x = (m[2, 1] - m[1, 2]) / s
+        y = (m[0, 2] - m[2, 0]) / s
+        z = (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = np.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2
+        w = (m[2, 1] - m[1, 2]) / s
+        x = 0.25 * s
+        y = (m[0, 1] + m[1, 0]) / s
+        z = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = np.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2
+        w = (m[0, 2] - m[2, 0]) / s
+        x = (m[0, 1] + m[1, 0]) / s
+        y = 0.25 * s
+        z = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2
+        w = (m[1, 0] - m[0, 1]) / s
+        x = (m[0, 2] + m[2, 0]) / s
+        y = (m[1, 2] + m[2, 1]) / s
+        z = 0.25 * s
+    return x, y, z, w
+
+
 def write_tum(path: Path, timestamps, poses):
     """poses: (N,4,4) camera-to-world. TUM: ts tx ty tz qx qy qz qw."""
-    from scipy.spatial.transform import Rotation
     lines = []
     for ts, T in zip(timestamps, poses):
-        T = np.asarray(T)
+        T = np.asarray(T, dtype=np.float64)
         t = T[:3, 3]
-        q = Rotation.from_matrix(T[:3, :3]).as_quat()
+        qx, qy, qz, qw = _mat_to_quat(T[:3, :3])
         lines.append(f"{ts} {t[0]:.6f} {t[1]:.6f} {t[2]:.6f} "
-                     f"{q[0]:.6f} {q[1]:.6f} {q[2]:.6f} {q[3]:.6f}")
+                     f"{qx:.6f} {qy:.6f} {qz:.6f} {qw:.6f}")
     Path(path).write_text("\n".join(lines) + "\n")
 
 
 def write_cloud(path: Path, points: np.ndarray, colors: np.ndarray | None = None):
-    import open3d as o3d
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(np.asarray(points, dtype=np.float64))
-    if colors is not None:
+    """Binary-little-endian PLY writer (numpy-only; open3d reads it fine in eval)."""
+    pts = np.asarray(points, dtype=np.float32)
+    n = len(pts)
+    has_c = colors is not None and len(colors) == n and n > 0
+    header = ["ply", "format binary_little_endian 1.0", f"element vertex {n}",
+              "property float x", "property float y", "property float z"]
+    if has_c:
+        header += ["property uchar red", "property uchar green", "property uchar blue"]
+    header.append("end_header")
+    if has_c:
         c = np.asarray(colors, dtype=np.float64)
-        if c.size and c.max() > 1.0:
-            c = c / 255.0
-        pcd.colors = o3d.utility.Vector3dVector(c)
-    o3d.io.write_point_cloud(str(path), pcd)
+        if c.size and c.max() <= 1.0:
+            c = c * 255.0
+        c = np.clip(c, 0, 255).astype(np.uint8)
+        dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+                       ("r", "u1"), ("g", "u1"), ("b", "u1")])
+        arr = np.empty(n, dt)
+        arr["x"], arr["y"], arr["z"] = pts[:, 0], pts[:, 1], pts[:, 2]
+        arr["r"], arr["g"], arr["b"] = c[:, 0], c[:, 1], c[:, 2]
+    else:
+        dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4")])
+        arr = np.empty(n, dt)
+        if n:
+            arr["x"], arr["y"], arr["z"] = pts[:, 0], pts[:, 1], pts[:, 2]
+    with open(path, "wb") as f:
+        f.write(("\n".join(header) + "\n").encode())
+        f.write(arr.tobytes())
 
 
 def write_runner_perf(out_dir: Path, per_window_latency_s=None, latency_end_to_end_s=0.0,

@@ -81,16 +81,17 @@ def chain_windows_sim3(win_results, seq, overlap: int):
 
 
 def fuse_pointmaps(points_world, colors, voxel_size: float):
-    """Concatenate + voxel-downsample per-frame world pointmaps into one cloud."""
-    import open3d as o3d
+    """Concatenate per-frame world pointmaps + voxel-downsample. numpy-only (no open3d):
+    hash each point to a voxel cell and keep one point per cell."""
     if not points_world:
         return np.zeros((0, 3)), None
     pts = np.concatenate([p for p in points_world if p is not None], axis=0)
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(pts)
-    if colors:
-        cols = np.concatenate([c for c in colors if c is not None], axis=0) / 255.0
-        pcd.colors = o3d.utility.Vector3dVector(cols)
-    pcd = pcd.voxel_down_sample(voxel_size)
-    cols_out = np.asarray(pcd.colors) if pcd.has_colors() else None
-    return np.asarray(pcd.points), cols_out
+    cols = None
+    if colors and any(c is not None for c in colors):
+        cols = np.concatenate([c for c in colors if c is not None], axis=0)
+    keys = np.floor(pts / voxel_size).astype(np.int64)
+    h = (keys[:, 0] * 73856093) ^ (keys[:, 1] * 19349663) ^ (keys[:, 2] * 83492791)
+    _, idx = np.unique(h, return_index=True)   # one point per occupied voxel
+    pts = pts[idx]
+    cols = cols[idx] if cols is not None else None
+    return pts, cols
