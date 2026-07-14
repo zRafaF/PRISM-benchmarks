@@ -115,6 +115,26 @@ def ground_hit_z(scene, x: float, y: float, z_top: float):
     return None if not np.isfinite(t) else float(z_top - t)
 
 
+def clean_floor_patch(scene, x: float, y: float, z_top: float, floor_z: float,
+                      radius: float = 0.4, n_ring: int = 12, tol: float = 0.06):
+    """Probe a CYLINDER of downward rays (centre + a ring of radius `radius`).
+
+    Returns (frac_on_floor, median_ground_z). A clean, flat floor patch — needed for
+    PRISM's RANSAC floor fit — has ~all rays hitting near floor_z at a consistent
+    height. A single ray can land on a sofa or a stray vertex; the disk is robust.
+    """
+    import open3d as o3d
+    pts = [(x, y)]
+    for a in np.linspace(0, 2 * np.pi, n_ring, endpoint=False):
+        pts.append((x + radius * np.cos(a), y + radius * np.sin(a)))
+    rays = np.array([[px, py, z_top, 0.0, 0.0, -1.0] for px, py in pts], dtype=np.float32)
+    t = scene.cast_rays(o3d.core.Tensor(rays))["t_hit"].numpy()
+    ground = z_top - t
+    ok = np.isfinite(t) & (np.abs(ground - floor_z) <= tol)
+    med = float(np.median(ground[ok])) if ok.any() else None
+    return float(ok.mean()), med
+
+
 def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: int,
                          probe_z: float | None = None, floor_z: float | None = None,
                          ground_tol_m: float = 0.12, debug: bool = True) -> np.ndarray:
@@ -141,30 +161,30 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
         print(f"[waypoints] AABB lo={np.round(lo,2)} hi={np.round(hi,2)} "
               f"probe_z={z:.2f} floor_z={fz:.2f} ground_tol={ground_tol_m}")
 
-    kept, kept_scores, tries, shown = [], [], 0, 0
+    kept, tries, shown = [], 0, 0
     while len(kept) < n_waypoints and tries < n_waypoints * 800:
         tries += 1
         xy = rng.uniform(lo[:2], hi[:2])
         pt = np.array([xy[0], xy[1], z], dtype=np.float32)
         dist = scene.compute_distance(o3d.core.Tensor(pt[None])).numpy()[0]
         score = _interior_score(scene, pt)
-        gz = ground_hit_z(scene, xy[0], xy[1], z)
-        over_floor = gz is not None and abs(gz - fz) <= ground_tol_m
-        ok = dist >= min_clearance_m and score >= 0.8 and over_floor
+        floor_frac, gz = clean_floor_patch(scene, xy[0], xy[1], z, fz, tol=ground_tol_m)
+        clean_floor = floor_frac >= 0.85            # nearly the whole disk is bare floor
+        ok = dist >= min_clearance_m and score >= 0.8 and clean_floor
         if debug and shown < 14:
             gzs = f"{gz:.2f}" if gz is not None else "none"
             print(f"[waypoints] cand xy={np.round(xy,2)} clearance={dist:.2f} "
-                  f"interior={score:.2f} ground_z={gzs} over_floor={over_floor} "
+                  f"interior={score:.2f} floor_frac={floor_frac:.2f} ground_z={gzs} "
                   f"-> {'KEEP' if ok else 'reject'}")
             shown += 1
         if ok:
-            kept.append(xy)
-            kept_scores.append(score)
+            kept.append((xy, floor_frac))
     if debug:
         print(f"[waypoints] kept {len(kept)}/{n_waypoints} after {tries} tries")
     if len(kept) < 4:
         raise RuntimeError(
             f"free-space-over-floor sampling failed (kept {len(kept)} in {tries} tries). "
             f"Loosen ground_tol_m/min_clearance, or check the [mesh] floor_z. Debug above.")
-    # Put the flattest-ground point first so PRISM locks scale over bare floor.
-    return np.array(kept)
+    # Put the cleanest-floor point FIRST so PRISM locks metric scale over bare floor.
+    kept.sort(key=lambda kf: -kf[1])
+    return np.array([xy for xy, _ in kept])

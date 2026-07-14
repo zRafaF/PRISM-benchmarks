@@ -59,31 +59,74 @@ def list_clouds() -> list[str]:
     return sorted(items)
 
 
-def show_cloud(label: str, max_points: int):
+def _subsample(pts, cols, max_points, seed=0):
+    if len(pts) > max_points:
+        idx = np.random.default_rng(seed).choice(len(pts), max_points, replace=False)
+        return pts[idx], (cols[idx] if cols is not None else None)
+    return pts, cols
+
+
+def _align_pred_for_overlay(rel: str, pred_pts):
+    """Register a pred cloud into the GT frame (Sim(3)+ICP, same as eval) so it can
+    be overlaid on the original scene. Returns (aligned_pred, gt_pts, gt_cols) or None."""
+    import open3d as o3d
+    from eval.eval_recon import _align_pred_to_gt, _icp_refine
+    parts = Path(rel).parts                      # method/ds/scene/traj/variant/cloud.ply
+    ds, scene, traj = parts[1], parts[2], parts[3]
+    gt_dir = EXPORTS / ds / scene / traj
+    pred_tum = (RESULTS / rel).parent / "poses.tum"
+    gt_tum = gt_dir / "poses_gt.tum"
+    gt_mesh = gt_dir / "gt_mesh.ply"
+    if not (pred_tum.exists() and gt_tum.exists() and gt_mesh.exists()):
+        return None
+    aligned, _ = _align_pred_to_gt(pred_pts, pred_tum, gt_tum, True)
+    gt = o3d.io.read_point_cloud(str(gt_mesh))
+    gt_pts = np.asarray(gt.points)
+    aligned = _icp_refine(aligned, gt_pts, 0.15)
+    gt_cols = np.asarray(gt.colors) if gt.has_colors() else None
+    return aligned, gt_pts, gt_cols
+
+
+def show_cloud(label: str, max_points: int, overlay_gt: bool = False):
     """Interactive Plotly 3D scatter of a cloud (RGB if present, else height-coloured).
-    Runs headless — no GL/display needed, unlike an Open3D window."""
+    With overlay_gt, a pred cloud is aligned to the GT scene and both are shown."""
     import open3d as o3d
     import plotly.graph_objects as go
     if not label:
         return go.Figure()
-    path = (RESULTS / label[6:].strip()) if label.startswith("pred:") else (EXPORTS / label[6:].strip())
+    rel = label[6:].strip()
+    path = (RESULTS / rel) if label.startswith("pred:") else (EXPORTS / rel)
     pcd = o3d.io.read_point_cloud(str(path))
     pts = np.asarray(pcd.points)
     if len(pts) == 0:
         return go.Figure(layout={"title": f"empty: {path.name}"})
     cols = np.asarray(pcd.colors) if pcd.has_colors() else None
-    if len(pts) > max_points:
-        idx = np.random.default_rng(0).choice(len(pts), max_points, replace=False)
-        pts = pts[idx]
-        cols = cols[idx] if cols is not None else None
-    if cols is not None:
-        color = ["rgb(%d,%d,%d)" % (r * 255, g * 255, b * 255) for r, g, b in cols]
-        marker = dict(size=1.4, color=color)
+
+    traces = []
+    title = f"{path.name}: {len(pts):,} pts"
+    if overlay_gt and label.startswith("pred:"):
+        try:
+            res = _align_pred_for_overlay(rel, pts)
+        except Exception as e:
+            res = None
+            title += f"  (overlay failed: {e})"
+        if res is not None:
+            pts, gt_pts, gt_cols = res
+            gpts, _ = _subsample(gt_pts, None, max_points, seed=1)
+            traces.append(go.Scatter3d(x=gpts[:, 0], y=gpts[:, 1], z=gpts[:, 2], mode="markers",
+                                       name="GT scene", marker=dict(size=1.0, color="lightgray")))
+            title += " + GT (aligned)"
+
+    spts, scols = _subsample(pts, cols, max_points)
+    if scols is not None:
+        marker = dict(size=1.4, color=["rgb(%d,%d,%d)" % (r * 255, g * 255, b * 255) for r, g, b in scols])
     else:
-        marker = dict(size=1.4, color=pts[:, 2], colorscale="Viridis")
-    fig = go.Figure(go.Scatter3d(x=pts[:, 0], y=pts[:, 1], z=pts[:, 2], mode="markers", marker=marker))
+        marker = dict(size=1.4, color=spts[:, 2], colorscale="Viridis")
+    traces.append(go.Scatter3d(x=spts[:, 0], y=spts[:, 1], z=spts[:, 2], mode="markers",
+                               name="reconstruction", marker=marker))
+    fig = go.Figure(traces)
     fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0, r=0, t=30, b=0),
-                      title=f"{path.name}: {len(pts):,} pts (of {len(np.asarray(pcd.points)):,})")
+                      title=title, showlegend=True)
     return fig
 
 
@@ -168,11 +211,12 @@ def build_app():
                 cloud_dd = gr.Dropdown(choices=clouds, label="Cloud",
                                        value=(clouds[0] if clouds else None))
                 maxp = gr.Slider(5000, 300000, value=80000, step=5000, label="Max points")
+                overlay = gr.Checkbox(value=False, label="Overlay GT scene (aligned)")
             plot = gr.Plot(label="3D view (drag to orbit)")
-            for ev in (cloud_dd.change, maxp.change):
-                ev(show_cloud, [cloud_dd, maxp], plot)
+            for ev in (cloud_dd.change, maxp.change, overlay.change):
+                ev(show_cloud, [cloud_dd, maxp, overlay], plot)
             gr.Button("Refresh clouds").click(lambda: gr.update(choices=list_clouds()), None, cloud_dd)
-            demo.load(show_cloud, [cloud_dd, maxp], plot)
+            demo.load(show_cloud, [cloud_dd, maxp, overlay], plot)
 
         with gr.Tab("Download files"):
             gr.Markdown("Browse `dataset/exports` and `results`. File → direct download; "

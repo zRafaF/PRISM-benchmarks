@@ -75,7 +75,9 @@ def run_method(name: str):
                     # weights / third-party paths relative to their own root. All args
                     # we pass (--in/--out/--config) are absolute, so this is safe.
                     cwd = str((REPO_ROOT / mcfg["env"]).resolve())
-                    with open(rp.run_log, "w") as log, ResourceSampler(device_index, pid=None) as smp:
+                    hint = cfg.get("hardware", {}).get("hw_id")
+                    with open(rp.run_log, "w") as log, \
+                            ResourceSampler(device_index, pid=None, gpu_name_hint=hint) as smp:
                         proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=cwd)
                     # frame count from the input meta
                     import json

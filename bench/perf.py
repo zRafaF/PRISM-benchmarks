@@ -30,6 +30,8 @@ class PerfResult:
     gpu_power_avg_w: float = 0.0
     cpu_ram_peak_gb: float = 0.0
     ckpt_size_mb: float = 0.0
+    gpu_name: str = ""
+    gpu_total_gb: float = 0.0
     extra: dict = field(default_factory=dict)   # e.g. TSDF block count for ours
 
     def write(self, path: Path):
@@ -40,23 +42,42 @@ class PerfResult:
 class ResourceSampler:
     """Background sampler for GPU (pynvml) + process RSS. Use as a context manager."""
 
-    def __init__(self, device_index: int = 0, interval_s: float = 0.1, pid: int | None = None):
+    def __init__(self, device_index: int = 0, interval_s: float = 0.1, pid: int | None = None,
+                 gpu_name_hint: str | None = None):
         self.device_index = device_index
         self.interval_s = interval_s
         self.pid = pid
+        self.gpu_name_hint = gpu_name_hint
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.vram_samples_gb: list[float] = []
         self.util_samples: list[float] = []
         self.power_samples_w: list[float] = []
         self.rss_samples_gb: list[float] = []
+        self.gpu_name: str = ""
+        self.gpu_total_gb: float = 0.0
         self._t0 = 0.0
 
     def _run(self):
         try:
             import pynvml
             pynvml.nvmlInit()
-            h = pynvml.nvmlDeviceGetHandleByIndex(self.device_index)
+            # Pick the device whose name matches the hint (e.g. "RTX PRO 6000") so the
+            # numbers are for the intended card, not whatever is device 0 on a multi-GPU box.
+            idx = self.device_index
+            count = pynvml.nvmlDeviceGetCount()
+            if self.gpu_name_hint:
+                hint = self.gpu_name_hint.lower().replace(" ", "")
+                for i in range(count):
+                    nm = pynvml.nvmlDeviceGetName(pynvml.nvmlDeviceGetHandleByIndex(i))
+                    nm = nm.decode() if isinstance(nm, bytes) else nm
+                    if hint in nm.lower().replace(" ", ""):
+                        idx = i
+                        break
+            h = pynvml.nvmlDeviceGetHandleByIndex(idx)
+            nm = pynvml.nvmlDeviceGetName(h)
+            self.gpu_name = nm.decode() if isinstance(nm, bytes) else nm
+            self.gpu_total_gb = pynvml.nvmlDeviceGetMemoryInfo(h).total / 1e9
         except Exception:
             h = None
         import os
@@ -109,6 +130,8 @@ class ResourceSampler:
             result.gpu_power_avg_w = st.mean(self.power_samples_w)
         if self.rss_samples_gb:
             result.cpu_ram_peak_gb = max(self.rss_samples_gb)
+        result.gpu_name = self.gpu_name
+        result.gpu_total_gb = round(self.gpu_total_gb, 1)
         if result.n_frames and result.wall_s > 0:
             result.eff_fps = result.n_frames / result.wall_s
         return result

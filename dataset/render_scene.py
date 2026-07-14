@@ -217,14 +217,17 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     # Floor height so the camera sits camera_height ABOVE the floor (not at abs Z).
     aabb = mesh.get_axis_aligned_bounding_box()
     lo, hi = aabb.get_min_bound(), aabb.get_max_bound()
-    floor_z = float(lo[2])
+    # Robust floor height: 1st-percentile vertex Z, not the raw AABB min (a single
+    # stray low vertex would otherwise drop floor_z and throw off camera height/scale).
+    vz = np.asarray(mesh.vertices)[:, 2]
+    floor_z = float(np.percentile(vz, 1.0))
     centroid = np.asarray(mesh.get_center())
     n = cfg["trajectories"]["n_frames"]
     ch = cfg["camera"]["camera_height_m"]
     cam_z = floor_z + ch
     print(f"[mesh] post-rotate AABB lo={np.round(lo,2)} hi={np.round(hi,2)}")
-    print(f"[mesh] centroid={np.round(centroid,2)} floor_z={floor_z:.2f} "
-          f"camera_height={ch} -> cam_z={cam_z:.2f}")
+    print(f"[mesh] centroid={np.round(centroid,2)} floor_z(p1)={floor_z:.2f} "
+          f"(raw min {lo[2]:.2f}) camera_height={ch} -> cam_z={cam_z:.2f}")
     print(f"[mesh] room extent XYZ = {np.round(hi-lo,2)} m")
 
     if traj == "synthetic_spline":
@@ -251,9 +254,11 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     # down to the floor. This is what PRISM's floor-RANSAC should recover, so we
     # feed it as camera_height (fixes the "started over a sofa -> wrong scale" bug).
     p0 = poses[0][:3, 3]
-    gz = traj_mod.ground_hit_z(raycast, float(p0[0]), float(p0[1]), float(p0[2]))
+    floor_frac, gz = traj_mod.clean_floor_patch(raycast, float(p0[0]), float(p0[1]),
+                                                float(p0[2]), floor_z)
     measured_h = float(p0[2] - gz) if gz is not None else float(ch)
-    print(f"[traj] first-pose down-ray floor_z={gz if gz is None else round(gz,2)} "
+    print(f"[traj] first-pose cylinder floor: frac_on_floor={floor_frac:.2f} "
+          f"ground_z={gz if gz is None else round(gz,2)} "
           f"-> measured camera_height={measured_h:.3f} m (fed to PRISM)")
     (out_root / "measured_camera_height.json").write_text(
         json.dumps({"camera_height_m": measured_h}, indent=2))

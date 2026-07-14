@@ -18,7 +18,8 @@ from bench.config import REPO_ROOT, load_config
 COLUMNS = ["method", "dataset", "scene", "traj", "variant", "n_frames",
            "eff_fps", "latency_end_to_end_s", "per_window_latency_med_s",
            "vram_avg_gb", "vram_peak_gb", "gpu_util_avg_pct", "gpu_power_avg_w",
-           "cpu_ram_peak_gb", "ckpt_size_mb", "tsdf_block_count", "hw_id"]
+           "cpu_ram_peak_gb", "ckpt_size_mb", "tsdf_block_count",
+           "gpu_name", "gpu_total_gb", "hw_id"]
 
 
 def main():
@@ -48,6 +49,8 @@ def main():
             "cpu_ram_peak_gb": round(d.get("cpu_ram_peak_gb", 0), 3),
             "ckpt_size_mb": round(d.get("ckpt_size_mb", 0), 1),
             "tsdf_block_count": (d.get("extra") or {}).get("tsdf_block_count", ""),
+            "gpu_name": d.get("gpu_name", ""),
+            "gpu_total_gb": d.get("gpu_total_gb", ""),
             "hw_id": hw,
         })
     out = REPO_ROOT / "results" / "report"
