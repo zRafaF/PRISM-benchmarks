@@ -15,9 +15,11 @@ echo "[pi3] isolated venv (Python 3.11)"
 # in requirements.txt — its pyproject.toml is minimal. Install requirements FIRST, then
 # the pi3 package itself without re-resolving deps.
 if [ -f requirements.txt ]; then
-    echo "[pi3] installing requirements.txt (torch etc.)"
+    echo "[pi3] installing requirements.txt"
     uv pip install --python .venv -r requirements.txt
 fi
+# Pi3 pins torch==2.5.1 (no Blackwell sm_120 kernels) -> override with cu128 build.
+install_torch_cu128 .venv
 if [ -f pyproject.toml ]; then
     uv pip install --python .venv -e . --no-deps
 fi

@@ -22,3 +22,13 @@ ensure_uv () {
         export PATH="$HOME/.local/bin:$PATH"
     fi
 }
+
+# Override a venv's torch with the CUDA 12.8 build. Baselines that pin an older torch
+# (e.g. 2.5.1) ship no kernels for Blackwell (sm_120) -> "no kernel image available".
+# Installing the cu128 wheels (torch 2.8) fixes it, matching PRISM's stack.
+# Usage: install_torch_cu128 .venv
+install_torch_cu128 () {
+    local venv="$1"
+    echo "[*] installing CUDA 12.8 torch/torchvision (Blackwell sm_120 support)"
+    uv pip install --python "$venv" --index-url https://download.pytorch.org/whl/cu128 torch torchvision
+}
