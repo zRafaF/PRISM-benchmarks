@@ -25,7 +25,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench import cameras
-from bench.config import common_args, export_dir, load_config, resolve_scenes, resolve_trajs
+from bench.config import REPO_ROOT, common_args, export_dir, load_config, resolve_scenes, resolve_trajs
 import trajectories as traj_mod
 
 
@@ -243,7 +243,8 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
           f"min={np.round(cam_pos.min(0),2)} max={np.round(cam_pos.max(0),2)}")
     print(f"[traj] first cam pos={np.round(cam_pos[0],2)} mid={np.round(cam_pos[len(cam_pos)//2],2)}")
 
-    out_root = export_dir(dataset, scene, traj, "", "").parent
+    # GT lives in the trajectory dir (eval reads .../<dataset>/<scene>/<traj>/).
+    out_root = REPO_ROOT / "dataset" / "exports" / dataset / scene / traj
     out_root.mkdir(parents=True, exist_ok=True)
 
     # GT poses (TUM) + GT mesh copy
