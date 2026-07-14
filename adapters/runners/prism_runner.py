@@ -46,7 +46,11 @@ def main():
     if not ckpt.exists():
         url = os.environ.get("PANOVGGT_WEIGHTS_URL")
         download_weights(str(ckpt), url=url) if url else download_weights(str(ckpt))
-    perception = PanoVGGTBackend(weights_path=str(ckpt))
+    # PanoVGGTBackend's default config_path is relative; pass it absolute so the
+    # backend loads regardless of the process working directory.
+    prism_dir = repo_root / "submodules" / "PRISM-VGGT"
+    config_path = prism_dir / "third_party" / "PanoVGGT" / "training" / "config" / "default.yaml"
+    perception = PanoVGGTBackend(config_path=str(config_path), weights_path=str(ckpt))
     engine = StreamingWindowEngine(
         perception,
         voxel_size=eng["voxel_size"],

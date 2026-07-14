@@ -71,8 +71,12 @@ def run_method(name: str):
                            "--config", str(REPO_ROOT / args.config)]
                     print(f"[{name}] {dataset}/{scene}/{traj}/{variant or mcfg['camera']}")
                     result = PerfResult(method=name)
+                    # Run in the METHOD's own repo dir: these repos resolve config /
+                    # weights / third-party paths relative to their own root. All args
+                    # we pass (--in/--out/--config) are absolute, so this is safe.
+                    cwd = str((REPO_ROOT / mcfg["env"]).resolve())
                     with open(rp.run_log, "w") as log, ResourceSampler(device_index, pid=None) as smp:
-                        proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
+                        proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=cwd)
                     # frame count from the input meta
                     import json
                     meta = json.loads((in_dir / "meta.json").read_text())
