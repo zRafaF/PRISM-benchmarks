@@ -18,7 +18,7 @@ import numpy as np
 import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
-import _io
+import runner_io as _io
 from _stream import sliding_windows, chain_windows_sim3, fuse_pointmaps
 
 

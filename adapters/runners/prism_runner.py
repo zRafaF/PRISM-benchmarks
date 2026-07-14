@@ -20,7 +20,7 @@ import numpy as np
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-import _io
+import runner_io as _io
 
 
 def main():
