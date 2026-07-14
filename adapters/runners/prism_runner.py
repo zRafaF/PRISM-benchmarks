@@ -37,9 +37,15 @@ def main():
 
     from prism_vggt import PanoVGGTBackend, StreamingWindowEngine, FrameInput, download_weights
 
-    ckpt = Path("checkpoints/model.pt")
+    # Weights live in the PRISM submodule (placed by setup_prism.sh); the runner runs
+    # from the repo root, so resolve an absolute path. URL is overridable via env.
+    import os
+    repo_root = Path(__file__).resolve().parents[2]
+    default_ckpt = repo_root / "submodules" / "PRISM-VGGT" / "checkpoints" / "model.pt"
+    ckpt = Path(os.environ.get("PANOVGGT_WEIGHTS_PATH", str(default_ckpt)))
     if not ckpt.exists():
-        download_weights(str(ckpt))
+        url = os.environ.get("PANOVGGT_WEIGHTS_URL")
+        download_weights(str(ckpt), url=url) if url else download_weights(str(ckpt))
     perception = PanoVGGTBackend(weights_path=str(ckpt))
     engine = StreamingWindowEngine(
         perception,

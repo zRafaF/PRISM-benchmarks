@@ -24,10 +24,11 @@ from bench.config import REPO_ROOT, load_config
 TOU = {
     "replica": (
         "Replica: NO approval needed. Fastest path to render today.\n"
+        "    apt-get install -y wget pigz unzip        # download.sh needs these\n"
         "    git clone https://github.com/facebookresearch/Replica-Dataset\n"
-        "    cd Replica-Dataset && ./download.sh <repo>/dataset/raw/replica\n"
-        "  (or download a single scene). Each scene dir must contain mesh.ply\n"
-        "  (+ textures) at dataset/raw/replica/<scene>/mesh.ply. Start with e.g. room_0."),
+        "    cd Replica-Dataset && ./download.sh \"$(pwd)/../dataset/raw/replica\" && cd ..\n"
+        "  Each scene dir must contain mesh.ply (+ textures) at\n"
+        "  dataset/raw/replica/<scene>/mesh.ply. Then: make split && make render."),
     "scannetpp": (
         "ScanNet++: sign the ToU at https://kaldir.vc.in.tum.de/scannetpp/ and use the\n"
         "  official `scannetpp` toolkit (Python) with your access token to fetch the\n"

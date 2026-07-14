@@ -23,7 +23,7 @@ PYCHK    ?= python3
 
 .PHONY: help steps \
         init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
-        download render export \
+        download split render export \
         run-all run-prism run-pi3 run-vggtslam run-mapanything run-laser \
         eval-traj eval-recon eval-metric perf report all \
         docs docs-serve clean clean-results
@@ -39,7 +39,8 @@ help:
 	@echo "  make setup-<m>        one method: prism|pi3|vggtslam|mapanything|laser"
 	@echo ""
 	@echo "Dataset (shared, rendered in the orchestrator env):"
-	@echo "  make download         fetch active datasets (ScanNet++/KITTI-360/... ToU stops noted)"
+	@echo "  make download         print how to fetch active datasets (ToU/prereqs noted)"
+	@echo "  make split            freeze the scene list into config.yaml (fixed seed)"
 	@echo "  make render           render pano+pinhole+GT for SCENES/TRAJ (both variants)"
 	@echo "  make export           emit per-method adapter inputs (the adapter contract)"
 	@echo ""
@@ -71,7 +72,8 @@ steps:
 	@echo "  make setup-all       # each method's isolated env (heavy: VGGT-SLAM = GTSAM+SL4+DINO-SALAD)"
 	@echo ""
 	@echo "Stage 1  Dataset (shared)"
-	@echo "  make download        # ScanNet++ first (manual ToU stop is expected + documented)"
+	@echo "  make download        # prints per-dataset fetch + prereqs (Replica needs wget pigz unzip)"
+	@echo "  make split           # freeze the scene list (fixed seed) into config.yaml"
 	@echo "  make render          # pano + pinhole(synthetic_fov & real_intrinsics) + GT poses.tum"
 	@echo "  make export          # per-method input sequences in the adapter format"
 	@echo ""
@@ -112,6 +114,10 @@ setup-all: setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser
 download: setup
 	@echo ">> downloading active datasets (see config.yaml datasets.active)"
 	$(ORCH_RUN) dataset/download.py --config $(CONFIG)
+
+split: setup
+	@echo ">> freezing scene list into config.yaml (fixed seed)"
+	$(ORCH_RUN) dataset/make_split.py --config $(CONFIG)
 
 render: setup
 	@echo ">> rendering pano + pinhole + GT (SCENES='$(SCENES)' TRAJ=$(TRAJ))"

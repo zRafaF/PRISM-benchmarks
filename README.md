@@ -11,21 +11,45 @@ make help      # targets + pipeline
 make steps     # full run-book
 ```
 
-## Quick start
+## Prerequisites
+
+- **uv** (installs itself if missing) — the only Python you need; every step runs
+  inside a uv-managed venv. **Do not call `python` directly** (there is no system
+  interpreter on the box — use the `make` targets, which run `uv run python`).
+- System packages for the Replica downloader: `apt-get install -y wget pigz unzip`.
+- An NVIDIA GPU + CUDA 12.8 for the PRISM env.
+
+## Quick start (Replica, one room, ours end-to-end)
+
+Run everything through `make` — never raw `python`.
 
 ```bash
+# 1. envs
 make init            # clone + pin every method submodule (bench.env)
 make setup           # orchestrator env (light: open3d/evo/pynvml — NO torch)
-make setup-all       # each method's ISOLATED env (heavy: VGGT-SLAM = GTSAM+SL4+DINO-SALAD)
+make setup-prism     # PRISM env (CUDA 12.8/torch2.8 + nvblox wheel + PanoVGGT weights)
 
-make download        # ScanNet++ first (manual ToU stop is expected + documented)
-python dataset/make_split.py   # freeze one room (fixed seed)
-make render          # pano + pinhole(synthetic_fov & real_intrinsics) + GT poses.tum
-make export          # per-method adapter inputs
+# 2. dataset — Replica (no approval).  make download prints these exact steps.
+apt-get install -y wget pigz unzip
+git clone https://github.com/facebookresearch/Replica-Dataset
+cd Replica-Dataset && ./download.sh "$(pwd)/../dataset/raw/replica" && cd ..
 
-make run-prism run-pi3 run-vggtslam        # each in its own env, streaming harness
+# 3. freeze one room + render + export   (all via uv, through make)
+make split                          # freezes 1 scene (fixed seed) into config.yaml
+make render TRAJ=synthetic_spline   # pano + pinhole + GT  (spline needs NO dataset poses)
+make export
+
+# 4. run OURS + evaluate + report
+make run-prism
 make eval-traj eval-recon eval-metric perf
-make report          # -> results/report/report.md (+ plots)
+make report                         # -> results/report/report.md (+ fps.png)
+```
+
+Add baselines once you've confirmed their runner API seams (see roadmap):
+
+```bash
+make setup-pi3      && make run-pi3
+make setup-vggtslam && make run-vggtslam
 ```
 
 ## What is / isn't benchmarked
