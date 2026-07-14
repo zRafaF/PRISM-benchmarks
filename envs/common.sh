@@ -29,6 +29,11 @@ ensure_uv () {
 # Usage: install_torch_cu128 .venv
 install_torch_cu128 () {
     local venv="$1"
-    echo "[*] installing CUDA 12.8 torch/torchvision (Blackwell sm_120 support)"
-    uv pip install --python "$venv" --index-url https://download.pytorch.org/whl/cu128 torch torchvision
+    echo "[*] installing CUDA 12.8 torch 2.8 / torchvision (Blackwell sm_120 support)"
+    # Pin 2.8.* + --reinstall: an unpinned 'torch' would be seen as already satisfied by
+    # a repo's older pin (e.g. 2.5.1) and skipped, leaving a build with no sm_120 kernels.
+    uv pip install --python "$venv" --reinstall \
+        --index-url https://download.pytorch.org/whl/cu128 "torch==2.8.*" torchvision
+    echo -n "[*] torch now: "
+    uv run --python "$venv" python -c "import torch; print(torch.__version__, 'sm', torch.cuda.get_arch_list()[-3:])" || true
 }
