@@ -25,17 +25,28 @@
 | Method | Run | Acc cm↓ | Compl cm↓ | Chamfer cm↓ | F@5cm↑ |
 | --- | --- | --- | --- | --- | --- |
 | pi3 | office_4/synthetic_spline/synthetic_fov | 2.9 | 1.2 | 4.1 | 0.957 |
-| prism | office_4/synthetic_spline/pano | 3.7 | 14.3 | 17.9 | 0.617 |
-| mapanything | office_4/synthetic_spline/synthetic_fov | 7.4 | 2.5 | 9.8 | 0.613 |
+| prism | office_4/synthetic_spline/pano | 3.7 | 14.1 | 17.8 | 0.618 |
+| mapanything | office_4/synthetic_spline/synthetic_fov | 7.4 | 2.5 | 9.9 | 0.612 |
 
 
 ## Table C2 — Reconstruction, full-360 (no mask; pano methods)
 
 | Method | Run | Acc cm↓ | Compl cm↓ | Chamfer cm↓ | F@5cm↑ |
 | --- | --- | --- | --- | --- | --- |
-| pi3 | office_4/synthetic_spline/synthetic_fov | 3.0 | 5.9 | 8.9 | 0.857 |
+| pi3 | office_4/synthetic_spline/synthetic_fov | 3.0 | 5.9 | 9.0 | 0.856 |
 | prism | office_4/synthetic_spline/pano | 7.7 | 5.9 | 13.6 | 0.517 |
 | mapanything | office_4/synthetic_spline/synthetic_fov | 7.5 | 7.9 | 15.4 | 0.546 |
+
+
+## Table D — Cloud cleanliness & size
+
+*noise% = pred points far from any GT surface (fluffy floaters); precision@2cm = pred points within 2 cm of GT (sharpness).*
+
+| Method | Run | Points | Size MB↓ | Noise %↓ | Prec@2cm %↑ |
+| --- | --- | --- | --- | --- | --- |
+| pi3 | office_4/synthetic_spline/synthetic_fov | 1441289 | 21.6 | 1.7 | 42.0 |
+| prism | office_4/synthetic_spline/pano | 736615 | 11.1 | 2.3 | 28.7 |
+| mapanything | office_4/synthetic_spline/synthetic_fov | 1923389 | 28.9 | 27.1 | 17.4 |
 
 
 ## Trajectory (ATE/RPE, Sim(3)-aligned)

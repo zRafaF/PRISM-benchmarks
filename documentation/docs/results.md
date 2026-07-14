@@ -24,28 +24,43 @@ GT = exact render poses + scene mesh.
 | Recon F@5cm↑ (masked) | 0.617 | **0.957** | 0.613 |
 | Recon Chamfer cm↓ (masked) | 17.9 | **4.1** | 9.8 |
 | Recon F@5cm↑ (full-360) | 0.517 | **0.857** | 0.546 |
+| Cloud points↓ | **737 k** | 1.44 M | 1.92 M |
+| Map size MB↓ | **11.1** | 21.6 | 28.9 |
+| Noise % (floaters)↓ | 2.3 | **1.7** | 27.1 |
+| Precision @2cm %↑ | 28.7 | **42.0** | 17.4 |
 
 **How to read this (honest framing).**
 
 - **Full-batch feed-forward methods (Pi3X, MapAnything) see all 200 frames jointly and
-  produce excellent offline geometry** — Pi3X hits F 0.957. But they consume **88–93 GB of
-  VRAM for one small room**, nearly maxing a 95 GB card, so they will not scale to large
-  scenes; and MapAnything is slow (0.92 FPS).
-- **PRISM does it STREAMING at ~15 GB, real-time (5.4 FPS), and causally** (no access to
-  future frames), with the smoothest trajectory (RPE 0.4 cm) and strong metric scale
-  (2.3%). Its value proposition is **streaming + memory + metric grounding**, not beating a
-  full-batch model on offline recon.
-- **MapAnything** has the best *absolute metric scale* (1.9%, extent 2.1%) — it is a metric
-  model — but the worst trajectory (ATE 26.5 cm) and it is very slow here.
-- **Caveat on F-score:** F@5cm rewards *coverage within 5 cm*; it does **not** strongly
-  penalise stray "fluffy" floater points, which is where PRISM's TSDF surface looks visually
-  cleaner than the feed-forward pointmaps. This motivates a **cloud-cleanliness / size
-  metric** (planned — see roadmap).
+  produce excellent offline geometry** — Pi3X hits F 0.957 and is the sharpest (42% @2cm).
+  But they consume **88–93 GB of VRAM for one small room**, nearly maxing a 95 GB card, so
+  they will not scale to large scenes; MapAnything is also slow (0.92 FPS).
+- **PRISM does it STREAMING at ~15 GB, real-time (5.4 FPS), and causally** (no future
+  frames), with the smoothest trajectory (RPE 0.4 cm) and strong metric scale (2.3%). It
+  also produces the **most compact, low-noise map** (737 k pts / 11 MB — roughly half the
+  size of the others — at 2.3% floaters). Value proposition: **streaming + memory + metric
+  grounding + a compact clean map**, not beating a full-batch model on offline F-score.
+- **MapAnything** has the best *absolute metric scale* (1.9%, extent 2.1%) but the worst
+  trajectory (ATE 26.5 cm), is very slow, and is by far the **fluffiest map (27% floaters)**.
+- **F-score caveat, now quantified (Table D).** F@5cm rewards coverage, not cleanliness; the
+  **noise %** column is what exposes MapAnything's floaters and PRISM's compactness — the
+  visible sharpness difference F-score alone misses.
 
 Recon quality (Table C) is scale-normalised (Sim(3)+ICP) so scale-free methods aren't
 penalised for scale; absolute metric scale (Table B) is reported only for metric methods.
 Each method runs in its **native mode**: PRISM/LASER stream; Pi3X/MapAnything are full-batch
 feed-forward; VGGT-SLAM (next) is its own incremental SLAM.
+
+!!! note "On 360° coverage vs. pinhole (discussed in text, not benchmarked)"
+    The intuitive way to give a pinhole model 360° coverage is to feed it the panorama as
+    multiple perspective crops (the equirect→pinhole route PanoVGGT uses). We deliberately
+    do **not** run this as a separate condition: cropping one panorama into ~6 faces at a
+    single camera centre gives **zero baseline between faces** (degenerate for feed-forward
+    multi-view stereo) and multiplies the frame count ~6×, which would blow the VRAM budget
+    and **collapse effective FPS**. The takeaway — that reaching 360° through a pinhole model
+    costs a large throughput/memory penalty, which PRISM avoids by consuming the panorama
+    natively — is made in the report text. Same-FOV fairness is handled by the co-visibility
+    mask (Table C); PRISM's coverage is credited in the full-360 table (C2).
 
 ## What each metric means (in depth)
 
