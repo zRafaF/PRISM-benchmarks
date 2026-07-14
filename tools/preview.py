@@ -48,6 +48,45 @@ def _depth_to_rgb(depth: np.ndarray) -> np.ndarray:
     return rgb
 
 
+def list_clouds() -> list[str]:
+    """Reconstructed clouds under results/ + the GT meshes under exports/ (viewable
+    as their vertex clouds), labelled so you can compare pred vs. GT."""
+    items = []
+    for p in RESULTS.glob("*/*/*/*/*/cloud.ply"):
+        items.append("pred: " + str(p.relative_to(RESULTS)))
+    for p in EXPORTS.glob("*/*/*/gt_mesh.ply"):
+        items.append("GT:   " + str(p.relative_to(EXPORTS)))
+    return sorted(items)
+
+
+def show_cloud(label: str, max_points: int):
+    """Interactive Plotly 3D scatter of a cloud (RGB if present, else height-coloured).
+    Runs headless — no GL/display needed, unlike an Open3D window."""
+    import open3d as o3d
+    import plotly.graph_objects as go
+    if not label:
+        return go.Figure()
+    path = (RESULTS / label[6:].strip()) if label.startswith("pred:") else (EXPORTS / label[6:].strip())
+    pcd = o3d.io.read_point_cloud(str(path))
+    pts = np.asarray(pcd.points)
+    if len(pts) == 0:
+        return go.Figure(layout={"title": f"empty: {path.name}"})
+    cols = np.asarray(pcd.colors) if pcd.has_colors() else None
+    if len(pts) > max_points:
+        idx = np.random.default_rng(0).choice(len(pts), max_points, replace=False)
+        pts = pts[idx]
+        cols = cols[idx] if cols is not None else None
+    if cols is not None:
+        color = ["rgb(%d,%d,%d)" % (r * 255, g * 255, b * 255) for r, g, b in cols]
+        marker = dict(size=1.4, color=color)
+    else:
+        marker = dict(size=1.4, color=pts[:, 2], colorscale="Viridis")
+    fig = go.Figure(go.Scatter3d(x=pts[:, 0], y=pts[:, 1], z=pts[:, 2], mode="markers", marker=marker))
+    fig.update_layout(scene=dict(aspectmode="data"), margin=dict(l=0, r=0, t=30, b=0),
+                      title=f"{path.name}: {len(pts):,} pts (of {len(np.asarray(pcd.points)):,})")
+    return fig
+
+
 def _frame_names(run: str) -> list[str]:
     if not run:
         return []
@@ -120,6 +159,21 @@ def build_app():
             idx.change(preview_frame, [run, idx], [img_rgb, img_depth, img_mask, info])
             demo.load(on_run, [run], [idx, img_rgb, img_depth, img_mask, info])
             gr.Button("Refresh runs").click(lambda: gr.update(choices=list_runs()), None, run)
+        with gr.Tab("Point cloud"):
+            gr.Markdown("View a reconstructed cloud (`pred:`) or a GT mesh's vertices "
+                        "(`GT:`). Note: pred is in its OWN frame; eval aligns it to GT, "
+                        "this raw view does not.")
+            clouds = list_clouds()
+            with gr.Row():
+                cloud_dd = gr.Dropdown(choices=clouds, label="Cloud",
+                                       value=(clouds[0] if clouds else None))
+                maxp = gr.Slider(5000, 300000, value=80000, step=5000, label="Max points")
+            plot = gr.Plot(label="3D view (drag to orbit)")
+            for ev in (cloud_dd.change, maxp.change):
+                ev(show_cloud, [cloud_dd, maxp], plot)
+            gr.Button("Refresh clouds").click(lambda: gr.update(choices=list_clouds()), None, cloud_dd)
+            demo.load(show_cloud, [cloud_dd, maxp], plot)
+
         with gr.Tab("Download files"):
             gr.Markdown("Browse `dataset/exports` and `results`. File → direct download; "
                         "folder → zipped.")

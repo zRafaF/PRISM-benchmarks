@@ -57,35 +57,96 @@ def _gt_cloud(dataset, scene, traj, n_sample=400000):
     return np.asarray(pcd.points)
 
 
+def _read_tum_map(path: Path) -> dict:
+    """timestamp -> position (3,). Used to align the pred cloud into the GT frame."""
+    out = {}
+    for line in Path(path).read_text().splitlines():
+        if line.strip():
+            v = [float(x) for x in line.split()]
+            out[round(v[0], 3)] = np.array(v[1:4])
+    return out
+
+
+def _umeyama_sim3(src: np.ndarray, tgt: np.ndarray):
+    """Closed-form Sim(3): scale s, rotation R, translation t mapping src->tgt."""
+    mu_s, mu_t = src.mean(0), tgt.mean(0)
+    sc, tc = src - mu_s, tgt - mu_t
+    cov = tc.T @ sc / len(src)
+    U, D, Vt = np.linalg.svd(cov)
+    S = np.eye(3)
+    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
+        S[2, 2] = -1
+    R = U @ S @ Vt
+    var = (sc ** 2).sum() / len(src)
+    s = float(np.trace(np.diag(D) @ S) / var) if var > 1e-12 else 1.0
+    t = mu_t - s * R @ mu_s
+    return s, R, t
+
+
+def _align_pred_to_gt(pred_pts, pred_tum: Path, gt_tum: Path, correct_scale: bool):
+    """Register the predicted cloud into the GT frame via the trajectory Sim(3).
+
+    The cloud is produced in the method's own world frame; recon metrics are only
+    meaningful after mapping it onto GT with the SAME transform that aligns the
+    trajectories (Sim(3) if scale-free, SE(3) if the method is metric).
+    """
+    pm, gm = _read_tum_map(pred_tum), _read_tum_map(gt_tum)
+    common = sorted(set(pm) & set(gm))
+    if len(common) < 3:
+        print(f"[eval_recon]   WARN: only {len(common)} matched poses — cloud NOT aligned")
+        return pred_pts, (1.0, np.eye(3), np.zeros(3))
+    src = np.array([pm[k] for k in common])
+    tgt = np.array([gm[k] for k in common])
+    s, R, t = _umeyama_sim3(src, tgt)
+    if not correct_scale:
+        s = 1.0
+    aligned = (s * (R @ pred_pts.T).T) + t
+    print(f"[eval_recon]   aligned pred->GT: scale={s:.3f} "
+          f"|t|={np.linalg.norm(t):.2f}m over {len(common)} poses")
+    return aligned, (s, R, t)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="config.yaml")
     args = ap.parse_args()
     cfg = load_config(args.config)
     thr = cfg["eval"]["fscore_threshold_m"]
+    correct_scale = cfg["eval"]["align"]["correct_scale"]
 
     for cloud in (REPO_ROOT / "results").glob("*/*/*/*/*/cloud.ply"):
         import open3d as o3d
         method, dataset, scene, traj, variant = _run_meta(cloud.parent)
         pred_pts = np.asarray(o3d.io.read_point_cloud(str(cloud)).points)
+        print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}")
+        print(f"[eval_recon]   pred cloud: {len(pred_pts)} pts "
+              f"bbox={np.round(pred_pts.min(0),2)}..{np.round(pred_pts.max(0),2)}"
+              if len(pred_pts) else "[eval_recon]   pred cloud EMPTY")
         if len(pred_pts) == 0:
-            print(f"[eval_recon] {cloud}: empty cloud — skip"); continue
+            continue
         gt_pts = _gt_cloud(dataset, scene, traj)
+        print(f"[eval_recon]   GT cloud:   {len(gt_pts)} pts "
+              f"bbox={np.round(gt_pts.min(0),2)}..{np.round(gt_pts.max(0),2)}")
 
-        # pick a pinhole export dir to define the co-visibility frustum
+        # register pred -> GT frame using the trajectory alignment (critical!)
+        gt_tum = _export_base(dataset, scene, traj) / "poses_gt.tum"
+        pred_tum = cloud.parent / "poses.tum"
+        pred_pts, _sim3 = _align_pred_to_gt(pred_pts, pred_tum, gt_tum, correct_scale)
+
         pin_variants = list((_export_base(dataset, scene, traj) / "pinhole").glob("*"))
         out = {"threshold_m": thr}
         if pin_variants:
             keep_pred = build_mask(pred_pts, pin_variants[0], cfg)
             keep_gt = build_mask(gt_pts, pin_variants[0], cfg)
+            print(f"[eval_recon]   co-vis mask: pred {keep_pred.sum()}/{len(keep_pred)}, "
+                  f"GT {keep_gt.sum()}/{len(keep_gt)} points kept")
             out["masked"] = _metrics(pred_pts[keep_pred], gt_pts[keep_gt], thr)
-        # full-360 (only meaningful for pano methods, but computed for all)
         out["full_360"] = _metrics(pred_pts, gt_pts, thr)
 
         (cloud.parent / "recon.json").write_text(json.dumps(out, indent=2))
         m = out.get("masked", out["full_360"])
-        print(f"[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}: "
-              f"F-score {m['fscore']:.3f} (masked)")
+        print(f"[eval_recon]   -> masked F@{int(thr*100)}cm={m['fscore']:.3f} "
+              f"acc={m['accuracy_m']*100:.1f}cm compl={m['completeness_m']*100:.1f}cm")
 
 
 if __name__ == "__main__":

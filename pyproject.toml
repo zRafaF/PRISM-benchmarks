@@ -33,6 +33,7 @@ docs = [
 ]
 preview = [
     "gradio>=4.0",        # browser preview + download server (tools/preview.py)
+    "plotly",             # interactive 3D point-cloud viewer (headless-safe)
 ]
 
 [build-system]

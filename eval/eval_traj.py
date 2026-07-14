@@ -27,8 +27,11 @@ def eval_one(pred: Path, gt: Path, correct_scale: bool) -> dict:
     from evo.tools import file_interface
     traj_ref = file_interface.read_tum_trajectory_file(str(gt))
     traj_est = file_interface.read_tum_trajectory_file(str(pred))
+    n_matched = traj_ref.num_poses
     traj_ref, traj_est = sync.associate_trajectories(traj_ref, traj_est)
-    traj_est.align(traj_ref, correct_scale=correct_scale)
+    align_out = traj_est.align(traj_ref, correct_scale=correct_scale)
+    # evo returns (R, t, s) for Sim(3) alignment; s is the pred->GT scale it applied.
+    align_scale = float(align_out[2]) if isinstance(align_out, (tuple, list)) and len(align_out) >= 3 else 1.0
 
     ate = metrics.APE(metrics.PoseRelation.translation_part)
     ate.process_data((traj_ref, traj_est))
@@ -40,6 +43,7 @@ def eval_one(pred: Path, gt: Path, correct_scale: bool) -> dict:
         "rpe_rmse_m": float(rpe.get_statistic(metrics.StatisticsType.rmse)),
         "n_poses": int(traj_est.num_poses),
         "aligned_scale_corrected": correct_scale,
+        "alignment_scale": align_scale,
     }
 
 
@@ -57,7 +61,9 @@ def main():
         try:
             res = eval_one(pred, gt, cs)
             (pred.parent / "ate.json").write_text(json.dumps(res, indent=2))
-            print(f"[eval_traj] {pred.parent.relative_to(REPO_ROOT)}: ATE {res['ate_rmse_m']*100:.1f} cm")
+            print(f"[eval_traj] {pred.parent.relative_to(REPO_ROOT)}: "
+                  f"ATE {res['ate_rmse_m']*100:.1f} cm  RPE {res['rpe_rmse_m']*100:.2f} cm  "
+                  f"(align scale {res['alignment_scale']:.3f}, {res['n_poses']} poses)")
         except Exception as e:
             print(f"[eval_traj] {pred}: FAILED — {e}")
 
