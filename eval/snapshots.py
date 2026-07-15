@@ -47,11 +47,12 @@ def _subsample(pts, cols, n):
     return pts, cols
 
 
-def _render(pts, cols, limits, view, bg, out_path, point_size):
+def _render(pts, cols, limits, view, bg, out_path, point_size, label=""):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import matplotlib.cm as cm
+    fg = "white" if bg == "black" else "black"
     fig = plt.figure(figsize=(6, 6), facecolor=bg)
     ax = fig.add_subplot(111, projection="3d")
     ax.set_facecolor(bg)
@@ -71,12 +72,15 @@ def _render(pts, cols, limits, view, bg, out_path, point_size):
     ax.set_box_aspect((xhi - xlo, yhi - ylo, zhi - zlo))
     ax.view_init(elev=view["elev"], azim=view["azim"])
     ax.set_axis_off()
+    if label:
+        fig.text(0.5, 0.965, label, ha="center", va="top", color=fg,
+                 fontsize=13, fontweight="bold")
     fig.tight_layout(pad=0)
-    fig.savefig(out_path, dpi=150, facecolor=bg, bbox_inches="tight", pad_inches=0)
+    fig.savefig(out_path, dpi=150, facecolor=bg, bbox_inches="tight", pad_inches=0.05)
     plt.close(fig)
 
 
-def generate(cfg, keep_h=2.0, max_points=120000, point_size=3.0,
+def generate(cfg, keep_h=2.0, max_points=120000, point_size=5.0,
              bgs=("black", "white"), views=None):
     views = views or VIEWS
     out_dir = REPO_ROOT / cfg["report"]["out_dir"] / "snapshots"
@@ -113,7 +117,8 @@ def generate(cfg, keep_h=2.0, max_points=120000, point_size=3.0,
             for vn, v in views.items():
                 for bg in bgs:
                     p = out_dir / f"GT__{scene}_{traj}__{vn}__{bg}.png"
-                    _render(gp, gc, limits, v, bg, p, point_size); written.append(p)
+                    _render(gp, gc, limits, v, bg, p, point_size,
+                            label=f"GT   {scene}/{traj}   {vn}"); written.append(p)
 
         # method cloud: align to GT frame (ground on floor), clip ceiling, render
         pred, pcols = _load_points(cloud)
@@ -129,7 +134,8 @@ def generate(cfg, keep_h=2.0, max_points=120000, point_size=3.0,
         for vn, v in views.items():
             for bg in bgs:
                 p = out_dir / f"{method}__{scene}_{traj}_{variant}__{vn}__{bg}.png"
-                _render(pred, pcols, limits, v, bg, p, point_size); written.append(p)
+                _render(pred, pcols, limits, v, bg, p, point_size,
+                        label=f"{method}   {scene}/{traj}/{variant}   {vn}"); written.append(p)
         print(f"[snapshots] {method} {scene}/{traj}/{variant}: {len(views)*len(bgs)} images")
     print(f"[snapshots] wrote {len(written)} images -> {out_dir}")
     return [str(p) for p in written]
@@ -140,7 +146,7 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--keep-height", type=float, default=2.0, help="metres above floor to keep (ceiling clip)")
     ap.add_argument("--max-points", type=int, default=120000)
-    ap.add_argument("--point-size", type=float, default=3.0, help="marker size in the render")
+    ap.add_argument("--point-size", type=float, default=5.0, help="marker size in the render")
     args = ap.parse_args()
     cfg = load_config(args.config)
     generate(cfg, keep_h=args.keep_height, max_points=args.max_points, point_size=args.point_size)

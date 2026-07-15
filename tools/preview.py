@@ -262,7 +262,7 @@ def build_app():
             with gr.Row():
                 keep_h = gr.Slider(0.0, 3.0, value=2.0, step=0.1, label="Keep height above floor (m); ceiling above is removed")
                 snap_maxp = gr.Slider(20000, 400000, value=150000, step=10000, label="Max points")
-                snap_ptsize = gr.Slider(0.5, 12.0, value=3.0, step=0.5, label="Point size")
+                snap_ptsize = gr.Slider(0.5, 15.0, value=5.0, step=0.5, label="Point size")
             snap_btn = gr.Button("Generate snapshots", variant="primary")
             gallery = gr.Gallery(label="Snapshots", columns=4, height=520)
             snap_zip = gr.File(label="Download all (zip)", interactive=False)
