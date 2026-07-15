@@ -12,6 +12,7 @@ every method is timed identically.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,13 @@ def run_method(name: str):
                     if not (in_dir / "meta.json").exists():
                         continue
                     rp = RunPaths(name, dataset, scene, traj, variant or mcfg["camera"])
+                    # Resume: skip a run that already produced poses (unless PRISM_FORCE=1),
+                    # so re-running the pipeline doesn't redo finished (slow) method runs.
+                    if (rp.poses_tum.exists() and rp.poses_tum.stat().st_size > 0
+                            and os.environ.get("PRISM_FORCE", "0") != "1"):
+                        print(f"[{name}] {dataset}/{scene}/{traj}/{variant or mcfg['camera']}"
+                              f" — already done, skip (PRISM_FORCE=1 to redo)")
+                        continue
                     rp.dir().mkdir(parents=True, exist_ok=True)
                     cmd = [str(py), str(runner),
                            "--in", str(in_dir),

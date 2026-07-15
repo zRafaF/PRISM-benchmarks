@@ -36,9 +36,11 @@ def _read_tum_positions(path: Path) -> np.ndarray:
     return np.array(pos)
 
 
-def _umeyama_scale(src: np.ndarray, tgt: np.ndarray) -> float:
-    """Similarity scale mapping src->tgt (rotation-invariant closed form)."""
+def _umeyama_scale(src: np.ndarray, tgt: np.ndarray):
+    """Similarity scale mapping src->tgt; None if too few / degenerate poses."""
     n = min(len(src), len(tgt))
+    if n < 3:
+        return None
     src, tgt = src[:n], tgt[:n]
     s_c = src - src.mean(0)
     t_c = tgt - tgt.mean(0)
@@ -80,6 +82,13 @@ def main():
         if not gt.exists():
             continue
         s = _umeyama_scale(_read_tum_positions(pred), _read_tum_positions(gt))
+        if s is None:
+            # degenerate run (e.g. too few frames at 0.5 Hz on a small scene -> empty map)
+            (pred.parent / "metric.json").write_text(json.dumps(
+                {"metric_capable": True, "scale_estimate": None,
+                 "metric_scale_error_pct": None, "note": "insufficient/empty poses"}, indent=2))
+            print(f"[metric] {method}/{dataset}/{scene}/{traj}: skipped (insufficient poses)")
+            continue
         out = {"metric_capable": True,
                "scale_estimate": s,
                "metric_scale_error_pct": abs(s - 1.0) * 100.0}

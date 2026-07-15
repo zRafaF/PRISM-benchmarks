@@ -58,6 +58,8 @@ def main():
         gt = _gt_for(pred.parent)
         if not gt.exists():
             print(f"[eval_traj] no GT for {pred} — skip"); continue
+        if sum(1 for _ in open(pred) if _.strip()) < 3:
+            print(f"[eval_traj] {pred.parent.relative_to(REPO_ROOT)}: <3 poses — skip"); continue
         try:
             res = eval_one(pred, gt, cs)
             (pred.parent / "ate.json").write_text(json.dumps(res, indent=2))
