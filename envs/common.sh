@@ -35,5 +35,5 @@ install_torch_cu128 () {
     uv pip install --python "$venv" --reinstall \
         --index-url https://download.pytorch.org/whl/cu128 "torch==2.8.*" torchvision
     echo -n "[*] torch now: "
-    uv run --python "$venv" python -c "import torch; print(torch.__version__, 'sm', torch.cuda.get_arch_list()[-3:])" || true
+    "$venv/bin/python" -c "import torch; print(torch.__version__, 'archs', torch.cuda.get_arch_list()[-3:])" || true
 }

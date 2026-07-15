@@ -25,11 +25,16 @@ echo "[vggtslam] VGGT fork (MIT-SPARK/VGGT_SPARK)"
 [ -d third_party/vggt ] || git clone --depth 1 https://github.com/MIT-SPARK/VGGT_SPARK.git third_party/vggt
 uv pip install --python .venv -e ./third_party/vggt
 
-echo "[vggtslam] the repo itself + GTSAM (SL(4) optimiser upstream)"
+echo "[vggtslam] the repo itself"
 uv pip install --python .venv -e .
-uv pip install --python .venv gtsam
+# NOTE: do NOT `pip install gtsam` — requirements.txt already pulls `gtsam-develop`
+# (4.3 dev), which is the build that carries the SL(4) optimiser VGGT-SLAM needs.
+# Stable `gtsam==4.2.x` lacks SL(4) and would shadow the dev build.
 
 # torch LAST so nothing downgrades it: cu128 = Blackwell sm_120 kernels (matches PRISM).
 install_torch_cu128 .venv
+# ...but the cu128 wheels pull numpy 2.x; VGGT-SLAM/VGGT-fork pin numpy 1.26 -> re-pin it
+# (numpy 2.0 breaks older np APIs used by the SLAM code). torch 2.8 works with numpy 1.26.
+uv pip install --python .venv "numpy==1.26.4"
 
 echo "[vggtslam] done. (PE/SAM3 skipped — only needed for --run_os; VGGT-1B weights pull from HF on first run)"
