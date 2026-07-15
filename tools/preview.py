@@ -159,14 +159,56 @@ def save_config_fields(rates_str, scenes_str, max_frames, fscore_thr, noise_thr)
 def make_snapshots(keep_h, max_points, point_size):
     from eval import snapshots
     cfg = load_config("config.yaml")
-    paths = snapshots.generate(cfg, keep_h=float(keep_h), max_points=int(max_points),
-                               point_size=float(point_size))
-    return paths, (str(_zip_dir(SNAP_DIR)) if paths else None)
+    snapshots.generate(cfg, keep_h=float(keep_h), max_points=int(max_points),
+                       point_size=float(point_size))
+    # show a filtered default subset (all ~150 at once won't render in the gallery)
+    return list_snapshots(), (str(_zip_dir(SNAP_DIR)) if SNAP_DIR.exists() else None)
 
 
 def _zip_dir(d: Path):
     tmp = tempfile.mkdtemp()
     return shutil.make_archive(os.path.join(tmp, d.name or "snapshots"), "zip", root_dir=str(d))
+
+
+def _snap_scene(n):
+    body = n.split("__", 1)[1] if "__" in n else n
+    return body.split("_synthetic_")[0]
+
+
+def _snap_method(n):
+    return n.split("__", 1)[0]
+
+
+def _snap_view(n):
+    return "oblique" if "__oblique__" in n else ("top" if "__top__" in n else "")
+
+
+def _snap_bg(n):
+    return "black" if n.endswith("__black.png") else ("white" if n.endswith("__white.png") else "")
+
+
+def list_snapshots(scene="all", method="all", view="oblique", bg="white", limit=60):
+    """Filtered list of existing snapshot PNGs (the gallery can't load all ~150 at once)."""
+    if not SNAP_DIR.exists():
+        return []
+    out = []
+    for p in sorted(SNAP_DIR.glob("*.png")):
+        n = p.name
+        if scene != "all" and _snap_scene(n) != scene:
+            continue
+        if method != "all" and _snap_method(n) != method:
+            continue
+        if view != "all" and _snap_view(n) != view:
+            continue
+        if bg != "all" and _snap_bg(n) != bg:
+            continue
+        out.append(str(p))
+    return out[:limit]
+
+
+def _snap_scene_choices():
+    scenes = sorted({_snap_scene(p.name) for p in SNAP_DIR.glob("*.png")}) if SNAP_DIR.exists() else []
+    return ["all"] + scenes
 
 
 # ── Frame preview ─────────────────────────────────────────────────────────────
@@ -334,15 +376,26 @@ def build_app():
 
         with gr.Tab("Snapshots"):
             gr.Markdown("Standardized paper images — every cloud aligned to GT (ground on "
-                        "floor), ceiling clipped, on black & white backgrounds.")
+                        "floor), ceiling clipped, black & white backgrounds. The gallery is "
+                        "**filtered** (all ~150 won't load at once) — pick filters and Show.")
             with gr.Row():
-                keep_h = gr.Slider(0.0, 3.0, value=2.0, step=0.1, label="Keep height above floor (m); ceiling above is removed")
+                keep_h = gr.Slider(0.0, 3.0, value=2.0, step=0.1, label="Keep height (m)")
                 snap_maxp = gr.Slider(20000, 400000, value=150000, step=10000, label="Max points")
                 snap_ptsize = gr.Slider(0.5, 15.0, value=5.0, step=0.5, label="Point size")
-            snap_btn = gr.Button("Generate snapshots", variant="primary")
-            gallery = gr.Gallery(label="Snapshots", columns=4, height=520)
+            snap_btn = gr.Button("Generate snapshots (all methods × scenes × rates)", variant="primary")
+            gr.Markdown("**Filter the gallery:**")
+            with gr.Row():
+                f_scene = gr.Dropdown(_snap_scene_choices(), value="all", label="Scene")
+                f_method = gr.Dropdown(["all"] + METHODS + ["GT"], value="all", label="Method")
+                f_view = gr.Dropdown(["all", "oblique", "top"], value="oblique", label="View")
+                f_bg = gr.Dropdown(["all", "black", "white"], value="white", label="Background")
+                show_btn = gr.Button("Show")
+            gallery = gr.Gallery(label="Snapshots (max 60 shown)", columns=4, height=560)
             snap_zip = gr.File(label="Download all (zip)", interactive=False)
             snap_btn.click(make_snapshots, [keep_h, snap_maxp, snap_ptsize], [gallery, snap_zip])
+            show_btn.click(lambda s, m, v, b: list_snapshots(s, m, v, b),
+                           [f_scene, f_method, f_view, f_bg], gallery)
+            demo.load(lambda: list_snapshots(), None, gallery)
 
         with gr.Tab("Point cloud"):
             clouds = list_clouds()

@@ -68,12 +68,19 @@ def main():
                                   camera_height=float(ch), timestamp=i))
 
     # Streaming: process the whole sequence in overlapping windows (the engine's
-    # native mode). Per-submap wall time is captured from the generator cadence.
+    # native mode). If the sequence is SHORTER than a window (e.g. 0.5 Hz on a small
+    # room -> ~12 frames), clamp to a single batch window over all frames so a map is
+    # still produced instead of nothing.
+    n = len(frames)
+    ws = min(int(eng["window_size"]), n)
+    ov = min(int(eng["overlap"]), max(0, ws - 1))
+    if ws < int(eng["window_size"]):
+        print(f"[prism_runner] short sequence ({n} frames) -> single batch window={ws} overlap={ov}")
     per_window = []
     t_prev = time.perf_counter()
     t0 = t_prev
     for _mesh, _pcd, _traj, _floor in engine.process_sequence(
-            frames, window_size=eng["window_size"], overlap=eng["overlap"]):
+            frames, window_size=ws, overlap=ov):
         now = time.perf_counter()
         per_window.append(now - t_prev)
         t_prev = now
