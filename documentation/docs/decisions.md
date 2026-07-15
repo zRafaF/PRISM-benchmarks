@@ -84,8 +84,9 @@ scale error" issue.
 
 ## D13 — Physical capture-rate sweep (constant velocity)
 Trajectory frames are sampled by **arc length** at spacing `speed / rate` (constant
-velocity), simulating a real capture at `rate` Hz. We sweep **rates_hz = [0.5, 1, 2, 2.5]**
-(the Theta-X operating point is ~2–2.5 Hz), each rendered as its own traj id
+velocity), simulating a real capture at `rate` Hz. We sweep **rates_hz = [0.5, 2, 5]** and
+report by the inter-frame **baseline** = speed/rate (1.0 / 0.25 / 0.10 m at 0.5 m/s) — the
+quantity that actually drives quality. Each rate is its own traj id
 `synthetic_<rate>hz`, so the report shows every method across the spectrum. Frame count is
 capped at `n_frames` (200) because full-batch baselines are near the VRAM ceiling there.
 The same frames feed every method, so the sweep is inherently fair; low rate = sparse

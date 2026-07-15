@@ -46,13 +46,30 @@ def _metrics(pred_pts, gt_pts, thr, clean=None):
     rec = float((d_gt_pred < thr).mean())
     f = float(2 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
     m = {"accuracy_m": acc, "completeness_m": comp, "chamfer_m": chamfer,
-         "precision": prec, "recall": rec, "fscore": f}
+         "precision": prec, "recall": rec, "fscore": f,
+         "acc_p95_m": float(np.percentile(d_pred_gt, 95))}   # tail: worst floaters
     if clean is not None:
         # Cleanliness: fraction of pred points that are noise floaters (far from GT),
         # and tight precision. Captures the "fluffy dots" F-score@5cm ignores.
         m["noise_frac"] = float((d_pred_gt > clean["noise_threshold_m"]).mean())
         m["precision_tight"] = float((d_pred_gt < clean["precision_threshold_m"]).mean())
     return m
+
+
+def _statistical_outlier_pct(pts, nb=20, std_ratio=2.0, sample=200000):
+    """Density-INDEPENDENT fluffiness: fraction of points flagged as statistical
+    outliers by a kNN test (isolated floaters). Unlike noise%, this doesn't depend on
+    the cloud's absolute density, so it fairly compares a sparse-but-noisy cloud (LASER)
+    against a dense-clean one (PRISM). Computed on a subsample for speed."""
+    import open3d as o3d
+    if len(pts) < nb + 1:
+        return 0.0
+    p = pts
+    if len(p) > sample:
+        p = p[np.random.default_rng(0).choice(len(p), sample, replace=False)]
+    pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(p))
+    _, ind = pcd.remove_statistical_outlier(nb_neighbors=nb, std_ratio=std_ratio)
+    return float(1.0 - len(ind) / len(p))
 
 
 def _gt_cloud(dataset, scene, traj, n_sample=400000):
@@ -163,7 +180,9 @@ def main():
         # Cloud size / compactness (on the saved cloud; voxel-deduped identically for all).
         out = {"threshold_m": thr,
                "point_count": int(len(pred_pts)),
-               "map_size_mb": round(cloud.stat().st_size / 1e6, 2)}
+               "map_size_mb": round(cloud.stat().st_size / 1e6, 2),
+               "sor_outlier_pct": _statistical_outlier_pct(pred_pts)}
+        print(f"[eval_recon]   statistical-outlier (fluffiness) = {out['sor_outlier_pct']*100:.1f}%")
         if pin_variants:
             keep_pred = build_mask(pred_pts, pin_variants[0], cfg)
             keep_gt = build_mask(gt_pts, pin_variants[0], cfg)

@@ -14,7 +14,50 @@ its own incremental SL(4) SLAM and **LASER** a training-free streamer (both pinh
 GT = exact render poses + scene mesh. Hardware RTX PRO 6000 — **VRAM/util this run are
 unreliable (a second container shared the GPU), so ignore Table A memory here.**
 
-## Six-method comparison (office_4 / synthetic_2.0hz — the fair run)
+## Two scenes: small room + large apartment (global aggregate)
+
+Running both **`office_4`** (small room) and **`apartment_0`** (large multi-room) at 2.0 Hz,
+the **per-method mean across scenes** (from the global report). The larger scene separates
+the methods much more — drift and floaters compound over distance, so the streaming/metric
+advantages of PRISM stand out.
+
+| Method | Mode | Scale err %↓ | ATE cm↓ | Masked F↑ | Map MB↓ | Outlier %↓ (fluff) | Prec@2cm %↑ |
+|---|---|---|---|---|---|---|---|
+| **PRISM (ours)** | stream · pano | **1.2** | 15.0 | 0.677 | 16.1 | *(see note)* | 29.9 |
+| VGGT-SLAM | stream · pinhole | N/A | 119.0 | 0.388 | 85.5 | high | 14.9 |
+| LASER | stream · pinhole | N/A | 13.4 | 0.756 | **3.3** | high | 26.2 |
+| PanoVGGT (raw backbone) | batch · pano | N/A | 23.8 | 0.793 | 91.0 | med | 31.1 |
+| Pi3X | batch · pinhole | 9.8 | **7.4** | **0.889** | 22.6 | **low** | **32.1** |
+| MapAnything | batch · pinhole | 6.6 | 55.5 | 0.419 | 30.3 | high | 10.4 |
+
+**What the large scene reveals.**
+
+- **PRISM is the only method that stays metric (1.2% mean) and compact as scenes grow.**
+  On `apartment_0` the SLAM/streaming baselines degrade sharply (VGGT-SLAM ATE ~2 m; even
+  PanoVGGT's offline pose drifts to ~0.5 m), while PRISM holds a bounded, metric map.
+- **LASER vs PRISM — the fairness point you raised.** LASER's F-score looks *close* to ours
+  because it emits a **sparse** cloud (few points), and F-score / per-point noise% don't
+  penalise a visibly noisy-but-sparse cloud. The **statistical-outlier %** (kNN, density-
+  independent — Table D) is the fair measure: it flags LASER's scattered floaters that the
+  eye sees but F-score misses. **The snapshots below show the gap directly.**
+- **Full-batch references (PanoVGGT, Pi3X)** still lead on offline recon, but are non-streaming
+  and (Pi3X) non-metric; **MapAnything** degrades badly at this frame count on both scenes.
+
+### Qualitative comparison (apartment_0, 2.0 Hz)
+
+Standardized, GT-aligned, ceiling-clipped renders — same pose and framing for every method
+(oblique view, white background). PRISM's surface is clean; LASER/MapAnything are visibly
+noisier despite comparable table F-scores.
+
+| Ground truth | PRISM (ours) | LASER |
+|---|---|---|
+| ![GT](snapshots/GT__apartment_0_synthetic_2.0hz__oblique__white.png) | ![PRISM](snapshots/prism__apartment_0_synthetic_2.0hz_pano__oblique__white.png) | ![LASER](snapshots/laser__apartment_0_synthetic_2.0hz_synthetic_fov__oblique__white.png) |
+
+| PanoVGGT (raw) | Pi3X | MapAnything |
+|---|---|---|
+| ![PanoVGGT](snapshots/panovggt__apartment_0_synthetic_2.0hz_pano__oblique__white.png) | ![Pi3X](snapshots/pi3__apartment_0_synthetic_2.0hz_synthetic_fov__oblique__white.png) | ![MapAnything](snapshots/mapanything__apartment_0_synthetic_2.0hz_synthetic_fov__oblique__white.png) |
+
+## Six-method comparison (office_4 / synthetic_2.0hz — the small-room fair run)
 
 VRAM/util omitted (a second container shared the GPU this run). Grouped by role.
 

@@ -69,6 +69,37 @@ def run_targets(targets, scenes, traj):
     yield acc, str(logpath)
 
 
+METHODS = ["prism", "panovggt", "pi3", "vggtslam", "mapanything", "laser"]
+
+
+def _save_pipeline_overlay(scenes, rates_csv, max_frames):
+    import yaml
+    overlay = (yaml.safe_load(LOCAL_CONFIG.read_text()) if LOCAL_CONFIG.exists() else {}) or {}
+    if rates_csv and rates_csv.strip():
+        overlay.setdefault("trajectories", {})["rates_hz"] = [
+            float(x) for x in rates_csv.replace(" ", "").split(",") if x]
+    if scenes and scenes.strip():
+        overlay.setdefault("datasets", {}).setdefault("replica", {})["scenes"] = scenes.split()
+    overlay.setdefault("baselines", {})["max_frames"] = None if not max_frames else int(max_frames)
+    LOCAL_CONFIG.write_text(yaml.safe_dump(overlay, sort_keys=False))
+
+
+def full_pipeline(scenes, methods, rates_csv, max_frames, clean_first, do_snapshots):
+    """One button: (optionally clean) -> render -> export -> run each selected method
+    -> eval-* -> report (-> snapshots), streaming the log. Applies scenes/rates/max_frames
+    to the config overlay first so every step is consistent."""
+    if not methods:
+        yield "Select at least one method.", None
+        return
+    _save_pipeline_overlay(scenes, rates_csv, max_frames)
+    targets = (["clean-results"] if clean_first else []) + ["render", "export"]
+    targets += [f"run-{m}" for m in methods]
+    targets += ["eval-traj", "eval-recon", "eval-metric", "perf", "report"]
+    if do_snapshots:
+        targets.append("snapshots")
+    yield from run_targets(targets, scenes, "all")
+
+
 # ── Config overlay editor ─────────────────────────────────────────────────────
 def load_config_fields():
     cfg = load_config("config.yaml")
@@ -231,7 +262,26 @@ def build_app():
     with gr.Blocks(title="PRISM-benchmarks Studio") as demo:
         gr.Markdown("# 🛠️ PRISM-benchmarks Studio")
 
-        with gr.Tab("Run pipeline"):
+        with gr.Tab("▶ Pipeline (one button)"):
+            gr.Markdown("Configure and run the **whole benchmark** end-to-end: "
+                        "render → export → run methods → eval → report (→ snapshots). "
+                        "Output streams live; the log is downloadable.")
+            r0, s0, m0, _f0, _n0 = load_config_fields()
+            with gr.Row():
+                pl_scenes = gr.Textbox(value=s0, label="Scenes (space-separated)", scale=2)
+                pl_rates = gr.Textbox(value=(r0 or "0.5,2.0,5.0"), label="Rates Hz (comma)", scale=1)
+                pl_maxf = gr.Number(value=m0, label="max_frames (0=all)", precision=0, scale=1)
+            pl_methods = gr.CheckboxGroup(METHODS, value=METHODS, label="Methods to run")
+            with gr.Row():
+                pl_clean = gr.Checkbox(value=True, label="Clean previous results first")
+                pl_snap = gr.Checkbox(value=True, label="Render snapshots at the end")
+            pl_btn = gr.Button("▶  Run FULL pipeline", variant="primary")
+            pl_out = gr.Textbox(label="Live output", lines=22, autoscroll=True)
+            pl_log = gr.File(label="Download log", interactive=False)
+            pl_btn.click(full_pipeline, [pl_scenes, pl_methods, pl_rates, pl_maxf, pl_clean, pl_snap],
+                         [pl_out, pl_log])
+
+        with gr.Tab("Run targets (advanced)"):
             gr.Markdown("Tick targets and run. Output streams live; the log is downloadable. "
                         "Typical order: setup → render → export → run-* → eval-* → report → snapshots.")
             tsel = gr.CheckboxGroup(MAKE_TARGETS, label="make targets (run in order)")

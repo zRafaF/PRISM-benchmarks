@@ -75,7 +75,9 @@ trajectories:
   # RATE SWEEP: one trajectory per capture rate -> traj id "synthetic_<rate>hz".
   # Low rate = sparse, wide-baseline (favours feed-forward); high rate = dense overlap
   # (favours streaming, and pushes full-batch toward the VRAM ceiling). Covers the spectrum.
-  rates_hz: [0.5, 1.0, 2.0, 2.5]
+  # baseline (inter-frame distance) = speed/rate — THIS is what drives quality, not FPS:
+  #   0.5 Hz -> 1.00 m,  2.0 Hz -> 0.25 m,  5.0 Hz -> 0.10 m  (at speed 0.5 m/s)
+  rates_hz: [0.5, 2.0, 5.0]
   synthetic_spline:
     speed_mps: 0.5           # constant walking speed; inter-frame baseline = speed/rate
     min_clearance_m: 0.30    # collision-free sampling against the mesh occupancy

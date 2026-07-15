@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bench.config import REPO_ROOT, load_config
+from bench.config import REPO_ROOT, load_config, traj_rate_hz
 
 
 def _load_all():
@@ -52,18 +52,24 @@ def build_tables(runs, cfg, title) -> str:
     """Full A/B/C/C2/D/traj tables for a set of runs (one scene, or all)."""
     lab = cfg["report"]["label"]
     thr = int(cfg["eval"]["fscore_threshold_m"] * 100)
+    speed = cfg["trajectories"]["synthetic_spline"].get("speed_mps", 0.5)
     md = [f"# PRISM-benchmarks — {title}\n",
           f"*{lab.capitalize()} results; full evaluation is future work. "
-          f"Hardware: {cfg['hardware']['hw_id']}.*", ""]
+          f"Hardware: {cfg['hardware']['hw_id']}.*",
+          "",
+          "**Inter-frame baseline = speed/rate is the quality-driving quantity (not FPS):** "
+          f"at {speed} m/s, 0.5 Hz→{speed/0.5*100:.0f} cm, 2 Hz→{speed/2*100:.0f} cm, "
+          f"5 Hz→{speed/5*100:.0f} cm between frames.", ""]
 
     a = [[r["method"], f"{r['scene']}/{r['traj']}/{r['variant']}",
+          f"{speed / traj_rate_hz(r['traj']) * 100:.0f}",
           _fmt((r['perf'] or {}).get("eff_fps"), 1, 2),
           _fmt((r['perf'] or {}).get("latency_end_to_end_s"), 1, 1),
           _fmt((r['perf'] or {}).get("vram_peak_gb"), 1, 2),
           _fmt((r['perf'] or {}).get("gpu_util_avg_pct"), 1, 0)]
          for r in runs if r["perf"]]
     md += ["## Table A — Performance & resources\n",
-           _md_table(["Method", "Run", "Eff.FPS↑", "Latency s↓", "VRAM peak GB↓", "GPU %"], a), ""]
+           _md_table(["Method", "Run", "Baseline cm", "Eff.FPS↑", "Latency s↓", "VRAM peak GB↓", "GPU %"], a), ""]
 
     b = []
     for r in runs:
@@ -106,10 +112,15 @@ def build_tables(runs, cfg, title) -> str:
         mm = rc.get("masked", rc.get("full_360", {}))
         d.append([r["method"], f"{r['scene']}/{r['traj']}/{r['variant']}",
                   rc.get("point_count", "—"), _fmt(rc.get("map_size_mb"), 1, 1),
+                  _fmt(rc.get("sor_outlier_pct"), 100, 1),
+                  _fmt(mm.get("acc_p95_m"), 100, 1),
                   _fmt(mm.get("noise_frac"), 100, 1), _fmt(mm.get("precision_tight"), 100, 1)])
     md += ["## Table D — Cloud cleanliness & size\n",
-           "*noise% = pred points far from any GT surface; precision@2cm = within 2 cm (sharpness).*\n",
-           _md_table(["Method", "Run", "Points", "Size MB↓", "Noise %↓", "Prec@2cm %↑"], d), ""]
+           "*Outlier% = kNN statistical outliers (density-independent fluffiness — the fair "
+           "noise measure across sparse vs dense clouds); Acc-p95 = 95th-pct pred→GT distance "
+           "(worst floaters); noise% = points >10 cm from GT; prec@2cm = within 2 cm.*\n",
+           _md_table(["Method", "Run", "Points", "Size MB↓", "Outlier %↓", "Acc-p95 cm↓",
+                      "Noise %↓", "Prec@2cm %↑"], d), ""]
 
     t = [[r["method"], f"{r['scene']}/{r['traj']}/{r['variant']}",
           _fmt((r['ate'] or {}).get("ate_rmse_m"), 100, 1),
@@ -131,7 +142,7 @@ def _run_metrics(r):
         "mF": masked.get("fscore"),
         "fF": full.get("fscore"),
         "map_mb": rc.get("map_size_mb"),
-        "noise": masked.get("noise_frac") * 100 if masked.get("noise_frac") is not None else None,
+        "outlier": rc.get("sor_outlier_pct") * 100 if rc.get("sor_outlier_pct") is not None else None,
         "prec2": masked.get("precision_tight") * 100 if masked.get("precision_tight") is not None else None,
     }
 
@@ -142,7 +153,7 @@ def aggregate_global(runs, cfg) -> str:
     by_method = {}
     for r in runs:
         by_method.setdefault(r["method"], []).append(_run_metrics(r))
-    keys = ["eff_fps", "scale_err", "ate_cm", "mF", "fF", "map_mb", "noise", "prec2"]
+    keys = ["eff_fps", "scale_err", "ate_cm", "mF", "fF", "map_mb", "outlier", "prec2"]
 
     def mean(vals):
         v = [x for x in vals if x is not None]
@@ -155,9 +166,9 @@ def aggregate_global(runs, cfg) -> str:
         scale = "N/A" if agg["scale_err"] is None else _fmt(agg["scale_err"], 1, 1)
         rows.append([method, len(rs), _fmt(agg["eff_fps"], 1, 2), scale,
                      _fmt(agg["ate_cm"], 1, 1), _fmt(agg["mF"], 1, 3), _fmt(agg["fF"], 1, 3),
-                     _fmt(agg["map_mb"], 1, 1), _fmt(agg["noise"], 1, 1), _fmt(agg["prec2"], 1, 1)])
+                     _fmt(agg["map_mb"], 1, 1), _fmt(agg["outlier"], 1, 1), _fmt(agg["prec2"], 1, 1)])
     hdr = ["Method", "N", "Eff.FPS↑", "Scale err %↓", "ATE cm↓", "Masked F↑",
-           "Full-360 F↑", "Map MB↓", "Noise %↓", "Prec@2cm %↑"]
+           "Full-360 F↑", "Map MB↓", "Outlier %↓", "Prec@2cm %↑"]
     return ("## Global aggregate — mean per method (over all scenes × rates × variants)\n"
             "*N = runs averaged. Scale err averaged over metric-capable runs only.*\n\n"
             + _md_table(hdr, rows) + "\n")

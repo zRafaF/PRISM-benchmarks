@@ -26,7 +26,7 @@ PYCHK    ?= python3
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser \
         eval-traj eval-recon eval-metric perf report all \
-        preview snapshots docs docs-serve clean clean-results
+        studio preview snapshots docs docs-serve clean clean-results
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -54,7 +54,7 @@ help:
 	@echo "  make eval-metric      OUR absolute-scale accuracy (metric methods) -> metric.json"
 	@echo "  make perf             throughput/latency + avg & peak VRAM + GPU util -> perf.csv"
 	@echo "  make report           aggregate everything -> tables + plots (md/csv/png)"
-	@echo "  make preview          Studio: browser control panel (run pipeline, config, snapshots, viewers)"
+	@echo "  make studio           Studio: browser control panel — ONE-BUTTON pipeline + config + snapshots + viewers"
 	@echo "  make snapshots        standardized paper images of every cloud (GT-aligned, ceiling-clipped)"
 	@echo ""
 	@echo "  make all              init -> setup-all -> download -> render -> export ->"
@@ -161,9 +161,10 @@ all: init setup-all download render export run-all eval-traj eval-recon eval-met
 	@echo ">> full pipeline complete — see results/report/"
 
 # ── Studio (browser control panel: run pipeline, config, snapshots, viewers) ──
-preview: setup
-	@echo ">> Studio on :7860 (share URL printed): run pipeline + snapshots + viewers."
-	$(UV) run --extra preview python tools/preview.py
+studio: setup
+	@echo ">> Studio on :7860 (share URL printed): one-button pipeline + config + snapshots + viewers."
+	$(UV) run --extra preview python tools/studio.py
+preview: studio          # backwards-compatible alias for the old name
 
 # ── Standardized paper snapshots (GT-aligned, ceiling-clipped, black+white bg) ─
 snapshots: setup

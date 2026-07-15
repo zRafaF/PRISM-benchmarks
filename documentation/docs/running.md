@@ -55,7 +55,8 @@ CLI, e.g. `make render SCENES="room_0" TRAJ=synthetic_spline FACE_SIZE=768`.
 **Sanity-check the render** before running a method:
 
 ```bash
-make preview        # browser gallery (pano RGB, depth, mask, pinhole) + file downloader
+make studio         # browser control panel: ONE-BUTTON pipeline + config + snapshots + viewers
+                    # (old name `make preview` still works as an alias)
 ```
 
 It prints a public share URL (works from a remote box). Confirm the RGB frames look
