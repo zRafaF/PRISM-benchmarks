@@ -109,10 +109,11 @@ streaming:
 # in one pass (permutation-equivariant nets like Pi3/MapAnything — windowing misaligns them).
 methods:
   - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours}
+  - {name: panovggt,    camera: pano,     env: submodules/PRISM-VGGT, mode: batch,  metric: false, role: reference}  # raw backbone, full-batch 360° (no PRISM engine) — shows what the engine adds
   - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        mode: batch,  metric: true,  role: baseline}   # Pi3X: approx metric scale
   - {name: mapanything, camera: pinhole,  env: submodules/map-anything, mode: batch, metric: true, role: baseline}  # feed-forward metric
   - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
-  - {name: laser,       camera: pano,     env: submodules/LASER,      mode: stream, metric: false, role: baseline}   # streaming (like ours)
+  - {name: laser,       camera: pinhole,  env: submodules/LASER,      mode: stream, metric: false, role: baseline}   # training-free streaming (wraps Pi3); pinhole
 
 # Feed-forward baselines process every frame at once; cap frames only if GPU memory is
 # tight (null = use all). Subsampling keeps global frame indices as TUM timestamps.

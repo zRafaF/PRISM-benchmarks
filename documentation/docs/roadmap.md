@@ -28,8 +28,25 @@
 - **VGGT-SLAM 2.0** — verified against the pinned commit. Drives the repo's `main.py`
   (`--log_results` → TUM keyed by true frame_id; `_points.pcd` → cloud). Streaming SLAM
   with SL(4) submaps + GTSAM + DINO-SALAD loop closure. ✅
-- **LASER** — streaming runner; seams still marked `<-- API line N`, confirm against the
-  repo after `make init` before running.
+- **LASER** — verified against the pinned commit. Training-free streamer wrapping Pi3
+  (`StreamingWindowEngine`; `parse_inference_cache_summary` → extrinsic/intrinsic/depth →
+  we unproject to a cloud). Pinhole. ✅
+- **PanoVGGT (raw backbone)** — full-batch 360° reference; reuses the PRISM env, runs
+  `PanoVGGTBackend.process_sequence` over all pano frames (no engine). ✅
+
+## Method roster (current)
+Streaming: **PRISM** (ours, pano), **VGGT-SLAM** (pinhole SLAM), **LASER** (pinhole).
+Full-batch feed-forward: **PanoVGGT** (pano, raw backbone ref), **Pi3X**, **MapAnything**
+(pinhole). PanoVGGT vs PRISM isolates the engine's contribution; PanoVGGT vs Pi3X/MapAnything
+is pano-vs-pinhole at equal (batch) footing.
+
+## Future streaming/SLAM baselines to add (from the SoTA)
+Preferably online/streaming for a fair table (see each paper's own comparisons):
+- **StreamVGGT** (Streaming 4D Visual Geometry Transformer) — causal VGGT; closest to our
+  backbone family, isolates engine value best.
+- **CUT3R** — online recurrent pointmap with persistent state.
+- **Spann3R** — online incremental DUSt3R with spatial memory.
+- **MASt3R-SLAM** — real-time SLAM (source of VGGT-SLAM's eval datasets); non-VGGT SLAM ref.
 
 ## Method modes
 Streaming (incremental): PRISM (ours), LASER, VGGT-SLAM. Full-batch feed-forward: Pi3/Pi3X,

@@ -24,7 +24,7 @@ PYCHK    ?= python3
 .PHONY: help steps \
         init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
         download split render export \
-        run-all run-prism run-pi3 run-vggtslam run-mapanything run-laser \
+        run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser \
         eval-traj eval-recon eval-metric perf report all \
         preview snapshots docs docs-serve clean clean-results
 
@@ -46,7 +46,7 @@ help:
 	@echo ""
 	@echo "Run (each method in its OWN env, streaming harness):"
 	@echo "  make run-all          run every configured method -> common results layout"
-	@echo "  make run-<m>          one method: prism|pi3|vggtslam|mapanything|laser"
+	@echo "  make run-<m>          one method: prism|panovggt|pi3|vggtslam|mapanything|laser"
 	@echo ""
 	@echo "Evaluate (orchestrator env; reads only results/, imports no method):"
 	@echo "  make eval-traj        evo ATE/RPE (Sim(3) align)          -> ate.json"
@@ -132,6 +132,8 @@ export: setup
 # ── Stage 2: run each method in its OWN env (adapters shell out) ───────────────
 run-prism:
 	$(ORCH_RUN) adapters/prism.py       --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
+run-panovggt:
+	$(ORCH_RUN) adapters/panovggt.py    --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
 run-pi3:
 	$(ORCH_RUN) adapters/pi3.py         --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
 run-vggtslam:
@@ -140,7 +142,7 @@ run-mapanything:
 	$(ORCH_RUN) adapters/mapanything.py --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
 run-laser:
 	$(ORCH_RUN) adapters/laser.py       --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
-run-all: run-prism run-pi3 run-vggtslam run-mapanything run-laser
+run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
 	@echo ">> all configured methods run"
 
 # ── Stage 3: evaluate + report (orchestrator env; imports NO method) ───────────
