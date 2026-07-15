@@ -25,8 +25,11 @@
   pass); it is permutation-equivariant, NOT a streamer. ✅
 - **MapAnything** — verified (`MapAnything.from_pretrained("facebook/map-anything")`,
   `model.infer(views)`, outputs `pts3d`/`camera_poses`). Feed-forward metric, **full-batch**. ✅
-- **VGGT-SLAM, LASER** — streaming runners; seams still marked `<-- API line N`, confirm
-  against each repo after `make init` before running.
+- **VGGT-SLAM 2.0** — verified against the pinned commit. Drives the repo's `main.py`
+  (`--log_results` → TUM keyed by true frame_id; `_points.pcd` → cloud). Streaming SLAM
+  with SL(4) submaps + GTSAM + DINO-SALAD loop closure. ✅
+- **LASER** — streaming runner; seams still marked `<-- API line N`, confirm against the
+  repo after `make init` before running.
 
 ## Method modes
 Streaming (incremental): PRISM (ours), LASER, VGGT-SLAM. Full-batch feed-forward: Pi3/Pi3X,

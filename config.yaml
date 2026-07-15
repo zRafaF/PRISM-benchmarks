@@ -118,6 +118,12 @@ methods:
 # tight (null = use all). Subsampling keeps global frame indices as TUM timestamps.
 baselines:
   max_frames: null
+
+# VGGT-SLAM (streaming) tuning — drives its own main.py.
+vggtslam:
+  max_loops: 1               # loop closure ON (its strength; native mode). 0 disables.
+  submap_size: 16            # frames per SL(4) submap (matches our window)
+  min_disparity: 50          # optical-flow keyframe-selection threshold
 # PanoVGGT-no-SLAM ablation intentionally EXCLUDED: full-batch of ours = benchmarking
 # PanoVGGT alone, not the streaming engine. (Decision 2026-07-13.)
 

@@ -1,24 +1,25 @@
 #!/usr/bin/env python
 """VGGT-SLAM runner — executed by submodules/VGGT-SLAM/.venv/bin/python.
 
-VGGT-SLAM is natively incremental (submap SL(4)/SE(3) factor graph + DINOv2-SALAD).
-We drive it in streaming order over the PINHOLE sequence and read back its global
-trajectory + fused map. Scale-free -> metric=false (Sim(3)+scale align for ATE).
+VGGT-SLAM 2.0 (MIT-SPARK @ 35327ac) is a real-time INCREMENTAL SLAM: it streams the
+pinhole frames, selects keyframes by optical flow, builds SL(4) submaps in a GTSAM
+factor graph with DINO-SALAD loop closure. It's the primary *streaming* comparison for
+PRISM (both process frames online).
 
-Emits poses.tum, cloud.ply, perf_runner.json.
-
-NOTE: confirm the entrypoint against the pinned commit
-(MIT-SPARK/VGGT-SLAM @ 35327ac). The repo ships a runnable demo/main — prefer
-calling its offline solver over reimplementing. The marked lines are the seams.
+We drive the repo's own `main.py` (its documented entrypoint) and convert its outputs:
+  * `--log_results --log_path poses.txt` -> TUM lines "frame_id tx ty tz qx qy qz qw"
+    (frame_id = true global index -> aligns with our GT; keyframe subset is fine for evo).
+  * `<log>_points.pcd` -> colored dense cloud.
+Scale-free -> metric=false. Emits poses.tum, cloud.ply, perf_runner.json.
 """
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
-
-import numpy as np
-import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 import runner_io as _io
@@ -31,39 +32,51 @@ def main():
     ap.add_argument("--config", required=True)
     args = ap.parse_args()
     out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
 
     import yaml
     cfg = yaml.safe_load(Path(args.config).read_text())
-    stream = cfg["streaming"]
-    seq = _io.load_sequence(args.in_dir)
+    vs = cfg.get("vggtslam", {})
+    submap = int(vs.get("submap_size", cfg["engine"]["window_size"]))
+    max_loops = int(vs.get("max_loops", 1))          # 1 = loop closure on (native); 0 = off
+    min_disp = float(vs.get("min_disparity", 50))    # optical-flow keyframe threshold
 
-    # --- build the VGGT-SLAM solver (confirm import/args vs pinned commit) ---
-    from vggt_slam.solver import Solver        # <-- API line 0 (confirm module path)
-    solver = Solver(                            # <-- API line 1 (confirm ctor args)
-        max_loops=0,                            # non-looping to match PRISM's shipped mode
-        vis=False,
-    )
+    rgb_dir = Path(args.in_dir) / "rgb"
+    poses_txt = out / "poses.txt"
 
-    per_window, t0 = [], time.perf_counter()
-    # Feed frames in streaming order; VGGT-SLAM manages its own keyframe/submap graph.
-    frame_paths = [str(Path(args.in_dir) / "rgb" / f"{nm}.png") for nm in seq["names"]]
-    for w_start in range(0, len(frame_paths), max(1, stream["window_size"] - stream["overlap"])):
-        chunk = frame_paths[w_start:w_start + stream["window_size"]]
-        if not chunk:
-            break
-        t = time.perf_counter()
-        solver.add_frames(chunk)                # <-- API line 2 (confirm incremental call)
-        per_window.append(time.perf_counter() - t)
-    solver.optimize()                           # <-- API line 3 (final graph solve)
+    # cwd is the VGGT-SLAM repo (set by the adapter); main.py is its entrypoint.
+    cmd = [sys.executable, "main.py",
+           "--image_folder", str(rgb_dir),
+           "--log_results", "--log_path", str(poses_txt),
+           "--submap_size", str(submap),
+           "--max_loops", str(max_loops),
+           "--min_disparity", str(min_disp)]
+    print("[vggtslam_runner] $", " ".join(cmd))
+    t0 = time.perf_counter()
+    rc = subprocess.run(cmd).returncode
     wall = time.perf_counter() - t0
+    if rc != 0:
+        print(f"[vggtslam_runner] main.py exited {rc}")
 
-    poses = np.asarray(solver.get_poses())      # <-- API line 4 (N,4,4 cam->world)
-    pts, cols = solver.get_pointcloud()         # <-- API line 5 (points[,colors])
-    _io.write_tum(out / "poses.tum", list(range(len(poses))), poses)
-    _io.write_cloud(out / "cloud.ply", np.asarray(pts),
-                    np.asarray(cols) if cols is not None else None)
-    _io.write_runner_perf(out, per_window_latency_s=per_window, latency_end_to_end_s=wall)
-    print(f"[vggtslam_runner] {len(poses)} poses, {wall:.1f}s")
+    # poses.txt is already TUM (frame_id = timestamp) -> poses.tum
+    if poses_txt.exists():
+        shutil.copyfile(poses_txt, out / "poses.tum")
+        n = sum(1 for _ in open(out / "poses.tum"))
+    else:
+        n = 0
+        print("[vggtslam_runner] WARN: no poses.txt produced")
+
+    # dense cloud: <log>_points.pcd -> cloud.ply
+    pcd = out / "poses_points.pcd"
+    npts = 0
+    if pcd.exists():
+        import open3d as o3d
+        pc = o3d.io.read_point_cloud(str(pcd))
+        o3d.io.write_point_cloud(str(out / "cloud.ply"), pc)
+        npts = len(pc.points)
+
+    _io.write_runner_perf(out, per_window_latency_s=[], latency_end_to_end_s=wall)
+    print(f"[vggtslam_runner] {n} keyframe poses, {npts} pts, {wall:.1f}s")
 
 
 if __name__ == "__main__":
