@@ -51,13 +51,21 @@ def _render(pts, cols, limits, view, bg, out_path, point_size):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    fg = "white" if bg == "black" else "black"
+    import matplotlib.cm as cm
     fig = plt.figure(figsize=(6, 6), facecolor=bg)
     ax = fig.add_subplot(111, projection="3d")
     ax.set_facecolor(bg)
-    c = cols if cols is not None else np.full((len(pts), 3), 0.6)
-    ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=np.clip(c, 0, 1),
-               s=point_size, marker=".", linewidths=0, depthshade=False)
+    # Prefer real RGB; if the cloud has no colours, colour by height so it's never flat.
+    if cols is not None and len(cols) == len(pts):
+        c = np.clip(np.asarray(cols, dtype=float), 0, 1)
+        if c.max() > 1.0:
+            c = c / 255.0
+    else:
+        z = pts[:, 2]
+        zn = (z - z.min()) / max(float(z.max() - z.min()), 1e-6)
+        c = cm.viridis(zn)[:, :3]
+    ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2], c=c,
+               s=point_size, marker="o", linewidths=0, depthshade=False)
     (xlo, xhi), (ylo, yhi), (zlo, zhi) = limits
     ax.set_xlim(xlo, xhi); ax.set_ylim(ylo, yhi); ax.set_zlim(zlo, zhi)
     ax.set_box_aspect((xhi - xlo, yhi - ylo, zhi - zlo))
@@ -68,7 +76,7 @@ def _render(pts, cols, limits, view, bg, out_path, point_size):
     plt.close(fig)
 
 
-def generate(cfg, keep_h=2.0, max_points=120000, point_size=0.6,
+def generate(cfg, keep_h=2.0, max_points=120000, point_size=3.0,
              bgs=("black", "white"), views=None):
     views = views or VIEWS
     out_dir = REPO_ROOT / cfg["report"]["out_dir"] / "snapshots"
@@ -132,9 +140,10 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--keep-height", type=float, default=2.0, help="metres above floor to keep (ceiling clip)")
     ap.add_argument("--max-points", type=int, default=120000)
+    ap.add_argument("--point-size", type=float, default=3.0, help="marker size in the render")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    generate(cfg, keep_h=args.keep_height, max_points=args.max_points)
+    generate(cfg, keep_h=args.keep_height, max_points=args.max_points, point_size=args.point_size)
 
 
 if __name__ == "__main__":

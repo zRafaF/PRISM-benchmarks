@@ -100,10 +100,11 @@ def save_config_fields(rates_str, scenes_str, max_frames, fscore_thr, noise_thr)
 
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────
-def make_snapshots(keep_h, max_points):
+def make_snapshots(keep_h, max_points, point_size):
     from eval import snapshots
     cfg = load_config("config.yaml")
-    paths = snapshots.generate(cfg, keep_h=float(keep_h), max_points=int(max_points))
+    paths = snapshots.generate(cfg, keep_h=float(keep_h), max_points=int(max_points),
+                               point_size=float(point_size))
     return paths, (str(_zip_dir(SNAP_DIR)) if paths else None)
 
 
@@ -260,11 +261,12 @@ def build_app():
                         "floor), ceiling clipped, on black & white backgrounds.")
             with gr.Row():
                 keep_h = gr.Slider(0.0, 3.0, value=2.0, step=0.1, label="Keep height above floor (m); ceiling above is removed")
-                snap_maxp = gr.Slider(20000, 300000, value=120000, step=10000, label="Max points")
+                snap_maxp = gr.Slider(20000, 400000, value=150000, step=10000, label="Max points")
+                snap_ptsize = gr.Slider(0.5, 12.0, value=3.0, step=0.5, label="Point size")
             snap_btn = gr.Button("Generate snapshots", variant="primary")
             gallery = gr.Gallery(label="Snapshots", columns=4, height=520)
             snap_zip = gr.File(label="Download all (zip)", interactive=False)
-            snap_btn.click(make_snapshots, [keep_h, snap_maxp], [gallery, snap_zip])
+            snap_btn.click(make_snapshots, [keep_h, snap_maxp, snap_ptsize], [gallery, snap_zip])
 
         with gr.Tab("Point cloud"):
             clouds = list_clouds()

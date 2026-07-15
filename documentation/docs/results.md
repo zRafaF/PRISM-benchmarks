@@ -8,47 +8,48 @@
 **Setup.** Scene: Replica `office_4`, one floor-anchored constant-velocity walkthrough
 captured at **2.0 Hz → 50 frames** (all methods on the *same* frames). PRISM consumes the
 equirectangular pano (1036×518); baselines consume the matched pinhole (`synthetic_fov`)
-frames. Each method runs in its **native mode**: PRISM streams (pano); VGGT-SLAM is its own
-incremental SL(4) SLAM (pinhole); Pi3X and MapAnything are full-batch feed-forward (pinhole).
+frames. Each method runs in its **native mode**: **PRISM** streams (pano); **VGGT-SLAM** is
+its own incremental SL(4) SLAM and **LASER** a training-free streamer (both pinhole);
+**PanoVGGT** (the raw backbone, pano), **Pi3X** and **MapAnything** are full-batch feed-forward.
 GT = exact render poses + scene mesh. Hardware RTX PRO 6000 — **VRAM/util this run are
 unreliable (a second container shared the GPU), so ignore Table A memory here.**
 
-## Four-method comparison (office_4 / synthetic_2.0hz — the fair run)
+## Six-method comparison (office_4 / synthetic_2.0hz — the fair run)
 
-| Metric | PRISM (pano, stream) | VGGT-SLAM (pinhole, SLAM) | Pi3X (pinhole, batch) | MapAnything (pinhole, batch) |
-|---|---|---|---|---|
-| Metric scale err %↓ | **0.2** | N/A | 13.7 | 2.2 |
-| ATE RMSE cm↓ | **1.8** | 30.7 | 5.2 | 26.1 |
-| Recon accuracy cm↓ | **2.3** | 3.3 | 2.5 | 11.5 |
-| Recon F@5cm↑ (masked) | 0.830 | 0.726 | **0.960** | 0.441 |
-| Recon F@5cm↑ (full-360) | 0.712 | 0.552 | **0.845** | 0.390 |
-| Map size MB↓ | **9.7** | 85.8 | 16.2 | 18.3 |
-| Noise % (floaters)↓ | **0.5** | 1.0 | **0.5** | 42.8 |
-| Precision @2cm %↑ | **49.8** | 28.2 | 47.7 | 14.5 |
+VRAM/util omitted (a second container shared the GPU this run). Grouped by role.
+
+| Method | Mode | Scale err %↓ | ATE cm↓ | Masked F@5↑ | Full-360 F@5↑ | Map MB↓ | Noise %↓ | Prec@2cm %↑ |
+|---|---|---|---|---|---|---|---|---|
+| **PRISM (ours)** | stream · pano | **0.2** | 1.8 | 0.830 | 0.712 | **9.7** | 0.5 | 49.8 |
+| VGGT-SLAM | stream · pinhole | N/A | 30.7 | 0.726 | 0.553 | 85.8 | 1.0 | 28.2 |
+| LASER | stream · pinhole | N/A | 4.2 | 0.870 | 0.728 | **1.8** | 6.1 | 40.0 |
+| PanoVGGT (raw backbone) | batch · pano | N/A | **0.9** | **0.967** | **0.922** | 70.0 | 1.4 | **52.6** |
+| Pi3X | batch · pinhole | 13.7 | 5.2 | 0.960 | 0.844 | 16.2 | 0.5 | 47.6 |
+| MapAnything | batch · pinhole | 2.2 | 26.1 | 0.441 | 0.389 | 18.3 | 42.8 | 14.5 |
 
 **Preliminary observations.**
 
-- **PRISM leads or ties nearly everything except raw masked F-score.** It has the best
-  metric scale (**0.2%**), best trajectory (**ATE 1.8 cm**), best reconstruction accuracy
-  (2.3 cm), the **most compact map (9.7 MB)**, and the **sharpest, cleanest cloud** (49.8%
-  precision@2cm, 0.5% floaters). It also uniquely covers 360°.
-- **Pi3X is the reconstruction-quality leader (masked F 0.960)** — but it is **full-batch
-  offline** (not streaming), the **worst on metric scale (13.7%)**, and pinhole-only. It's
-  the "offline upper bound," not a deployable streaming competitor.
-- **VGGT-SLAM (the true streaming peer): PRISM wins across the board** — ATE 1.8 vs 30.7 cm,
-  masked F 0.830 vs 0.726, map 9.7 vs 85.8 MB, metric vs scale-free. VGGT-SLAM's high ATE
-  partly reflects that a short, non-looping pinhole clip is not its intended regime (it's
-  built for larger looping trajectories). Its **RPE is not comparable** — it emits sparse
-  keyframes, and our per-frame RPE measures keyframe-to-keyframe motion (a known artifact;
-  fix pending).
-- **MapAnything degrades at this frame count** (masked F 0.441, **42.8% floaters**) — the
-  feed-forward metric model wants many more views than 50 to shine.
-- **Headline:** in the streaming/real-time regime that matters for a telepresence robot,
-  **PRISM is the strongest all-around method**; the only thing beating it on pure recon
-  F-score is an offline, non-metric, pinhole full-batch model (Pi3X).
+- **The engine's contribution, made explicit.** Raw **PanoVGGT** — the same backbone PRISM
+  wraps, run *offline over all frames* — is the pano upper bound (masked F **0.967**, ATE
+  **0.9 cm**). PRISM's streaming engine turns that backbone into a **causal, streaming,
+  metric (0.2% vs scale-free), and compact (9.7 MB vs 70 MB — ~7×)** system, at the cost of
+  some offline reconstruction quality (F 0.830) and ATE (1.8 cm). **That trade — deployability
+  for a modest quality hit — is exactly the engine's value.**
+- **Among streaming methods (PRISM, VGGT-SLAM, LASER), PRISM is the best all-rounder:** only
+  metric one (0.2%), best-but-one ATE (1.8 cm), most complete 360° coverage, compact map.
+  **LASER** edges masked F (0.870) but produces a very sparse map (1.8 MB / 122 k pts) and is
+  scale-free; **VGGT-SLAM** is weakest here (ATE 30.7 — a short non-looping pinhole clip is
+  not its regime).
+- **Full-batch references set the ceiling:** PanoVGGT (pano) and Pi3X (pinhole) lead on recon
+  F, but both are offline and Pi3X is badly non-metric (13.7%). **MapAnything** collapses at
+  50 frames (F 0.441, 42.8% floaters).
+- **Cleanliness/compactness:** PRISM and Pi3X are cleanest (0.5% floaters); PRISM has the most
+  compact dense map; MapAnything is by far the fluffiest.
 
 Recon quality (Table C) is scale-normalised (Sim(3)+ICP) so scale-free methods aren't
 penalised for scale; absolute metric scale (Table B) is reported only for metric methods.
+Each method runs in its **native mode**. VGGT-SLAM/LASER RPE is not comparable (sparse
+keyframes vs. our per-frame delta — fix pending).
 
 !!! note "On 360° coverage vs. pinhole (discussed in text, not benchmarked)"
     The intuitive way to give a pinhole model 360° coverage is to feed it the panorama as
