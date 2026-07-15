@@ -13,7 +13,11 @@ cd "$REPO_ROOT/submodules/VGGT-SLAM"
 echo "[vggtslam] isolated venv (Python 3.11)"
 [ -d .venv ] || uv venv --python 3.11 .venv
 
-echo "[vggtslam] base requirements"
+# Self-heal: purge ANY gtsam so requirements reinstalls only gtsam-develop (the SL(4)
+# build). A stray stable `gtsam` collides with it -> "cannot import NonlinearFactorGraph".
+uv pip uninstall --python .venv gtsam gtsam-develop >/dev/null 2>&1 || true
+
+echo "[vggtslam] base requirements (incl. gtsam-develop with SL(4))"
 [ -f requirements.txt ] && uv pip install --python .venv -r requirements.txt || true
 
 mkdir -p third_party
