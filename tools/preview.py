@@ -40,7 +40,18 @@ MAKE_TARGETS = [
 
 
 # ── Run pipeline (stream make output) ─────────────────────────────────────────
+# Log lives at the REPO ROOT (not under results/, which `clean-results` wipes mid-run).
+LOGPATH = REPO_ROOT / "studio_run.log"
+
+
+def _bar(k, n):
+    filled = int(20 * k / max(n, 1))
+    return "|" + "#" * filled + "." * (20 - filled) + f"| {100*k//max(n,1):d}%"
+
+
 def run_targets(targets, scenes, traj):
+    """Run each make target IN TURN, streaming to Gradio AND the terminal, with a
+    per-target progress bar. Stops at the first failure (so the log shows what broke)."""
     if not targets:
         yield "Select at least one target.", None
         return
@@ -49,24 +60,38 @@ def run_targets(targets, scenes, traj):
         extra.append(f"SCENES={scenes.strip()}")
     if traj and traj.strip():
         extra.append(f"TRAJ={traj.strip()}")
-    cmd = ["make"] + list(targets) + extra
-    logpath = RESULTS / "report" / "studio_run.log"
-    logpath.parent.mkdir(parents=True, exist_ok=True)
-    acc = "$ " + " ".join(cmd) + "\n\n"
-    yield acc, None
-    try:
-        p = subprocess.Popen(cmd, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, bufsize=1)
-    except Exception as e:
-        yield acc + f"[failed to launch: {e}]", None
-        return
-    for line in p.stdout:
-        acc += line
+
+    acc = ""
+    n = len(targets)
+    lf = open(LOGPATH, "w")
+
+    def emit(text):
+        nonlocal acc
+        acc += text
+        lf.write(text); lf.flush()
+        print(text, end="", flush=True)      # also to the terminal — survives a UI crash
+
+    for k, tgt in enumerate(targets, 1):
+        emit(f"\n{'='*64}\n[{k}/{n}] {_bar(k-1, n)}  make {tgt} {' '.join(extra)}\n{'='*64}\n")
         yield acc, None
-    p.wait()
-    acc += f"\n[exit code {p.returncode}]\n"
-    logpath.write_text(acc)
-    yield acc, str(logpath)
+        try:
+            p = subprocess.Popen(["make", tgt] + extra, cwd=str(REPO_ROOT),
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+        except Exception as e:
+            emit(f"[failed to launch: {e}]\n"); yield acc, str(LOGPATH); return
+        for line in p.stdout:
+            emit(line)
+            yield acc, str(LOGPATH)
+        p.wait()
+        emit(f"[{k}/{n}] {tgt} -> exit {p.returncode}\n")
+        yield acc, str(LOGPATH)
+        if p.returncode != 0:
+            emit(f"\n[STOPPED — '{tgt}' failed; fix and re-run]\n")
+            lf.close(); yield acc, str(LOGPATH); return
+    emit(f"\n[DONE {n}/{n}] {_bar(n, n)}\n")
+    lf.close()
+    yield acc, str(LOGPATH)
 
 
 METHODS = ["prism", "panovggt", "pi3", "vggtslam", "mapanything", "laser"]
@@ -267,8 +292,9 @@ def build_app():
                         "render → export → run methods → eval → report (→ snapshots). "
                         "Output streams live; the log is downloadable.")
             r0, s0, m0, _f0, _n0 = load_config_fields()
+            default_scenes = s0 if len(s0.split()) >= 2 else "office_4 apartment_0"
             with gr.Row():
-                pl_scenes = gr.Textbox(value=s0, label="Scenes (space-separated)", scale=2)
+                pl_scenes = gr.Textbox(value=default_scenes, label="Scenes (space-separated)", scale=2)
                 pl_rates = gr.Textbox(value=(r0 or "0.5,2.0,5.0"), label="Rates Hz (comma)", scale=1)
                 pl_maxf = gr.Number(value=m0, label="max_frames (0=all)", precision=0, scale=1)
             pl_methods = gr.CheckboxGroup(METHODS, value=METHODS, label="Methods to run")

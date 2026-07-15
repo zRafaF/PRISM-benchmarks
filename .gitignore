@@ -29,6 +29,9 @@ submodules/**/*.so
 # Per-machine config overlay (frozen scene list from `make split`)
 config.local.yaml
 
+# Studio run log (repo root so clean-results can't wipe it mid-run)
+studio_run.log
+
 # Docs build
 site/
 
