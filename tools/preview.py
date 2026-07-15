@@ -156,13 +156,7 @@ def save_config_fields(rates_str, scenes_str, max_frames, fscore_thr, noise_thr)
 
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────
-def make_snapshots(keep_h, max_points, point_size):
-    from eval import snapshots
-    cfg = load_config("config.yaml")
-    snapshots.generate(cfg, keep_h=float(keep_h), max_points=int(max_points),
-                       point_size=float(point_size))
-    # show a filtered default subset (all ~150 at once won't render in the gallery)
-    return list_snapshots(), (str(_zip_dir(SNAP_DIR)) if SNAP_DIR.exists() else None)
+# (snapshot generation is wired inline in the Snapshots tab via eval.snapshots.generate)
 
 
 def _zip_dir(d: Path):
@@ -187,28 +181,54 @@ def _snap_bg(n):
     return "black" if n.endswith("__black.png") else ("white" if n.endswith("__white.png") else "")
 
 
-def list_snapshots(scene="all", method="all", view="oblique", bg="white", limit=60):
-    """Filtered list of existing snapshot PNGs (the gallery can't load all ~150 at once)."""
+def _filter_snaps(scenes, methods, views, bgs):
+    """Filter snapshot PNGs by multi-select criteria (empty list = no filter on that field)."""
     if not SNAP_DIR.exists():
         return []
-    out = []
+    files = []
     for p in sorted(SNAP_DIR.glob("*.png")):
         n = p.name
-        if scene != "all" and _snap_scene(n) != scene:
+        if scenes and _snap_scene(n) not in scenes:
             continue
-        if method != "all" and _snap_method(n) != method:
+        if methods and _snap_method(n) not in methods:
             continue
-        if view != "all" and _snap_view(n) != view:
+        if views and _snap_view(n) not in views:
             continue
-        if bg != "all" and _snap_bg(n) != bg:
+        if bgs and _snap_bg(n) not in bgs:
             continue
-        out.append(str(p))
-    return out[:limit]
+        files.append(str(p))
+    return files
+
+
+PAGE_SIZE = 24
+
+
+def snap_page(scenes, methods, views, bgs, page):
+    """Return (paths_for_page, status_text) — paginated so the gallery always loads."""
+    files = _filter_snaps(scenes, methods, views, bgs)
+    n = len(files)
+    pages = max(1, (n + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(int(page or 1), pages))
+    sl = files[(page - 1) * PAGE_SIZE: page * PAGE_SIZE]
+    return sl, f"{n} images match · page {page}/{pages}  ({PAGE_SIZE}/page)"
+
+
+def zip_filtered(scenes, methods, views, bgs):
+    """Zip the currently-filtered snapshots for download."""
+    import zipfile
+    files = _filter_snaps(scenes, methods, views, bgs)
+    if not files:
+        return None
+    tmp = tempfile.mkdtemp()
+    zpath = os.path.join(tmp, "snapshots.zip")
+    with zipfile.ZipFile(zpath, "w") as z:
+        for f in files:
+            z.write(f, os.path.basename(f))
+    return zpath
 
 
 def _snap_scene_choices():
-    scenes = sorted({_snap_scene(p.name) for p in SNAP_DIR.glob("*.png")}) if SNAP_DIR.exists() else []
-    return ["all"] + scenes
+    return sorted({_snap_scene(p.name) for p in SNAP_DIR.glob("*.png")}) if SNAP_DIR.exists() else []
 
 
 # ── Frame preview ─────────────────────────────────────────────────────────────
@@ -376,26 +396,38 @@ def build_app():
 
         with gr.Tab("Snapshots"):
             gr.Markdown("Standardized paper images — every cloud aligned to GT (ground on "
-                        "floor), ceiling clipped, black & white backgrounds. The gallery is "
-                        "**filtered** (all ~150 won't load at once) — pick filters and Show.")
+                        "floor), ceiling clipped, black & white backgrounds.")
             with gr.Row():
                 keep_h = gr.Slider(0.0, 3.0, value=2.0, step=0.1, label="Keep height (m)")
                 snap_maxp = gr.Slider(20000, 400000, value=150000, step=10000, label="Max points")
                 snap_ptsize = gr.Slider(0.5, 15.0, value=5.0, step=0.5, label="Point size")
             snap_btn = gr.Button("Generate snapshots (all methods × scenes × rates)", variant="primary")
-            gr.Markdown("**Filter the gallery:**")
+            gr.Markdown("**Filter (multi-select; empty = all) + paginate:**")
             with gr.Row():
-                f_scene = gr.Dropdown(_snap_scene_choices(), value="all", label="Scene")
-                f_method = gr.Dropdown(["all"] + METHODS + ["GT"], value="all", label="Method")
-                f_view = gr.Dropdown(["all", "oblique", "top"], value="oblique", label="View")
-                f_bg = gr.Dropdown(["all", "black", "white"], value="white", label="Background")
-                show_btn = gr.Button("Show")
-            gallery = gr.Gallery(label="Snapshots (max 60 shown)", columns=4, height=560)
-            snap_zip = gr.File(label="Download all (zip)", interactive=False)
-            snap_btn.click(make_snapshots, [keep_h, snap_maxp, snap_ptsize], [gallery, snap_zip])
-            show_btn.click(lambda s, m, v, b: list_snapshots(s, m, v, b),
-                           [f_scene, f_method, f_view, f_bg], gallery)
-            demo.load(lambda: list_snapshots(), None, gallery)
+                f_scene = gr.Dropdown(_snap_scene_choices(), value=[], multiselect=True, label="Scenes")
+                f_method = gr.Dropdown(METHODS + ["GT"], value=[], multiselect=True, label="Methods")
+            with gr.Row():
+                f_view = gr.Dropdown(["oblique", "top"], value=["oblique"], multiselect=True, label="Views")
+                f_bg = gr.Dropdown(["black", "white"], value=["white"], multiselect=True, label="Backgrounds")
+                f_page = gr.Number(value=1, precision=0, label="Page")
+                show_btn = gr.Button("Show / next page", variant="primary")
+            snap_status = gr.Markdown("")
+            gallery = gr.Gallery(label="Snapshots", columns=4, height=560)
+            with gr.Row():
+                dl_btn = gr.Button("Zip filtered for download")
+                snap_zip = gr.File(label="Download", interactive=False)
+
+            def _gen(kh, mp, ps):
+                from eval import snapshots
+                snapshots.generate(load_config("config.yaml"), keep_h=float(kh),
+                                   max_points=int(mp), point_size=float(ps))
+                imgs, status = snap_page([], [], ["oblique"], ["white"], 1)
+                return imgs, status, gr.update(choices=_snap_scene_choices())
+
+            snap_btn.click(_gen, [keep_h, snap_maxp, snap_ptsize], [gallery, snap_status, f_scene])
+            show_btn.click(snap_page, [f_scene, f_method, f_view, f_bg, f_page], [gallery, snap_status])
+            dl_btn.click(zip_filtered, [f_scene, f_method, f_view, f_bg], snap_zip)
+            demo.load(lambda: snap_page([], [], ["oblique"], ["white"], 1), None, [gallery, snap_status])
 
         with gr.Tab("Point cloud"):
             clouds = list_clouds()
@@ -435,5 +467,11 @@ def build_app():
     return demo
 
 
+def launch():
+    # allowed_paths so gr.File can serve zips/logs from tmp + the repo (downloads).
+    build_app().launch(server_name="0.0.0.0", server_port=7860, share=True,
+                       allowed_paths=[tempfile.gettempdir(), str(REPO_ROOT)])
+
+
 if __name__ == "__main__":
-    build_app().launch(server_name="0.0.0.0", server_port=7860, share=True)
+    launch()

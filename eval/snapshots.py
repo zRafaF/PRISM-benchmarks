@@ -124,11 +124,11 @@ def generate(cfg, keep_h=2.0, max_points=120000, point_size=5.0,
         pred, pcols = _load_points(cloud)
         if len(pred) == 0:
             continue
+        # Trajectory Sim(3) alignment only — NO ICP for snapshots. ICP diverges on a
+        # badly-drifted cloud (e.g. VGGT-SLAM on the apartment: fitness ~0.34) and rotates/
+        # shrinks it in the image. The Sim(3) from the trajectory is robust for a visual.
+        # (eval_recon still uses ICP for the metric numbers.)
         pred, _ = _align_pred_to_gt(pred, cloud.parent / "poses.tum", gt_tum, correct_scale)
-        try:
-            pred = _icp_refine(pred, gt_pts, cfg["eval"].get("icp", {}).get("max_dist_m", 0.15))
-        except Exception:
-            pass
         pred, pcols = _clip_ceiling(pred, pcols, floor_z, keep_h)
         pred, pcols = _subsample(pred, pcols, max_points)
         for vn, v in views.items():

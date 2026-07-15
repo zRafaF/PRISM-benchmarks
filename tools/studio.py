@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from preview import build_app
+from preview import launch
 
 if __name__ == "__main__":
-    build_app().launch(server_name="0.0.0.0", server_port=7860, share=True)
+    launch()
