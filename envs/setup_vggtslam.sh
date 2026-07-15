@@ -41,4 +41,19 @@ install_torch_cu128 .venv
 # (numpy 2.0 breaks older np APIs used by the SLAM code). torch 2.8 works with numpy 1.26.
 uv pip install --python .venv "numpy==1.26.4"
 
+# DINO-SALAD loop-closure checkpoint: loop_closure.py loads it unconditionally from
+# <torch_hub>/checkpoints/dino_salad.ckpt, but setup.sh never downloads it. Fetch from the
+# SALAD Google Drive (gdown handles the confirm token).
+CKPT_DIR="$(.venv/bin/python -c 'import torch; print(torch.hub.get_dir())')/checkpoints"
+mkdir -p "$CKPT_DIR"
+if [ ! -f "$CKPT_DIR/dino_salad.ckpt" ]; then
+    echo "[vggtslam] fetching dino_salad.ckpt (SALAD loop-closure weights)"
+    uv pip install --python .venv gdown
+    .venv/bin/python -m gdown "https://drive.google.com/uc?id=1u83Dmqmm1-uikOPr58IIhfIzDYwFxCy1" \
+        -O "$CKPT_DIR/dino_salad.ckpt" || \
+        echo "[vggtslam][!] gdown failed (Drive quota?). Manually place dino_salad.ckpt in $CKPT_DIR"
+else
+    echo "[vggtslam] dino_salad.ckpt already present"
+fi
+
 echo "[vggtslam] done. (PE/SAM3 skipped — only needed for --run_os; VGGT-1B weights pull from HF on first run)"
