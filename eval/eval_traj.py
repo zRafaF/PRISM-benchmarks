@@ -10,6 +10,8 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench.config import REPO_ROOT, load_config
 
@@ -37,10 +39,23 @@ def eval_one(pred: Path, gt: Path, correct_scale: bool) -> dict:
     ate.process_data((traj_ref, traj_est))
     rpe = metrics.RPE(metrics.PoseRelation.translation_part, delta=1, delta_unit=metrics.Unit.frames)
     rpe.process_data((traj_ref, traj_est))
+
+    # Fair, density-normalized drift: |Δpred - Δgt| / |Δgt| between consecutive matched
+    # poses, i.e. relative pose error PER METRE of GT motion. Unlike frame-delta RPE this
+    # is comparable across dense (per-frame) and sparse (keyframe) methods, so VGGT-SLAM /
+    # LASER keyframe outputs aren't unfairly penalised for large keyframe spacing.
+    est = np.asarray(traj_est.positions_xyz)
+    ref = np.asarray(traj_ref.positions_xyz)
+    de, dr = np.diff(est, axis=0), np.diff(ref, axis=0)
+    seg = np.linalg.norm(dr, axis=1)
+    m = seg > 1e-3
+    rpe_per_m = float(np.mean(np.linalg.norm(de - dr, axis=1)[m] / seg[m])) if m.any() else None
+
     return {
         "ate_rmse_m": float(ate.get_statistic(metrics.StatisticsType.rmse)),
         "ate_mean_m": float(ate.get_statistic(metrics.StatisticsType.mean)),
         "rpe_rmse_m": float(rpe.get_statistic(metrics.StatisticsType.rmse)),
+        "rpe_per_m": rpe_per_m,            # drift fraction per metre (fair across densities)
         "n_poses": int(traj_est.num_poses),
         "aligned_scale_corrected": correct_scale,
         "alignment_scale": align_scale,

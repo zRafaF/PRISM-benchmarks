@@ -23,10 +23,10 @@ from bench.perf import PerfResult, ResourceSampler
 
 
 def method_cfg(cfg: dict, name: str) -> dict:
-    for m in cfg["methods"]:
+    for m in cfg.get("methods", []) + cfg.get("ablations", []):
         if m["name"] == name:
             return m
-    raise KeyError(f"method '{name}' not in config.methods")
+    raise KeyError(f"method '{name}' not in config.methods or config.ablations")
 
 
 def method_python(env_rel: str) -> Path:
@@ -55,8 +55,14 @@ def run_method(name: str):
         print(f"[{name}] env python not found at {py} — run 'make setup-{name}' first.")
         return
 
-    runner = Path(__file__).parent / "runners" / f"{name}_runner.py"
+    # `runner` override lets ablations (prism_nolock, ...) reuse prism_runner.
+    runner = Path(__file__).parent / "runners" / f"{mcfg.get('runner', name)}_runner.py"
     device_index = 0
+    # `run_env` overrides let ablations toggle PRISM engine guards via env vars.
+    run_env = os.environ.copy()
+    run_env.update({k: str(v) for k, v in (mcfg.get("run_env") or {}).items()})
+    if mcfg.get("run_env"):
+        print(f"[{name}] env overrides: {mcfg['run_env']}")
 
     for dataset in cfg["datasets"]["active"]:
         for scene in resolve_scenes(cfg, dataset, args.scenes):
@@ -86,7 +92,8 @@ def run_method(name: str):
                     hint = cfg.get("hardware", {}).get("hw_id")
                     with open(rp.run_log, "w") as log, \
                             ResourceSampler(device_index, pid=None, gpu_name_hint=hint) as smp:
-                        proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=cwd)
+                        proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                              cwd=cwd, env=run_env)
                     # frame count from the input meta
                     import json
                     meta = json.loads((in_dir / "meta.json").read_text())

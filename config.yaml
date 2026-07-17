@@ -122,6 +122,15 @@ methods:
 baselines:
   max_frames: null
 
+# ── PRISM ablations (engine-contribution study) ───────────────────────────────
+# Each is a PRISM run (runner: prism) with engine guards toggled via run_env. They
+# appear as their own "methods" in the results/report. `make ablations` runs them all.
+# (Sim(3)-vs-SE(3) and no-metric-grounding need a small PRISM-repo change — see roadmap.)
+ablations:
+  - {name: prism_nolock,   camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0"}}
+  - {name: prism_nostill,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {PRISM_STILL_GUARD: "0"}}
+  - {name: prism_noguards, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0", PRISM_STILL_GUARD: "0", PRISM_FLIP_GUARD: "0", PRISM_Z_RELEVEL: "0"}}
+
 # VGGT-SLAM (streaming) tuning — drives its own main.py.
 vggtslam:
   max_loops: 1               # loop closure ON (its strength; native mode). 0 disables.

@@ -40,6 +40,25 @@ Full-batch feed-forward: **PanoVGGT** (pano, raw backbone ref), **Pi3X**, **MapA
 (pinhole). PanoVGGT vs PRISM isolates the engine's contribution; PanoVGGT vs Pi3X/MapAnything
 is pano-vs-pinhole at equal (batch) footing.
 
+## Paper plan (agreed)
+- **Phase 1 (now): PRISM ablations + fair RPE.** ✅ built:
+  - `make ablations` runs PRISM with engine guards toggled via env (`config.ablations`):
+    `prism_nolock` (free Sim(3) scale), `prism_nostill` (no still-guard), `prism_noguards`
+    (all off). Shows what the drift-control guards contribute. They appear as their own
+    methods in the report.
+  - **Fair drift metric**: report now shows **Drift %/m** (relative pose error per metre of
+    GT motion) instead of frame-delta RPE, so keyframe-sparse methods (VGGT-SLAM/LASER)
+    aren't penalised for keyframe spacing.
+  - **Memory-scaling figure**: `vram_vs_frames.png` (peak VRAM vs #frames per method) — the
+    deployability plot (needs an isolated GPU run to be clean).
+  - **Still TODO (need a small PRISM-repo change, not env-toggleable):** Sim(3)-vs-SE(3)
+    alignment (add `PRISM_ALIGN=se3` to switch `register_camera_poses_sim3` →
+    `_kabsch`) and no-metric-grounding — both require editing the PRISM submodule.
+- **Phase 2:** wire **StreamVGGT** then **CUT3R**; scale to ~6–10 Replica scenes with seeds
+  for mean±std error bars (drops "preliminary").
+- **Phase 3:** ScanNet++ + real Theta-X captures; a looping trajectory variant (fair loop
+  closure for VGGT-SLAM/LASER); KITTI-360 (outdoor).
+
 ## Future streaming/SLAM baselines to add (from the SoTA)
 Preferably online/streaming for a fair table (see each paper's own comparisons):
 - **StreamVGGT** (Streaming 4D Visual Geometry Transformer) — causal VGGT; closest to our

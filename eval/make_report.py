@@ -124,10 +124,12 @@ def build_tables(runs, cfg, title) -> str:
 
     t = [[r["method"], f"{r['scene']}/{r['traj']}/{r['variant']}",
           _fmt((r['ate'] or {}).get("ate_rmse_m"), 100, 1),
-          _fmt((r['ate'] or {}).get("rpe_rmse_m"), 100, 1)]
+          _fmt((r['ate'] or {}).get("rpe_per_m"), 100, 1)]
          for r in runs if r["ate"]]
-    md += ["## Trajectory (ATE/RPE, Sim(3)-aligned)\n",
-           _md_table(["Method", "Run", "ATE RMSE cm↓", "RPE RMSE cm↓"], t), ""]
+    md += ["## Trajectory (ATE + drift/m, Sim(3)-aligned)\n",
+           "*Drift/m = relative pose error per metre of GT motion — fair across dense vs "
+           "keyframe-sparse methods (replaces the frame-delta RPE, which penalised keyframes).*\n",
+           _md_table(["Method", "Run", "ATE RMSE cm↓", "Drift %/m↓"], t), ""]
     return "\n".join(md)
 
 
@@ -188,6 +190,22 @@ def _write_plots(out: Path, runs):
         plt.xticks(range(len(fps)), [m for m, _ in fps], rotation=30, ha="right")
         plt.ylabel("Effective FPS"); plt.title("Throughput (preliminary)")
         plt.tight_layout(); plt.savefig(out / "fps.png", dpi=120); plt.close()
+
+    # Memory-scaling: peak VRAM vs #frames per method — the deployability figure
+    # (streaming methods stay bounded; full-batch grow with sequence length).
+    pts = {}
+    for r in runs:
+        p = r["perf"] or {}
+        if p.get("vram_peak_gb") and p.get("n_frames"):
+            pts.setdefault(r["method"], []).append((p["n_frames"], p["vram_peak_gb"]))
+    if pts:
+        plt.figure(figsize=(6, 4))
+        for method, xy in sorted(pts.items()):
+            xy = sorted(xy)
+            plt.plot([a for a, _ in xy], [b for _, b in xy], "o-", label=method)
+        plt.xlabel("# frames"); plt.ylabel("Peak VRAM (GB)")
+        plt.title("Memory scaling vs sequence length"); plt.legend(fontsize=7)
+        plt.tight_layout(); plt.savefig(out / "vram_vs_frames.png", dpi=120); plt.close()
 
 
 def main():

@@ -24,7 +24,7 @@ PYCHK    ?= python3
 .PHONY: help steps \
         init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
         download split render export \
-        run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser \
+        run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations \
         eval-traj eval-recon eval-metric perf report all \
         studio preview snapshots docs docs-serve clean clean-results
 
@@ -47,6 +47,7 @@ help:
 	@echo "Run (each method in its OWN env, streaming harness):"
 	@echo "  make run-all          run every configured method -> common results layout"
 	@echo "  make run-<m>          one method: prism|panovggt|pi3|vggtslam|mapanything|laser"
+	@echo "  make ablations        PRISM ablations (nolock, nostill, noguards) — engine study"
 	@echo ""
 	@echo "Evaluate (orchestrator env; reads only results/, imports no method):"
 	@echo "  make eval-traj        evo ATE/RPE (Sim(3) align)          -> ate.json"
@@ -144,6 +145,13 @@ run-laser:
 	$(ORCH_RUN) adapters/laser.py       --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
 run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
 	@echo ">> all configured methods run"
+
+# PRISM ablations (engine-contribution study) — each is a PRISM run with guards toggled.
+ablations: setup
+	@echo ">> running PRISM ablations (config.ablations)"
+	@for a in prism_nolock prism_nostill prism_noguards; do \
+	  $(ORCH_RUN) adapters/run.py --method $$a --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ) || exit 1; \
+	done
 
 # ── Stage 3: evaluate + report (orchestrator env; imports NO method) ───────────
 eval-traj: setup

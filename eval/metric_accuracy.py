@@ -57,7 +57,7 @@ def _bbox_diag(points: np.ndarray) -> float:
 
 
 def _metric_methods(cfg) -> set[str]:
-    return {m["name"] for m in cfg["methods"] if m.get("metric")}
+    return {m["name"] for m in cfg.get("methods", []) + cfg.get("ablations", []) if m.get("metric")}
 
 
 def main():
