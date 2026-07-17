@@ -49,7 +49,7 @@ def resample_path(poses: np.ndarray, n_frames: int) -> np.ndarray:
 
 def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
                      speed_mps: float = 0.5, rate_hz: float = 2.0,
-                     max_frames: int = 200) -> np.ndarray:
+                     max_frames: int = 200, close_loop: bool = False) -> np.ndarray:
     """Variant B: constant-velocity walkthrough on a Catmull-Rom spline.
 
     Frames are sampled by ARC LENGTH at spacing = speed/rate (so they simulate a
@@ -57,10 +57,18 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
     point), capped at `max_frames`. This makes the inter-frame baseline physical and
     identical for every method (they all consume these same frames). Returns
     (n,4,4) camera-to-world poses.
+
+    ``close_loop=True`` appends the first waypoints to the end so the path returns to
+    (and re-observes) its start — the loop-closure stress test: streaming methods with
+    no loop closure (PRISM/LASER) reveal uncorrected drift, while VGGT-SLAM's loop
+    closure can fire. The revisit is what makes SL(4) projective drift visible.
     """
     wp = np.asarray(waypoints, dtype=np.float64)
     if len(wp) < 4:
         raise ValueError("need >= 4 waypoints for Catmull-Rom")
+    if close_loop:
+        # Return to the start (and one past it) so the tail overlaps the head.
+        wp = np.concatenate([wp, wp[:2]], axis=0)
     dense = _catmull_rom(wp, 4000)                       # dense polyline
     seg = np.linalg.norm(np.diff(dense, axis=0), axis=1)
     cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -85,6 +93,39 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
     print(f"[traj] path_len={total_len:.1f}m spacing={spacing:.2f}m "
           f"(speed {speed_mps} m/s @ {rate_hz} Hz) -> {n} frames (cap {max_frames})")
     return poses
+
+
+def stop_and_go(waypoints: np.ndarray, camera_height: float = 1.7,
+                speed_mps: float = 0.5, rate_hz: float = 2.0, max_frames: int = 200,
+                n_stops: int = 2, dwell_s: float = 5.0) -> np.ndarray:
+    """Walk → stand still (dwell) → walk again, repeated ``n_stops`` times.
+
+    Built from the smooth spline, then each stop DUPLICATES the current pose for
+    ``dwell_s * rate`` frames — the camera is stationary while time advances. Zero
+    parallax makes the feed-forward backbone's near-ground depth degenerate, so this
+    is the trajectory that actually exercises PRISM's still-guard and lets drift/noise
+    accumulate around a parked robot (the 'square gap' failure). Frame budget is split
+    so moving + dwell frames total ≤ ``max_frames``.
+    """
+    dwell_frames = max(1, int(round(dwell_s * rate_hz)))
+    total_dwell = max(0, n_stops) * dwell_frames
+    moving_cap = max(4, int(max_frames) - total_dwell)
+    poses = synthetic_spline(waypoints, camera_height, speed_mps, rate_hz,
+                             max_frames=moving_cap)
+    n = len(poses)
+    if n < 3 or n_stops < 1:
+        return poses
+    # Stops evenly spaced in the interior (never the very first/last frame).
+    stop_idx = sorted({int(round(x)) for x in np.linspace(0, n - 1, n_stops + 2)[1:-1]})
+    out = []
+    for i in range(n):
+        out.append(poses[i])
+        if i in stop_idx:
+            out.extend(poses[i].copy() for _ in range(dwell_frames))
+    out = np.array(out[:int(max_frames)])
+    print(f"[traj] stop_and_go: {n} moving + {len(stop_idx)}×{dwell_frames} dwell "
+          f"-> {len(out)} frames (dwell {dwell_s}s @ {rate_hz} Hz)")
+    return out
 
 
 def _catmull_rom(pts: np.ndarray, n: int) -> np.ndarray:

@@ -180,7 +180,7 @@ def aggregate_global(runs, cfg) -> str:
 #  Compares what the extra DoF cost, on BOTH compute (the "computing impact") AND
 #  metric fidelity. Only the alignment arms are shown so the transform group is the
 #  only variable (backbone / fusion / trajectory identical across the three).
-_ALIGN_ARMS = [("prism", "Sim(3)", 7), ("prism_se3", "SE(3)", 6), ("prism_sl4", "SL(4)", 15)]
+_ALIGN_ARMS = [("prism", "SL(4)", 15), ("prism_sim3", "Sim(3)", 7), ("prism_se3", "SE(3)", 6)]
 
 
 def alignment_study(runs, cfg) -> str:

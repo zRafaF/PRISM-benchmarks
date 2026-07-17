@@ -25,7 +25,7 @@ PYCHK    ?= python3
         init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
-        eval-traj eval-recon eval-metric perf report all \
+        eval-traj eval-recon eval-metric perf report all bench-overnight \
         studio preview snapshots docs docs-serve clean clean-results
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
@@ -150,7 +150,7 @@ run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
 # PRISM ablations — guard-contribution study + alignment-group study (sim3/se3/sl4).
 # ALIGN=1 runs only the alignment arms; GUARDS=1 runs only the guard arms; default = all.
 ABL_GUARDS ?= prism_nolock prism_nostill prism_noguards
-ABL_ALIGN  ?= prism_se3 prism_sl4
+ABL_ALIGN  ?= prism_sim3 prism_se3
 ablations: setup
 	@echo ">> running PRISM ablations (config.ablations)"
 	@for a in $(ABL_GUARDS) $(ABL_ALIGN); do \
@@ -178,6 +178,16 @@ report: setup
 
 all: init setup-all download render export run-all eval-traj eval-recon eval-metric perf report
 	@echo ">> full pipeline complete — see results/report/"
+
+# ── Overnight big benchmark (SSH-proof, resumable, priority-ordered) ──────────
+# Runs the whole matrix in a detached tmux session so it survives disconnect.
+# Reattach: tmux attach -t bench   |   Monitor: tail -f logs/overnight_latest.log
+bench-overnight:
+	@command -v tmux >/dev/null 2>&1 || { echo "tmux not found: run 'nohup bash scripts/run_overnight.sh &' instead"; exit 1; }
+	tmux new -d -s bench 'bash scripts/run_overnight.sh'
+	@echo ">> launched in tmux session 'bench'."
+	@echo "   reattach: tmux attach -t bench"
+	@echo "   monitor : tail -f logs/overnight_latest.log"
 
 # ── Studio (browser control panel: run pipeline, config, snapshots, viewers) ──
 studio: setup

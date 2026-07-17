@@ -26,7 +26,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench import cameras
 from bench.config import (REPO_ROOT, common_args, export_dir, load_config,
-                          resolve_scenes, resolve_trajs, traj_rate_hz)
+                          resolve_scenes, resolve_trajs, traj_rate_hz,
+                          traj_kind, traj_seed)
 import trajectories as traj_mod
 
 
@@ -231,17 +232,28 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
           f"(raw min {lo[2]:.2f}) camera_height={ch} -> cam_z={cam_z:.2f}")
     print(f"[mesh] room extent XYZ = {np.round(hi-lo,2)} m")
 
-    if traj.startswith("synthetic_"):
+    kind = traj_kind(traj)   # synthetic | stopgo | loop | dataset_path (or 'dataset')
+    if kind in ("synthetic", "stopgo", "loop"):
         sp = cfg["trajectories"]["synthetic_spline"]
+        extra = (cfg["trajectories"].get("extra_kinds") or {})
         rate = traj_rate_hz(traj, default=2.0)
+        seed = traj_seed(cfg, traj)                      # per-run seed (variance study)
+        print(f"[traj] kind={kind} rate={rate}Hz seed={seed}")
         wps = traj_mod.free_space_waypoints(mesh, n_waypoints=8,
                                             min_clearance_m=sp["min_clearance_m"],
-                                            seed=cfg["datasets"]["seed"],
+                                            seed=seed,
                                             probe_z=cam_z, floor_z=floor_z)
-        poses = traj_mod.synthetic_spline(wps, camera_height=cam_z,
-                                          speed_mps=sp.get("speed_mps", 0.5),
-                                          rate_hz=rate,
-                                          max_frames=n)
+        speed = sp.get("speed_mps", 0.5)
+        if kind == "stopgo":
+            sg = extra.get("stopgo", {})
+            poses = traj_mod.stop_and_go(wps, camera_height=cam_z, speed_mps=speed,
+                                         rate_hz=rate, max_frames=n,
+                                         n_stops=int(sg.get("n_stops", 2)),
+                                         dwell_s=float(sg.get("dwell_s", 5.0)))
+        else:
+            poses = traj_mod.synthetic_spline(wps, camera_height=cam_z, speed_mps=speed,
+                                              rate_hz=rate, max_frames=n,
+                                              close_loop=(kind == "loop"))
     else:  # dataset_path — loaded by the dataset-specific downloader/importer
         src = _load_dataset_poses(cfg, dataset, scene)
         poses = traj_mod.resample_path(src, n)

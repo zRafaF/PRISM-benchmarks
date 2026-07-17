@@ -1,5 +1,56 @@
 # Roadmap
 
+## Findings & paper framing (after the preliminary 2-scene run)
+
+**What this project is.** A *systems / robotics* contribution: a training-free engine
+that turns a frozen feed-forward panoramic backbone (PanoVGGT) into an **online, metric,
+bounded-memory 360° reconstruction system** — the first metric streaming reconstruction
+in the VGGT family. It is NOT a new-alignment-math paper and NOT a best-reconstruction
+paper (offline full-batch Pi3/PanoVGGT beat us on raw F; that is the streaming tax).
+
+**Conclusive results so far (2 scenes, preliminary — need the big run to claim them):**
+
+- **PRISM ≫ VGGT-SLAM (its direct streaming-SLAM competitor):** ATE 25.6 vs 97.7 cm
+  (~4×), masked F 0.60 vs 0.43, map 16 vs 90 MB (~6×), and metric (3.2%) vs scale-free.
+- **The win is the engine, not the SLAM math.** `prism_sl4` runs VGGT-SLAM's *own* SL(4)
+  alignment group inside PRISM and still gets ATE 26 / F 0.66 / 15 MB — so PRISM's
+  advantage comes from panoramic input + metric grounding + TSDF fusion, not the pose
+  graph. This is the answer to "aren't we just VGGT-SLAM?": no.
+- **Only metric method that works:** scale err 3.2% vs Pi3 8.7% / MapAnything 7.3%;
+  LASER/PanoVGGT/VGGT-SLAM cannot produce metric scale at all.
+- **Cheapest, cleanest, most compact map** among the dense methods (outlier 2.3%, 16 MB).
+- **Streaming costs ~nothing in trajectory:** PRISM ATE 25.6 ≈ offline PanoVGGT 26.0,
+  while adding metric scale and 4.5× compression.
+- **Alignment-group ablation (2 easy scenes):** SL(4) ≥ Sim(3) > SE(3), all small
+  margins; on the hard scene all three are identical (F 0.369). The smooth spline cannot
+  stress the projective DoF — hence the loop/stop-and-go trajectories in the big run.
+  Clean sub-result: the scale DoF helps (Sim(3) > SE(3)).
+
+**Design decision:** default alignment group set to **SL(4)** (best on the preliminary
+data; floor grounding keeps it metric). Sim(3)/SE(3) stay as measured ablation arms
+(`prism_sim3`, `prism_se3`). Revisit after the loop/dwell trajectories — those are
+designed to expose SL(4)'s projective drift, which may reverse this.
+
+**Honest gaps to close in the big run:** (1) only 2 scenes / no seeds → nothing is
+significant yet; (2) everyone fails on the large apartment (a *backbone* limit, must be
+stated); (3) the bounded-memory figure is contaminated by GPU co-tenancy (~77 GB vs the
+real ~14 GB) — needs a dedicated-GPU pass; (4) own the recon-F gap as the streaming tax.
+
+## Big benchmark (the run that drops "preliminary")
+
+Matrix: **6 Replica scenes × 2 seeds × trajectories × all methods + ablations**, on a
+dedicated GPU (clean VRAM). Trajectories (`config.trajectories`):
+
+- **smooth** (`synthetic_<rate>hz`) — full rate sweep 0.5/2/5 Hz (the easy reference).
+- **stop-and-go** (`stopgo_2.0hz`) — walk / dwell / walk; accumulates noise, exercises
+  the still-guard (the "parked robot" failure).
+- **loop** (`loop_2.0hz`) — returns to and re-observes the start; the drift / loop-closure
+  test where SL(4) projective drift should finally diverge from Sim(3).
+
+Driver: `scripts/run_overnight.sh` (`make bench-overnight`) — detached (tmux), resumable
+(skips completed runs), priority-ordered (headline smooth-2 Hz first), with eval+report
+CHECKPOINTS after each phase so a partial overnight still yields a current report.
+
 ## Now — first small run
 - [x] Orchestrator scaffold: Makefile, config, envs, dataset, adapters, eval, docs.
 - [ ] `make init` + `make setup-all` on the 6000 box (clone + isolated envs).

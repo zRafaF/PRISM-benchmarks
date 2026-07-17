@@ -100,6 +100,26 @@ surface — the "fluffy dots"), and **precision@2cm** (sharpness). Computed on t
 cloud (identical voxel dedup for all). These quantify the visible sharpness advantage of
 PRISM's TSDF surface over per-pixel feed-forward pointmaps.
 
+## D15 — Alignment-group ablation + SL(4) as the default
+Added `PRISM_ALIGN` to the PRISM engine to switch the submap registration group:
+**sim3** (7-DoF similarity), **se3** (6-DoF rigid at locked scale), **sl4** (15-DoF
+projective homography fit from the DENSE overlap point maps — VGGT-SLAM's group,
+integrated at its local similarity since nvblox is rigid; the discarded shear/perspective
+is logged as the non-similarity distortion). Preliminary result: SL(4) ≥ Sim(3) > SE(3)
+(small margins; scale DoF clearly helps). **Default set to SL(4)** (best on preliminary
+data; floor grounding keeps it metric); Sim(3)/SE(3) remain measured arms
+(`prism_sim3`, `prism_se3`). Key finding: `prism_sl4` (VGGT-SLAM's group inside PRISM)
+still beats VGGT-SLAM ~4× on ATE → the advantage is the panoramic metric engine, not the
+alignment math. Revisit the default after the loop/dwell trajectories.
+
+## D16 — Big benchmark: motion-stress trajectories + variance
+Beyond the smooth spline we add two trajectory families that stress streaming drift:
+**stop-and-go** (walk / dwell / walk — noise accumulation, still-guard) and **loop**
+(return to & re-observe the start — drift / loop-closure, where SL(4) projective drift
+should diverge from Sim(3)). Big run = 6 scenes × 2 seeds × {smooth rate-sweep, stopgo,
+loop} on a dedicated GPU, via `scripts/run_overnight.sh` (resumable, priority-ordered,
+report checkpoints). This is the run that drops the "preliminary" label.
+
 ## Conflict note (brief vs. 05)
 05 marked the ScanNet-render pipeline "build deferred" and prioritised perf + lab
 tape-measure first. Rafael's 2026-07-13 direction supersedes: build the render

@@ -14,15 +14,16 @@ hardware:
 # (panorama-native equirectangular RGB-D with GT) added as they come online.
 datasets:
   active: [replica]          # TODAY: Replica (no approval). Later: scannetpp, kitti360, ...
-  seed: 1234
+  seed: 1234                 # legacy single seed (used if `seeds` is absent)
+  seeds: [1234, 5678]        # variance study: each scene×traj×rate rendered per seed
   root: dataset/raw
 
   replica:                   # fastest zero-approval indoor meshes (NICE-SLAM/iMAP standard)
     kind: mesh_render        # render pano + pinhole from the scene mesh (textured)
     root: dataset/raw/replica
     up_axis: auto            # detect up as the shortest AABB extent (room height); rotate to Z-up
-    scenes: []               # frozen by make_split; start with ONE room
-    n_scenes_start: 1
+    scenes: []               # frozen by make_split
+    n_scenes_start: 6        # big benchmark: 6 rooms (small offices + large apartments)
     mesh_glob: "*/mesh.ply"
 
   scannetpp:
@@ -77,11 +78,20 @@ trajectories:
   # (favours streaming, and pushes full-batch toward the VRAM ceiling). Covers the spectrum.
   # baseline (inter-frame distance) = speed/rate — THIS is what drives quality, not FPS:
   #   0.5 Hz -> 1.00 m,  2.0 Hz -> 0.25 m,  5.0 Hz -> 0.10 m  (at speed 0.5 m/s)
-  rates_hz: [0.5, 2.0, 5.0]
+  rates_hz: [0.5, 2.0, 5.0]  # SMOOTH baseline gets the full rate sweep
   synthetic_spline:
     speed_mps: 0.5           # constant walking speed; inter-frame baseline = speed/rate
     min_clearance_m: 0.30    # collision-free sampling against the mesh occupancy
     loop: false
+
+  # NEW trajectory families for the big benchmark (each renders as '<kind>_<rate>hz[_sN]').
+  # They run at 2 Hz only (the new axis is the MOTION pattern, not the rate) to bound
+  # runtime. These are the paths designed to STRESS streaming drift & the guards:
+  #   stopgo — walk, stand still (dwell), walk again → noise accumulation + still-guard
+  #   loop   — return to & re-observe the start → loop-closure / drift-correction test
+  extra_kinds:
+    stopgo: {rates_hz: [2.0], n_stops: 2, dwell_s: 5.0}
+    loop:   {rates_hz: [2.0]}
 
 # ── PRISM engine knobs (mirror the live/report config) ────────────────────────
 engine:
@@ -110,7 +120,7 @@ streaming:
 # mode: stream = native online SLAM (fed incrementally); batch = feed-forward, all frames
 # in one pass (permutation-equivariant nets like Pi3/MapAnything — windowing misaligns them).
 methods:
-  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours}
+  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours}  # default align = SL(4); prism_sim3/prism_se3 ablate the group
   - {name: panovggt,    camera: pano,     env: submodules/PRISM-VGGT, mode: batch,  metric: false, role: reference}  # raw backbone, full-batch 360° (no PRISM engine) — shows what the engine adds
   - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        mode: batch,  metric: true,  role: baseline}   # Pi3X: approx metric scale
   - {name: mapanything, camera: pinhole,  env: submodules/map-anything, mode: batch, metric: true, role: baseline}  # feed-forward metric
@@ -136,9 +146,10 @@ ablations:
   - {name: prism_nolock,   camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0"}}
   - {name: prism_nostill,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {PRISM_STILL_GUARD: "0"}}
   - {name: prism_noguards, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0", PRISM_STILL_GUARD: "0", PRISM_FLIP_GUARD: "0", PRISM_Z_RELEVEL: "0"}}
-  # Alignment-group study (needs the PRISM_ALIGN switch in the PRISM repo):
+  # Alignment-group study. `prism` (main) is now SL(4) by default, so the arms below
+  # measure the OTHER two groups against it (PRISM_ALIGN switch in the PRISM repo).
+  - {name: prism_sim3,     camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sim3, run_env: {PRISM_ALIGN: "sim3"}}
   - {name: prism_se3,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: se3,  run_env: {PRISM_ALIGN: "se3"}}
-  - {name: prism_sl4,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sl4,  run_env: {PRISM_ALIGN: "sl4"}}
 
 # VGGT-SLAM (streaming) tuning — drives its own main.py.
 vggtslam:
