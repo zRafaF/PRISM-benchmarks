@@ -22,7 +22,7 @@ PYCHK    ?= python3
 .DEFAULT_GOAL := help
 
 .PHONY: help steps \
-        init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
+        deps init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all bench-overnight \
@@ -33,6 +33,7 @@ help:
 	@echo "PRISM-benchmarks   hw=$(HW_ID)   config=$(CONFIG)"
 	@echo ""
 	@echo "Setup:"
+	@echo "  make deps             system pkgs (wget/pigz/unzip/tmux); APT_SUDO=sudo if not root"
 	@echo "  make init             clone + pin every method submodule (see bench.env)"
 	@echo "  make setup            orchestrator env (uv sync) — render+mask+eval+report"
 	@echo "  make setup-all        every method's ISOLATED env (delegates to each repo)"
@@ -93,6 +94,13 @@ steps:
 	@echo "  make report          # preliminary tables A/B/C/C2 + plots"
 
 # ── Stage 0: setup ────────────────────────────────────────────────────────────
+# System packages (run once, as root): Replica downloader (wget/pigz/unzip) + the
+# overnight-benchmark session manager (tmux). APT_SUDO=sudo if not already root.
+APT_SUDO ?=
+deps:
+	@echo ">> installing system packages: wget pigz unzip tmux"
+	$(APT_SUDO) apt-get update && $(APT_SUDO) apt-get install -y wget pigz unzip tmux
+
 init:
 	@echo ">> cloning + pinning method submodules"
 	bash scripts/add_submodules.sh
