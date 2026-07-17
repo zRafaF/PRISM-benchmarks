@@ -176,6 +176,70 @@ def aggregate_global(runs, cfg) -> str:
             + _md_table(hdr, rows) + "\n")
 
 
+#  Alignment-group study: sim3 (=prism) vs se3 vs sl4 — the core novelty ablation.
+#  Compares what the extra DoF cost, on BOTH compute (the "computing impact") AND
+#  metric fidelity. Only the alignment arms are shown so the transform group is the
+#  only variable (backbone / fusion / trajectory identical across the three).
+_ALIGN_ARMS = [("prism", "Sim(3)", 7), ("prism_se3", "SE(3)", 6), ("prism_sl4", "SL(4)", 15)]
+
+
+def alignment_study(runs, cfg) -> str:
+    import statistics as st
+
+    def mean(vals):
+        v = [x for x in vals if x is not None]
+        return st.mean(v) if v else None
+
+    present = {r["method"] for r in runs}
+    if not any(m in present for m, _, _ in _ALIGN_ARMS):
+        return ""   # no alignment arms run yet — omit the section
+
+    def collect(method):
+        rs = [r for r in runs if r["method"] == method]
+        perf = [r["perf"] or {} for r in rs]
+        ate = [r["ate"] or {} for r in rs]
+        met = [r["metric"] or {} for r in rs]
+        rec = [(r["recon"] or {}) for r in rs]
+        drift = [a.get("rpe_per_m") for a in ate]
+        return {
+            "n": len(rs),
+            "fps": mean([p.get("eff_fps") for p in perf]),
+            "lat": mean([p.get("latency_end_to_end_s") for p in perf]),
+            "vram": mean([p.get("vram_peak_gb") for p in perf]),
+            "scale": mean([m.get("metric_scale_error_pct") for m in met if m.get("metric_capable")]),
+            "extent": mean([m.get("extent_error_pct") for m in met]),
+            "ate": mean([a.get("ate_rmse_m") for a in ate]),
+            "drift": mean([d * 100 for d in drift if d is not None]),
+            "mF": mean([(rc.get("masked", {}) or {}).get("fscore") for rc in rec]),
+            "outlier": mean([rc.get("sor_outlier_pct") for rc in rec if rc.get("sor_outlier_pct") is not None]),
+        }
+
+    rows = []
+    for method, group, dof in _ALIGN_ARMS:
+        if method not in present:
+            continue
+        c = collect(method)
+        rows.append([
+            f"{group} ({method})", dof, c["n"],
+            _fmt(c["fps"], 1, 2), _fmt(c["lat"], 1, 1), _fmt(c["vram"], 1, 2),   # compute impact
+            _fmt(c["scale"], 1, 1), _fmt(c["extent"], 1, 1), _fmt(c["ate"], 100, 1),
+            _fmt(c["drift"], 1, 1), _fmt(c["mF"], 1, 3),
+            _fmt(c["outlier"], 100, 1),                                          # quality
+        ])
+    hdr = ["Group (arm)", "DoF", "N",
+           "Eff.FPS↑", "Latency s↓", "VRAM GB↓",
+           "Scale err %↓", "Extent err %↓", "ATE cm↓", "Drift %/m↓", "Masked F↑", "Outlier %↓"]
+    return (
+        "## Alignment-group study — Sim(3) vs SE(3) vs SL(4) (core ablation)\n"
+        "*Same backbone / fusion / trajectory; only the submap registration group changes. "
+        "Left block = **computing impact** (throughput, latency, peak VRAM — SL(4)'s dense "
+        "15-DoF projective solve costs more per submap); right block = metric fidelity. "
+        "Expectation: more DoF fit overlaps better but inflate scale/extent/floaters, while "
+        "Sim(3) stays metric. SL(4) also logs its mean non-similarity distortion to the run "
+        "log (the shear/perspective Sim(3) forbids).*\n\n"
+        + _md_table(hdr, rows) + "\n")
+
+
 def _write_plots(out: Path, runs):
     try:
         import matplotlib
@@ -231,6 +295,7 @@ def main():
     # Global: aggregate summary + full per-run tables across all scenes.
     glob = [f"# PRISM-benchmarks — global report ({len(scenes)} scene(s))\n",
             aggregate_global(runs, cfg),
+            alignment_study(runs, cfg),
             "---\n",
             build_tables(runs, cfg, "all runs (every scene / rate / variant)")]
     (out / "report.md").write_text("\n".join(glob))

@@ -51,9 +51,19 @@ is pano-vs-pinhole at equal (batch) footing.
     aren't penalised for keyframe spacing.
   - **Memory-scaling figure**: `vram_vs_frames.png` (peak VRAM vs #frames per method) — the
     deployability plot (needs an isolated GPU run to be clean).
-  - **Still TODO (need a small PRISM-repo change, not env-toggleable):** Sim(3)-vs-SE(3)
-    alignment (add `PRISM_ALIGN=se3` to switch `register_camera_poses_sim3` →
-    `_kabsch`) and no-metric-grounding — both require editing the PRISM submodule.
+  - **Alignment-group study (DONE — required a PRISM-repo change).** `PRISM_ALIGN`
+    now switches the submap registration group in the engine: `sim3` (default 7-DoF,
+    = the plain `prism` run), `se3` (6-DoF rigid at the locked metric scale, via the
+    existing `register_camera_poses_kabsch`), and `sl4` (15-DoF projective homography
+    fit from the DENSE overlap point maps — VGGT-SLAM's group). nvblox is rigid, so
+    SL(4) places poses through the exact homography and integrates at its local
+    similarity; the discarded shear/perspective is logged per submap as the
+    non-similarity distortion (`sl4_nonsimilarity_report`). Benchmark: `make ablations`
+    (or `make ablations-align`) runs `prism_se3` + `prism_sl4`; the report adds an
+    **Alignment-group study** table comparing all three on compute cost AND fidelity.
+  - **Still TODO:** no-metric-grounding ablation (disable floor-RANSAC scale anchoring)
+    — another small PRISM-repo toggle; and a guard-stressing / looping trajectory so
+    the alignment differences (and the guards) actually get exercised.
 - **Phase 2:** wire **StreamVGGT** then **CUT3R**; scale to ~6–10 Replica scenes with seeds
   for mean±std error bars (drops "preliminary").
 - **Phase 3:** ScanNet++ + real Theta-X captures; a looping trajectory variant (fair loop

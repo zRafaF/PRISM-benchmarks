@@ -24,7 +24,7 @@ PYCHK    ?= python3
 .PHONY: help steps \
         init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
         download split render export \
-        run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations \
+        run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all \
         studio preview snapshots docs docs-serve clean clean-results
 
@@ -47,7 +47,8 @@ help:
 	@echo "Run (each method in its OWN env, streaming harness):"
 	@echo "  make run-all          run every configured method -> common results layout"
 	@echo "  make run-<m>          one method: prism|panovggt|pi3|vggtslam|mapanything|laser"
-	@echo "  make ablations        PRISM ablations (nolock, nostill, noguards) — engine study"
+	@echo "  make ablations        PRISM ablations: guards (nolock/nostill/noguards) + align (se3/sl4)"
+	@echo "  make ablations-align  alignment-group study only: SE(3)+SL(4) vs Sim(3)=prism"
 	@echo ""
 	@echo "Evaluate (orchestrator env; reads only results/, imports no method):"
 	@echo "  make eval-traj        evo ATE/RPE (Sim(3) align)          -> ate.json"
@@ -146,10 +147,20 @@ run-laser:
 run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
 	@echo ">> all configured methods run"
 
-# PRISM ablations (engine-contribution study) — each is a PRISM run with guards toggled.
+# PRISM ablations — guard-contribution study + alignment-group study (sim3/se3/sl4).
+# ALIGN=1 runs only the alignment arms; GUARDS=1 runs only the guard arms; default = all.
+ABL_GUARDS ?= prism_nolock prism_nostill prism_noguards
+ABL_ALIGN  ?= prism_se3 prism_sl4
 ablations: setup
 	@echo ">> running PRISM ablations (config.ablations)"
-	@for a in prism_nolock prism_nostill prism_noguards; do \
+	@for a in $(ABL_GUARDS) $(ABL_ALIGN); do \
+	  $(ORCH_RUN) adapters/run.py --method $$a --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ) || exit 1; \
+	done
+
+# Just the alignment-group study (sim3 is the plain `prism` run; add se3 + sl4).
+ablations-align: setup
+	@echo ">> alignment-group study: SE(3) + SL(4) arms (sim3 = the plain prism run)"
+	@for a in $(ABL_ALIGN); do \
 	  $(ORCH_RUN) adapters/run.py --method $$a --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ) || exit 1; \
 	done
 

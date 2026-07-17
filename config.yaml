@@ -123,13 +123,22 @@ baselines:
   max_frames: null
 
 # ── PRISM ablations (engine-contribution study) ───────────────────────────────
-# Each is a PRISM run (runner: prism) with engine guards toggled via run_env. They
+# Each is a PRISM run (runner: prism) with engine behaviour toggled via run_env. They
 # appear as their own "methods" in the results/report. `make ablations` runs them all.
-# (Sim(3)-vs-SE(3) and no-metric-grounding need a small PRISM-repo change — see roadmap.)
+#
+# Two families:
+#  (a) GUARD ablations — toggle the drift-control guards (env-only).
+#  (b) ALIGNMENT-GROUP ablations — the core novelty study. PRISM_ALIGN switches the
+#      submap registration group: sim3 (default, = the plain `prism` run, 7-DoF),
+#      se3 (6-DoF rigid at locked scale), sl4 (15-DoF projective, VGGT-SLAM's group).
+#      The report's "Alignment study" table compares them on quality AND compute cost.
 ablations:
   - {name: prism_nolock,   camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0"}}
   - {name: prism_nostill,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {PRISM_STILL_GUARD: "0"}}
   - {name: prism_noguards, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0", PRISM_STILL_GUARD: "0", PRISM_FLIP_GUARD: "0", PRISM_Z_RELEVEL: "0"}}
+  # Alignment-group study (needs the PRISM_ALIGN switch in the PRISM repo):
+  - {name: prism_se3,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: se3,  run_env: {PRISM_ALIGN: "se3"}}
+  - {name: prism_sl4,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sl4,  run_env: {PRISM_ALIGN: "sl4"}}
 
 # VGGT-SLAM (streaming) tuning — drives its own main.py.
 vggtslam:
