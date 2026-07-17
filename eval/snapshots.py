@@ -81,11 +81,17 @@ def _render(pts, cols, limits, view, bg, out_path, point_size, label=""):
 
 
 def generate(cfg, keep_h=2.0, max_points=120000, point_size=5.0,
-             bgs=("black", "white"), views=None):
+             bgs=("black", "white"), views=None,
+             methods=None, scenes=None, trajs=None):
     views = views or VIEWS
     out_dir = REPO_ROOT / cfg["report"]["out_dir"] / "snapshots"
     out_dir.mkdir(parents=True, exist_ok=True)
     correct_scale = cfg["eval"]["align"]["correct_scale"]
+    # Optional filters (sets or None) to render a focused comparison, e.g. just the
+    # PRISM alignment arms on one scene/rate.
+    methods = set(methods) if methods else None
+    scenes = set(scenes) if scenes else None
+    trajs = set(trajs) if trajs else None
     written = []
 
     # group runs by (dataset, scene, traj) so GT framing is shared and GT rendered once
@@ -95,6 +101,9 @@ def generate(cfg, keep_h=2.0, max_points=120000, point_size=5.0,
         parts = cloud.parent.parts
         i = parts.index("results")
         method, dataset, scene, traj, variant = parts[i + 1:i + 6]
+        if (methods and method not in methods) or (scenes and scene not in scenes) \
+                or (trajs and traj not in trajs):
+            continue
         base = _export_base(dataset, scene, traj)
         gt_mesh = base / "gt_mesh.ply"
         gt_tum = base / "poses_gt.tum"
@@ -147,9 +156,18 @@ def main():
     ap.add_argument("--keep-height", type=float, default=2.0, help="metres above floor to keep (ceiling clip)")
     ap.add_argument("--max-points", type=int, default=120000)
     ap.add_argument("--point-size", type=float, default=5.0, help="marker size in the render")
+    ap.add_argument("--methods", default="", help="space/comma list to render (default: all)")
+    ap.add_argument("--scenes", default="", help="space/comma list of scenes (default: all)")
+    ap.add_argument("--traj", default="", help="space/comma list of traj dirs, e.g. synthetic_2.0hz")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    generate(cfg, keep_h=args.keep_height, max_points=args.max_points, point_size=args.point_size)
+
+    def _split(s):
+        return [x for x in s.replace(",", " ").split() if x] or None
+
+    generate(cfg, keep_h=args.keep_height, max_points=args.max_points,
+             point_size=args.point_size, methods=_split(args.methods),
+             scenes=_split(args.scenes), trajs=_split(args.traj))
 
 
 if __name__ == "__main__":

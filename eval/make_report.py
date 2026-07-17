@@ -288,7 +288,8 @@ def main():
         sr = [r for r in runs if r["scene"] == scene]
         sdir = out / scene
         sdir.mkdir(parents=True, exist_ok=True)
-        (sdir / "report.md").write_text(build_tables(sr, cfg, f"scene: {scene}"))
+        (sdir / "report.md").write_text(
+            alignment_study(sr, cfg) + build_tables(sr, cfg, f"scene: {scene}"))
         _write_plots(sdir, sr)
         print(f"[make_report] scene report -> {sdir / 'report.md'} ({len(sr)} runs)")
 

@@ -188,7 +188,8 @@ preview: studio          # backwards-compatible alias for the old name
 # ── Standardized paper snapshots (GT-aligned, ceiling-clipped, black+white bg) ─
 snapshots: setup
 	@echo ">> rendering standardized cloud snapshots -> results/report/snapshots/"
-	$(ORCH_RUN) eval/snapshots.py --config $(CONFIG)
+	$(ORCH_RUN) eval/snapshots.py --config $(CONFIG) \
+	  --methods "$(SNAP_METHODS)" --scenes "$(SNAP_SCENES)" --traj "$(SNAP_TRAJ)"
 
 # ── Docs ──────────────────────────────────────────────────────────────────────
 docs:
