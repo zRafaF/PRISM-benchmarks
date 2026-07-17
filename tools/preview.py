@@ -231,6 +231,15 @@ def _snap_scene_choices():
     return sorted({_snap_scene(p.name) for p in SNAP_DIR.glob("*.png")}) if SNAP_DIR.exists() else []
 
 
+def _snap_method_choices():
+    """Method names actually present in the snapshot dir (so ablation arms like
+    prism_se3 / prism_sl4 appear in the filter, not just the hardcoded baselines)."""
+    if not SNAP_DIR.exists():
+        return METHODS + ["GT"]
+    found = sorted({_snap_method(p.name) for p in SNAP_DIR.glob("*.png")})
+    return found or (METHODS + ["GT"])
+
+
 # ── Frame preview ─────────────────────────────────────────────────────────────
 def list_runs():
     return sorted({str(p.parent.relative_to(EXPORTS)) for p in EXPORTS.glob("*/*/*/**/rgb")})
@@ -405,7 +414,7 @@ def build_app():
             gr.Markdown("**Filter (multi-select; empty = all) + paginate:**")
             with gr.Row():
                 f_scene = gr.Dropdown(_snap_scene_choices(), value=[], multiselect=True, label="Scenes")
-                f_method = gr.Dropdown(METHODS + ["GT"], value=[], multiselect=True, label="Methods")
+                f_method = gr.Dropdown(_snap_method_choices(), value=[], multiselect=True, label="Methods")
             with gr.Row():
                 f_view = gr.Dropdown(["oblique", "top"], value=["oblique"], multiselect=True, label="Views")
                 f_bg = gr.Dropdown(["black", "white"], value=["white"], multiselect=True, label="Backgrounds")
@@ -422,9 +431,11 @@ def build_app():
                 snapshots.generate(load_config("config.yaml"), keep_h=float(kh),
                                    max_points=int(mp), point_size=float(ps))
                 imgs, status = snap_page([], [], ["oblique"], ["white"], 1)
-                return imgs, status, gr.update(choices=_snap_scene_choices())
+                return (imgs, status, gr.update(choices=_snap_scene_choices()),
+                        gr.update(choices=_snap_method_choices()))
 
-            snap_btn.click(_gen, [keep_h, snap_maxp, snap_ptsize], [gallery, snap_status, f_scene])
+            snap_btn.click(_gen, [keep_h, snap_maxp, snap_ptsize],
+                           [gallery, snap_status, f_scene, f_method])
             show_btn.click(snap_page, [f_scene, f_method, f_view, f_bg, f_page], [gallery, snap_status])
             dl_btn.click(zip_filtered, [f_scene, f_method, f_view, f_bg], snap_zip)
             demo.load(lambda: snap_page([], [], ["oblique"], ["white"], 1), None, [gallery, snap_status])
