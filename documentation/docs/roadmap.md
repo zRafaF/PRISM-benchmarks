@@ -1,5 +1,12 @@
 # Roadmap
 
+> **Big-run results are in `results_bigrun.md`** (4 large scenes × 2 seeds, cleaned of
+> stale data). Headline updates: PRISM beats VGGT-SLAM ~2× and leads all methods on
+> smooth/stop-go trajectory, but (a) the alignment group is motion-dependent — SL(4) wins
+> on open paths, **Sim(3) is more robust on loops** (recommend flipping the default back);
+> (b) metric-scale is competitive-with-Pi3, not dominant; (c) the drift guards show no
+> measurable benefit. The section below is the earlier 2-scene framing.
+
 ## Findings & paper framing (after the preliminary 2-scene run)
 
 **What this project is.** A *systems / robotics* contribution: a training-free engine

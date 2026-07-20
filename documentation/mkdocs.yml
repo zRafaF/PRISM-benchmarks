@@ -13,6 +13,7 @@ nav:
   - Home: index.md
   - Running the benchmark: running.md
   - Preliminary results: results.md
+  - Big-run results & analysis: results_bigrun.md
   - Architecture: architecture.md
   - Design decisions: decisions.md
   - Adapter contract: adapter_contract.md
