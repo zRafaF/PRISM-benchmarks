@@ -26,7 +26,7 @@ PYCHK    ?= python3
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all bench-overnight \
-        fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export figures \
+        fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine figures \
         studio preview snapshots docs docs-serve clean clean-results
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
@@ -65,8 +65,9 @@ help:
 	@echo "  make figures          both report figures (vram_vs_frames.png + cubemap_projection.png)"
 	@echo "  make fig-vram         VRAM-vs-frames from committed seeded perf.csv (no GPU) -> png + csv"
 	@echo "  make fig-vram-sweep   on-GPU prefix sweep to real OOM caps (needs exports + method envs)"
-	@echo "  make fig-cubemap      cubemap projection figure — SCHEMATIC preview (no GPU)"
-	@echo "  make fig-cubemap-export  real cubemap figure from engine intermediates (needs PRISM env)"
+	@echo "  make fig-cubemap      cubemap projection figure — SCHEMATIC preview (no data)"
+	@echo "  make fig-cubemap-export  REAL cubemap figure from the dataset export (needs render+export, no GPU)"
+	@echo "  make fig-cubemap-engine  cubemap figure from the engine's own reprojection (needs PRISM env)"
 	@echo ""
 	@echo "  make all              init -> setup-all -> download -> render -> export ->"
 	@echo "                        run-all -> eval-* -> perf -> report"
@@ -201,6 +202,7 @@ all: init setup-all download render export run-all eval-traj eval-recon eval-met
 # FIG_TRAJ / FIG_FRAMES override the defaults (see eval/vram_scaling.py, eval/fig_cubemap.py).
 FIG_SCENE  ?= auto
 FIG_TRAJ   ?= synthetic_2.0hz_s0
+FIG_FRAME  ?= 0                     # which pano frame the cubemap figure uses
 FIG_FRAMES ?= 1,2,4,8,16,32,64,128,256
 FIG_TILE   ?=                       # set FIG_TILE=1 to loop the sequence past its render length
 fig-vram: setup
@@ -212,12 +214,16 @@ fig-vram-sweep: setup
 	  --scene "$(FIG_SCENE)" --traj "$(FIG_TRAJ)" --frames "$(FIG_FRAMES)" --logx \
 	  $(if $(FIG_TILE),--tile,)
 fig-cubemap: setup
-	@echo ">> cubemap projection figure (SCHEMATIC preview) -> results/figures/"
+	@echo ">> cubemap projection figure (SCHEMATIC preview, no data) -> results/figures/"
 	$(ORCH_RUN) eval/fig_cubemap.py --mode illustrative --config $(CONFIG)
 fig-cubemap-export: setup
-	@echo ">> cubemap projection figure from ENGINE intermediates -> results/figures/"
+	@echo ">> cubemap projection figure from the REAL dataset export -> results/figures/"
+	$(ORCH_RUN) eval/fig_cubemap.py --mode dataset --config $(CONFIG) \
+	  --scene "$(FIG_SCENE)" --traj "$(FIG_TRAJ)" --frame "$(FIG_FRAME)"
+fig-cubemap-engine: setup
+	@echo ">> cubemap projection figure from the ENGINE's own reprojection -> results/figures/"
 	$(ORCH_RUN) eval/fig_cubemap.py --mode export --config $(CONFIG) \
-	  --scene "$(FIG_SCENE)" --traj "$(FIG_TRAJ)"
+	  --scene "$(FIG_SCENE)" --traj "$(FIG_TRAJ)" --frame "$(FIG_FRAME)"
 figures: fig-vram fig-cubemap
 	@echo ">> report figures in results/figures/ (vram_vs_frames.png + cubemap_projection.png)"
 

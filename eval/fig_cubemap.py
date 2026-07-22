@@ -115,6 +115,162 @@ def _illustrative_intermediates(face_size: int):
     return equ, rgb, depth, mask, None
 
 
+# ── Dataset-native intermediates (mode=dataset — real data, no engine) ─────────
+# The equirect->cubemap reprojection is a FIXED geometric transform, and the export
+# already holds real per-frame RGB + rendered GT depth + validity mask + GT poses.
+# So the figure is built straight from the dataset — real, reproducible, and free of
+# the engine's private reprojection API. (Per-face depth is the render's GT depth, not
+# PRISM's predicted depth; for a projection-pipeline figure that is the cleaner choice.)
+FACE_FWD = {"front": (0, 0, 1), "back": (0, 0, -1), "right": (1, 0, 0),
+            "left": (-1, 0, 0), "up": (0, 1, 0), "down": (0, -1, 0)}
+
+
+def _sample_equirect_nn(equirect: np.ndarray, dirs: np.ndarray) -> np.ndarray:
+    """Nearest-neighbour equirect lookup for any HxW[xC] array (RGB, depth, or mask)."""
+    return _sample_equirect(equirect, dirs)
+
+
+def _equirect_pixel_dirs(H: int, W: int) -> np.ndarray:
+    """Unit ray direction per equirect pixel (matches _sample_equirect's convention)."""
+    v, u = np.mgrid[0:H, 0:W]
+    lon = (u / W - 0.5) * 2 * np.pi
+    lat = (0.5 - v / H) * np.pi
+    cl = np.cos(lat)
+    return np.stack([cl * np.sin(lon), np.sin(lat), cl * np.cos(lon)], -1).astype(np.float32)
+
+
+def _load_tum(path: Path):
+    """TUM -> {frame_index: 4x4 cam->world}. Numpy-only quaternion->matrix."""
+    poses = {}
+    if not path.exists():
+        return poses
+    for i, line in enumerate(Path(path).read_text().splitlines()):
+        s = line.split()
+        if len(s) < 8:
+            continue
+        tx, ty, tz, qx, qy, qz, qw = map(float, s[1:8])
+        n = qx * qx + qy * qy + qz * qz + qw * qw
+        q = np.array([qx, qy, qz, qw]) / (n ** 0.5 if n else 1.0)
+        x, y, z, w = q
+        R = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w),     2 * (x * z + y * w)],
+            [2 * (x * y + z * w),     1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w),     2 * (y * z + x * w),     1 - 2 * (x * x + y * y)]])
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = (tx, ty, tz)
+        poses[i] = T
+    return poses
+
+
+def _dataset_cubemap(equirect_rgb, equirect_depth, equirect_mask, face_size, cfg):
+    """Reproject one equirect frame's RGB + GT depth + validity mask to 6 cube faces.
+    Per-face depth is converted radial->perpendicular (what a pinhole fuser sees); the
+    per-face mask combines the sampled validity with a depth-discontinuity + seam-border
+    drop (the anti-erosion seam mask PRISM applies before TSDF integration)."""
+    max_depth = float(cfg["engine"]["max_depth"])
+    rgb, depth, mask = {}, {}, {}
+    for f in FACES:
+        dirs = _face_dirs(f, face_size)
+        rgb[f] = _sample_equirect_nn(equirect_rgb, dirs)[..., :3].astype(np.uint8)
+        radial = _sample_equirect_nn(equirect_depth.astype(np.float32), dirs)
+        fwd = np.array(FACE_FWD[f], np.float32)
+        cos = np.clip((dirs * fwd).sum(-1), 1e-3, 1.0)   # radial -> perpendicular depth
+        z = radial * cos
+        z[radial <= 0] = 0.0
+        depth[f] = z
+        m = np.ones((face_size, face_size), np.uint8)
+        if equirect_mask is not None:
+            mm = _sample_equirect_nn(equirect_mask, dirs)
+            if mm.ndim == 3:
+                mm = mm[..., 0]
+            m[mm == 0] = 0
+        m[(z <= 0) | (z > max_depth)] = 0                # out of range / invalid
+        gy = np.abs(np.gradient(z, axis=0))
+        gx = np.abs(np.gradient(z, axis=1))
+        m[(gx + gy) > 0.5] = 0                            # depth-discontinuity smear
+        b = max(2, face_size // 48)
+        m[:b] = m[-b:] = m[:, :b] = m[:, -b:] = 0         # cube seam border
+        mask[f] = m
+    return rgb, depth, mask
+
+
+def _fused_topdown(pano_dir: Path, center: int, cfg, span=4, stride=6, res=520):
+    """Back-project a small window of frames' GT depth into world points (using GT
+    poses) and splat them top-down — a real 'fused volume' crop for panel (3). Falls
+    back to the single centre frame in the camera frame if no poses are present."""
+    import imageio.v2 as imageio
+    names = sorted(p.stem for p in (pano_dir / "rgb").glob("*.png"))
+    if not names:
+        return None
+    poses = _load_tum(pano_dir.parent / "poses_gt.tum")
+    idxs = [i for i in range(max(0, center - span), min(len(names), center + span + 1))]
+    P, C = [], []
+    H = W = None
+    for i in idxs:
+        nm = names[i]
+        dp = pano_dir / "depth" / f"{nm}.npy"
+        if not dp.exists():
+            continue
+        d = np.load(dp).astype(np.float32)
+        rgb = np.asarray(imageio.imread(pano_dir / "rgb" / f"{nm}.png"))[..., :3]
+        if H is None:
+            H, W = d.shape
+            dirs = _equirect_pixel_dirs(H, W)
+        pts_cam = dirs * d[..., None]                     # radial depth along unit rays
+        valid = (d > 0) & (d <= float(cfg["engine"]["max_depth"]))
+        pc = pts_cam[valid][::stride]
+        col = rgb[valid][::stride]
+        T = poses.get(i, np.eye(4))
+        world = (T[:3, :3] @ pc.T).T + T[:3, 3]
+        P.append(world)
+        C.append(col)
+    if not P:
+        return None
+    P = np.concatenate(P)
+    C = np.concatenate(C).astype(np.uint8)
+    # top-down raster: keep the highest point per cell (look down onto the volume)
+    lo, hi = np.percentile(P[:, :2], [1, 99], axis=0)
+    span_xy = np.maximum(hi - lo, 1e-3)
+    gx = np.clip(((P[:, 0] - lo[0]) / span_xy[0] * (res - 1)), 0, res - 1).astype(int)
+    gy = np.clip(((P[:, 1] - lo[1]) / span_xy[1] * (res - 1)), 0, res - 1).astype(int)
+    img = np.full((res, res, 3), 245, np.uint8)
+    zbuf = np.full((res, res), -1e9, np.float32)
+    order = np.argsort(P[:, 2])                            # low z first, high z overwrites
+    for j in order:
+        yy, xx = res - 1 - gy[j], gx[j]
+        if P[j, 2] > zbuf[yy, xx]:
+            zbuf[yy, xx] = P[j, 2]
+            img[yy, xx] = C[j]
+    return img
+
+
+def _dataset_intermediates(cfg, scene, traj, frame):
+    import imageio.v2 as imageio
+    from bench.config import export_dir
+    ds = cfg["datasets"]["active"][0]
+    pano = export_dir(ds, scene, traj, "pano", "")
+    names = sorted(p.stem for p in (pano / "rgb").glob("*.png"))
+    if not names:
+        raise SystemExit(f"[fig-cubemap] no pano frames at {pano} — run `make render export` first.")
+    i = min(frame, len(names) - 1)
+    nm = names[i]
+    equ = np.asarray(imageio.imread(pano / "rgb" / f"{nm}.png"))[..., :3]
+    dpath = pano / "depth" / f"{nm}.npy"
+    if not dpath.exists():
+        raise SystemExit(f"[fig-cubemap] no GT depth at {dpath} — re-run `make render` for {traj}.")
+    depth = np.load(dpath).astype(np.float32)
+    mpath = pano / "mask" / f"{nm}.png"
+    emask = np.asarray(imageio.imread(mpath)) if mpath.exists() else None
+    fs = int(cfg["engine"]["face_size"])
+    print(f"[fig-cubemap] dataset frame {scene}/{traj}/{nm}  equirect={equ.shape[1]}x{equ.shape[0]}  "
+          f"depth {depth[depth>0].min():.2f}-{depth[depth>0].max():.2f} m -> faces {fs}x{fs}", flush=True)
+    rgb, fdepth, fmask = _dataset_cubemap(equ, depth, emask, fs, cfg)
+    print("[fig-cubemap] back-projecting a window of GT depth into the fused top-down panel…", flush=True)
+    fused = _fused_topdown(pano, i, cfg)
+    return equ, rgb, fdepth, fmask, fused, nm
+
+
 # ── Real engine hook (export mode) ────────────────────────────────────────────
 def _engine_cubemap(equirect: np.ndarray, cfg: dict):
     """Reproject one equirectangular RGB (+ its depth/mask) with the ENGINE's own
@@ -142,8 +298,9 @@ def _engine_cubemap(equirect: np.ndarray, cfg: dict):
     if fn is None:
         raise SystemExit(
             "[fig-cubemap] could not locate the engine's equirect->cubemap function.\n"
-            "  Point _engine_cubemap() at the correct prism_vggt symbol (the module\n"
-            "  that PRISM's StreamingWindowEngine uses to make its 6 faces), then re-run.")
+            "  Easiest fix: use `--mode dataset` — it builds the REAL figure from the\n"
+            "  rendered export (equirect RGB + GT depth + validity mask), no engine API\n"
+            "  needed. Otherwise point _engine_cubemap() at the correct prism_vggt symbol.")
     out = fn(equirect, face_size=face_size)   # expected: dict face-> {rgb,depth,mask}
     rgb = {f: np.asarray(out[f]["rgb"]) for f in FACES if f in out}
     depth = {f: np.asarray(out[f].get("depth")) for f in FACES if f in out}
@@ -254,8 +411,8 @@ def compose(equirect, rgb, depth, mask, fused, out_png: Path, schematic: bool, m
         ax3.imshow(fused)
     else:
         ax3.set_facecolor("#eef1f4")
-        ax3.text(0.5, 0.5, "fused TSDF surface\n(nvblox)\n\n[rendered on hardware\nvia --mode export]",
-                 ha="center", va="center", fontsize=10, color="#556")
+        ax3.text(0.5, 0.5, "fused surface\n\n[--mode dataset back-projects\nGT depth here; --mode export\nuses the engine's nvblox TSDF]",
+                 ha="center", va="center", fontsize=9, color="#556")
     ax3.set_title("(3) fused TSDF surface", fontsize=11)
     ax3.set_xticks([]); ax3.set_yticks([])
 
@@ -282,7 +439,9 @@ def compose(equirect, rgb, depth, mask, fused, out_png: Path, schematic: bool, m
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", choices=["illustrative", "export"], default="illustrative")
+    ap.add_argument("--mode", choices=["illustrative", "dataset", "export"], default="dataset",
+                    help="dataset = real intermediates from the export (recommended); "
+                         "export = engine reprojection; illustrative = schematic preview")
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--scene", default="")
     ap.add_argument("--traj", default="synthetic_2.0hz_s0")
@@ -298,10 +457,23 @@ def main():
         equ, rgb, depth, mask, fused = _illustrative_intermediates(min(face_size, 384))
         compose(equ, rgb, depth, mask, fused, out_png, schematic=True,
                 meta="SCHEMATIC (synthetic panorama, standard gnomonic resampling). "
-                     "Not measured data — replace via `--mode export` on the RTX PRO 6000.")
+                     "Not measured data — replace with `--mode dataset` (real export frame).")
         return
 
-    scene = args.scene or (cfg["datasets"].get("replica", {}).get("scenes") or ["scene"])[0]
+    scene = args.scene if args.scene and args.scene != "auto" else \
+        (cfg["datasets"].get("replica", {}).get("scenes") or ["scene"])[0]
+
+    if args.mode == "dataset":
+        equ, rgb, depth, mask, fused, nm = _dataset_intermediates(cfg, scene, args.traj, args.frame)
+        compose(equ, rgb, depth, mask, fused, out_png, schematic=False,
+                meta=f"Real dataset export — {scene}/{args.traj} frame {nm}, face_size={face_size}, "
+                     f"max_depth={cfg['engine']['max_depth']} m. Equirect->cube = fixed geometric "
+                     "reprojection; per-face depth is the render's GT depth (not PRISM's predicted "
+                     "depth); fused panel = GT depth back-projected over a window, top-down. "
+                     "Rendered scene (noise-free; optimistic vs. real Theta X capture).")
+        return
+
+    # mode == export: real intermediates from the engine's own reprojection.
     equirect, exp_dir, nm = _load_pano_frame(cfg, scene, args.traj, args.frame)
     rgb, depth, mask = _engine_cubemap(equirect, cfg)
     fused = _engine_fused_surface(cfg, scene, args.traj, args.frame)

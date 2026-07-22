@@ -36,7 +36,8 @@ MAKE_TARGETS = [
     "setup-vggtslam", "setup-laser", "download", "split", "render", "export",
     "run-prism", "run-pi3", "run-mapanything", "run-vggtslam", "run-laser",
     "eval-traj", "eval-recon", "eval-metric", "perf", "report", "snapshots",
-    "fig-vram", "fig-vram-sweep", "fig-cubemap", "fig-cubemap-export", "figures",
+    "fig-vram", "fig-vram-sweep", "fig-cubemap", "fig-cubemap-export",
+    "fig-cubemap-engine", "figures",
 ]
 
 # Report figures (first-class artifacts) live here; the Figures tab renders +
@@ -403,8 +404,14 @@ def gen_cubemap_schematic(scene, traj):
                                   ["--mode", "illustrative"] + (["--scene", scene] if scene else []))
 
 
-def gen_cubemap_export(scene, traj):
-    args = ["--mode", "export"] + (["--scene", scene] if scene else [])
+def gen_cubemap_dataset(scene, traj):
+    args = ["--mode", "dataset"] + (["--scene", scene] if scene and scene != "auto" else [])
+    args += ["--traj", traj or "synthetic_2.0hz_s0"]
+    yield from _stream_fig_script("eval/fig_cubemap.py", args)
+
+
+def gen_cubemap_engine(scene, traj):
+    args = ["--mode", "export"] + (["--scene", scene] if scene and scene != "auto" else [])
     args += ["--traj", traj or "synthetic_2.0hz_s0"]
     yield from _stream_fig_script("eval/fig_cubemap.py", args)
 
@@ -550,9 +557,11 @@ def build_app():
                 "* **VRAM — sweep**: on-GPU prefix sweep — pick the frame grid (e.g. "
                 "`1,2,4,…,256`); each method's curve stops at its real OOM cap (needs exports "
                 "+ method envs). "
-                "* **Cubemap — schematic**: labelled preview (no GPU). "
-                "* **Cubemap — export**: real engine intermediates on a real pano frame "
-                "(needs the PRISM-VGGT env).")
+                "* **Cubemap — from dataset**: REAL intermediates from a rendered pano frame "
+                "(equirect RGB + GT depth + validity mask, fixed geometric reprojection; needs "
+                "`render`+`export`, no GPU). "
+                "* **Cubemap — engine**: the engine's own reprojection (needs the PRISM-VGGT env). "
+                "* **Cubemap — schematic**: labelled preview (no data).")
             with gr.Row():
                 fig_scene = gr.Textbox(value="auto", label="Scene ('auto' = best-covered)", scale=2)
                 fig_traj = gr.Textbox(value="synthetic_2.0hz_s0", label="Traj (sweep/export)", scale=2)
@@ -563,8 +572,10 @@ def build_app():
             with gr.Row():
                 b_vram = gr.Button("VRAM — from perf.csv", variant="primary")
                 b_vram_sweep = gr.Button("VRAM — on-GPU sweep", variant="primary")
+            with gr.Row():
+                b_cube_data = gr.Button("Cubemap — from dataset (real)", variant="primary")
+                b_cube_eng = gr.Button("Cubemap — engine")
                 b_cube = gr.Button("Cubemap — schematic")
-                b_cube_exp = gr.Button("Cubemap — engine export")
             fig_log = gr.Textbox(label="Output", lines=12, autoscroll=True)
             fig_gallery = gr.Gallery(label="Figures", columns=2, height=420)
             fig_files = gr.Files(label="Download artifacts", interactive=False)
@@ -572,10 +583,12 @@ def build_app():
                          [fig_log, fig_gallery, fig_files])
             b_vram_sweep.click(gen_vram_sweep, [fig_scene, fig_frames, fig_traj, fig_tile],
                                [fig_log, fig_gallery, fig_files])
+            b_cube_data.click(gen_cubemap_dataset, [fig_scene, fig_traj],
+                              [fig_log, fig_gallery, fig_files])
+            b_cube_eng.click(gen_cubemap_engine, [fig_scene, fig_traj],
+                             [fig_log, fig_gallery, fig_files])
             b_cube.click(gen_cubemap_schematic, [fig_scene, fig_traj],
                          [fig_log, fig_gallery, fig_files])
-            b_cube_exp.click(gen_cubemap_export, [fig_scene, fig_traj],
-                             [fig_log, fig_gallery, fig_files])
             demo.load(lambda: (_fig_gallery(), _fig_files()), None, [fig_gallery, fig_files])
 
         with gr.Tab("Downloads"):

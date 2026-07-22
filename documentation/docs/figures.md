@@ -17,15 +17,20 @@ figure slots at them. `results/` is gitignored (run outputs); the figures are
 ```bash
 make figures            # both, no GPU: perf.csv VRAM figure + schematic cubemap
 make fig-vram           # VRAM figure only (from committed seeded perf.csv)
-make fig-cubemap        # cubemap figure only (schematic preview)
+make fig-cubemap        # cubemap figure only (schematic preview, no data)
+
+# real cubemap from the rendered dataset (no GPU/engine — just render the scene first):
+make render export SCENES="apartment_0" TRAJ=synthetic_5.0hz_s0
+make fig-cubemap-export FIG_SCENE=apartment_0 FIG_TRAJ=synthetic_5.0hz_s0 FIG_FRAME=0
 
 # on the reference GPU (RTX PRO 6000-class, ~96 GB), with method envs + exports ready:
 make fig-vram-sweep     # real prefix sweep to each method's OOM cap
-make fig-cubemap-export # real cubemap intermediates from the PRISM-VGGT engine
+make fig-cubemap-engine # cubemap from the engine's own reprojection (needs PRISM env)
 ```
 
-Overrides: `FIG_SCENE=` (default `auto` = best-covered seeded scene), `FIG_TRAJ=`
-(default `synthetic_2.0hz_s0`), `FIG_FRAMES=` (sweep grid, default
+Overrides: `FIG_SCENE=` (default `auto` = best-covered seeded scene; cubemap treats
+`auto` as the first configured scene), `FIG_TRAJ=` (default `synthetic_2.0hz_s0`),
+`FIG_FRAME=` (cubemap pano frame, default `0`), `FIG_FRAMES=` (sweep grid, default
 `1,2,4,8,16,32,64,128,256`), `FIG_TILE=1` (loop the sequence past its render length so
 you can push frame counts beyond the rendered trajectory). The scripts read the same
 `config.yaml` the engine uses (`window_size=16, overlap=4, voxel=0.02, max_depth=4.5,
@@ -68,15 +73,25 @@ reprojected 90° cube faces with per-face metric depth and the **validity / anti
 seam mask** (the mask that drops smeared depth-discontinuity pixels before TSDF
 integration); (3) the fused TSDF surface.
 
-* `--mode export` (**on hardware**): hooks the engine's own equirect→cubemap
-  reprojection + `VRAMProfiler` (reused, not reimplemented) to dump the **real
-  intermediates** for one chosen pano frame, then composes. Point `_engine_cubemap()`
-  at the exact `prism_vggt` reprojection symbol if the probed names don't match your
-  engine build.
-* `--mode illustrative` (default, **no GPU**): a clearly-labelled **schematic**
-  (synthetic panorama, standard gnomonic resampling), banner-marked
-  "SCHEMATIC — regenerate on hardware", for wiring the report layout now. It must be
-  replaced by the real export before publication.
+Three modes:
+
+* `--mode dataset` (**default, recommended — real data, no GPU/engine**): builds the
+  figure straight from the rendered export — the equirect RGB, the render's **GT depth**
+  (`pano/depth/*.npy`), the **validity mask** (`pano/mask`), and the GT poses. Equirect→
+  cube is a fixed geometric reprojection; per-face depth is converted radial→
+  perpendicular; the per-face mask combines sampled validity with a depth-discontinuity
+  + seam-border drop (mirroring PRISM's anti-erosion seam mask); the fused panel
+  back-projects a short window of GT depth into world points (via the GT poses) and
+  splats them top-down. Only needs `make render export` for the chosen scene/traj — run
+  `make fig-cubemap-export`. Honest caveat: per-face depth here is the render's GT depth,
+  not PRISM's *predicted* depth — the right choice for a projection-pipeline figure.
+* `--mode export` (**needs the PRISM-VGGT env**): hooks the engine's own equirect→cubemap
+  reprojection + `VRAMProfiler` to dump the engine's intermediates. Run
+  `make fig-cubemap-engine`. If the engine's reprojection symbol isn't auto-found, fall
+  back to `--mode dataset` (or point `_engine_cubemap()` at the right `prism_vggt` symbol).
+* `--mode illustrative` (**no data**): a clearly-labelled **schematic** (synthetic
+  panorama), banner-marked "SCHEMATIC", for wiring the report layout before any render.
+  Run `make fig-cubemap`.
 
 ## Reference hardware / config
 
