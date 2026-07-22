@@ -36,7 +36,17 @@ MAKE_TARGETS = [
     "setup-vggtslam", "setup-laser", "download", "split", "render", "export",
     "run-prism", "run-pi3", "run-mapanything", "run-vggtslam", "run-laser",
     "eval-traj", "eval-recon", "eval-metric", "perf", "report", "snapshots",
+    "fig-vram", "fig-vram-sweep", "fig-cubemap", "fig-cubemap-export", "figures",
 ]
+
+# Report figures (first-class artifacts) live here; the Figures tab renders +
+# serves them. Keep names in sync with eval/vram_scaling.py + eval/fig_cubemap.py.
+FIG_DIR = RESULTS / "figures"
+FIG_ARTIFACTS = {
+    "VRAM vs. frames (plot)":   FIG_DIR / "vram_vs_frames.png",
+    "VRAM scaling (CSV)":       FIG_DIR / "vram_scaling.csv",
+    "Cubemap projection (plot)": FIG_DIR / "cubemap_projection.png",
+}
 
 
 # ── Run pipeline (stream make output) ─────────────────────────────────────────
@@ -339,6 +349,47 @@ def show_cloud(label, max_points, overlay_gt=False):
     return fig
 
 
+# ── Report figures (Deliverables 1 & 2: VRAM sweep + cubemap projection) ───────
+def _run_fig_script(rel_script: str, extra_args: list[str]):
+    """Run an eval/*.py figure script in the orchestrator env, return its combined
+    stdout. Uses the studio's own interpreter (the preview env has matplotlib/numpy)."""
+    cmd = [sys.executable, str(REPO_ROOT / rel_script)] + extra_args
+    p = subprocess.run(cmd, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT, text=True)
+    return f"$ {' '.join(cmd)}\n\n{p.stdout}\n[exit {p.returncode}]"
+
+
+def _fig_gallery():
+    return [str(p) for p in (FIG_DIR / "vram_vs_frames.png",
+                             FIG_DIR / "cubemap_projection.png") if p.exists()]
+
+
+def _fig_files():
+    return [str(p) for p in FIG_ARTIFACTS.values() if p.exists()]
+
+
+def gen_vram(source, scene, frames="", traj="", tile=False):
+    args = ["--source", source, "--scene", scene or "auto"]
+    if source == "sweep":
+        args += ["--logx", "--traj", traj or "synthetic_2.0hz_s0"]
+        if frames and frames.strip():
+            args += ["--frames", frames.replace(" ", "")]
+        if tile:
+            args += ["--tile"]
+    log = _run_fig_script("eval/vram_scaling.py", args)
+    return log, _fig_gallery(), _fig_files()
+
+
+def gen_cubemap(mode, scene, traj):
+    args = ["--mode", mode]
+    if scene:
+        args += ["--scene", scene]
+    if mode == "export":
+        args += ["--traj", traj or "synthetic_2.0hz_s0"]
+    log = _run_fig_script("eval/fig_cubemap.py", args)
+    return log, _fig_gallery(), _fig_files()
+
+
 # ── File downloader ───────────────────────────────────────────────────────────
 def prepare_download(selected_path):
     import gradio as gr
@@ -469,6 +520,45 @@ def build_app():
             run.change(on_run, [run], [idx, im_rgb, im_d, im_m, info])
             idx.change(preview_frame, [run, idx], [im_rgb, im_d, im_m, info])
             demo.load(on_run, [run], [idx, im_rgb, im_d, im_m, info])
+
+        with gr.Tab("Report figures"):
+            gr.Markdown(
+                "Regenerate the two report figures on demand and download them "
+                "(**vram_vs_frames.png** + **vram_scaling.csv**, **cubemap_projection.png**). "
+                "They land in `results/figures/`.\n\n"
+                "* **VRAM — perf.csv**: reproducible from the committed seeded run, on real "
+                "benchmark scenes (no GPU). "
+                "* **VRAM — sweep**: on-GPU prefix sweep — pick the frame grid (e.g. "
+                "`1,2,4,…,256`); each method's curve stops at its real OOM cap (needs exports "
+                "+ method envs). "
+                "* **Cubemap — schematic**: labelled preview (no GPU). "
+                "* **Cubemap — export**: real engine intermediates on a real pano frame "
+                "(needs the PRISM-VGGT env).")
+            with gr.Row():
+                fig_scene = gr.Textbox(value="auto", label="Scene ('auto' = best-covered)", scale=2)
+                fig_traj = gr.Textbox(value="synthetic_2.0hz_s0", label="Traj (sweep/export)", scale=2)
+            with gr.Row():
+                fig_frames = gr.Textbox(value="1,2,4,8,16,32,64,128,256",
+                                        label="Sweep frame grid (comma-separated)", scale=3)
+                fig_tile = gr.Checkbox(value=False, label="Tile past render length (for large counts)")
+            with gr.Row():
+                b_vram = gr.Button("VRAM — from perf.csv", variant="primary")
+                b_vram_sweep = gr.Button("VRAM — on-GPU sweep", variant="primary")
+                b_cube = gr.Button("Cubemap — schematic")
+                b_cube_exp = gr.Button("Cubemap — engine export")
+            fig_log = gr.Textbox(label="Output", lines=12, autoscroll=True)
+            fig_gallery = gr.Gallery(label="Figures", columns=2, height=420)
+            fig_files = gr.Files(label="Download artifacts", interactive=False)
+            b_vram.click(lambda s: gen_vram("perf-csv", s), [fig_scene],
+                         [fig_log, fig_gallery, fig_files])
+            b_vram_sweep.click(lambda s, fr, t, tl: gen_vram("sweep", s, fr, t, tl),
+                               [fig_scene, fig_frames, fig_traj, fig_tile],
+                               [fig_log, fig_gallery, fig_files])
+            b_cube.click(lambda s, t: gen_cubemap("illustrative", s, t), [fig_scene, fig_traj],
+                         [fig_log, fig_gallery, fig_files])
+            b_cube_exp.click(lambda s, t: gen_cubemap("export", s, t), [fig_scene, fig_traj],
+                             [fig_log, fig_gallery, fig_files])
+            demo.load(lambda: (_fig_gallery(), _fig_files()), None, [fig_gallery, fig_files])
 
         with gr.Tab("Downloads"):
             explorer = gr.FileExplorer(root_dir=str(REPO_ROOT), ignore_glob=".*",

@@ -26,6 +26,7 @@ PYCHK    ?= python3
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all bench-overnight \
+        fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export figures \
         studio preview snapshots docs docs-serve clean clean-results
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
@@ -59,6 +60,13 @@ help:
 	@echo "  make report           aggregate everything -> tables + plots (md/csv/png)"
 	@echo "  make studio           Studio: browser control panel — ONE-BUTTON pipeline + config + snapshots + viewers"
 	@echo "  make snapshots        standardized paper images of every cloud (GT-aligned, ceiling-clipped)"
+	@echo ""
+	@echo "Report figures (-> results/figures/, downloadable in Studio):"
+	@echo "  make figures          both report figures (vram_vs_frames.png + cubemap_projection.png)"
+	@echo "  make fig-vram         VRAM-vs-frames from committed seeded perf.csv (no GPU) -> png + csv"
+	@echo "  make fig-vram-sweep   on-GPU prefix sweep to real OOM caps (needs exports + method envs)"
+	@echo "  make fig-cubemap      cubemap projection figure — SCHEMATIC preview (no GPU)"
+	@echo "  make fig-cubemap-export  real cubemap figure from engine intermediates (needs PRISM env)"
 	@echo ""
 	@echo "  make all              init -> setup-all -> download -> render -> export ->"
 	@echo "                        run-all -> eval-* -> perf -> report"
@@ -186,6 +194,32 @@ report: setup
 
 all: init setup-all download render export run-all eval-traj eval-recon eval-metric perf report
 	@echo ">> full pipeline complete — see results/report/"
+
+# ── Report figures (Deliverables 1 & 2) -> results/figures/ ────────────────────
+# fig-vram is reproducible from the committed seeded perf.csv (no GPU). fig-vram-sweep
+# and fig-cubemap-export need the reference GPU + method envs/exports. FIG_SCENE /
+# FIG_TRAJ / FIG_FRAMES override the defaults (see eval/vram_scaling.py, eval/fig_cubemap.py).
+FIG_SCENE  ?= auto
+FIG_TRAJ   ?= synthetic_2.0hz_s0
+FIG_FRAMES ?= 1,2,4,8,16,32,64,128,256
+FIG_TILE   ?=                       # set FIG_TILE=1 to loop the sequence past its render length
+fig-vram: setup
+	@echo ">> VRAM-vs-frames from committed seeded perf.csv -> results/figures/"
+	$(ORCH_RUN) eval/vram_scaling.py --source perf-csv --config $(CONFIG) --scene "$(FIG_SCENE)"
+fig-vram-sweep: setup
+	@echo ">> on-GPU prefix VRAM sweep (real OOM caps) -> results/figures/"
+	$(ORCH_RUN) eval/vram_scaling.py --source sweep --config $(CONFIG) \
+	  --scene "$(FIG_SCENE)" --traj "$(FIG_TRAJ)" --frames "$(FIG_FRAMES)" --logx \
+	  $(if $(FIG_TILE),--tile,)
+fig-cubemap: setup
+	@echo ">> cubemap projection figure (SCHEMATIC preview) -> results/figures/"
+	$(ORCH_RUN) eval/fig_cubemap.py --mode illustrative --config $(CONFIG)
+fig-cubemap-export: setup
+	@echo ">> cubemap projection figure from ENGINE intermediates -> results/figures/"
+	$(ORCH_RUN) eval/fig_cubemap.py --mode export --config $(CONFIG) \
+	  --scene "$(FIG_SCENE)" --traj "$(FIG_TRAJ)"
+figures: fig-vram fig-cubemap
+	@echo ">> report figures in results/figures/ (vram_vs_frames.png + cubemap_projection.png)"
 
 # ── Overnight big benchmark (SSH-proof, resumable, priority-ordered) ──────────
 # Runs the whole matrix in a detached tmux session so it survives disconnect.
