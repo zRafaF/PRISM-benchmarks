@@ -192,8 +192,12 @@ def _rows_from_sweep(cfg, scene, traj, methods, frames, tile, device_index):
     hw_hint = cfg.get("hardware", {}).get("hw_id")
     work = Path(tempfile.mkdtemp(prefix="vram_sweep_"))
     out_root = DEFAULT_OUT / "sweep_runs"
+    print(f"[vram] === on-GPU sweep === scene={dataset}/{scene} traj={traj}", flush=True)
+    print(f"[vram]     methods={methods}", flush=True)
+    print(f"[vram]     frame grid={frames}  tile={tile}  device={device_index}", flush=True)
+    print(f"[vram]     per-run logs under {out_root}/<method>/n<frames>/run.log\n", flush=True)
     pts = {}
-    for m in methods:
+    for mi, m in enumerate(methods, 1):
         mcfg = method_cfg(cfg, m)
         # locate this method's export for the chosen scene/traj (first variant)
         src = None
@@ -202,20 +206,33 @@ def _rows_from_sweep(cfg, scene, traj, methods, frames, tile, device_index):
                 src = in_dir
                 break
         if src is None:
-            print(f"[vram] {m}: no export at {dataset}/{scene}/{traj} — skip (run make export)")
+            print(f"[vram] ({mi}/{len(methods)}) {m}: no export at "
+                  f"{dataset}/{scene}/{traj} — skip (run `make export` first)", flush=True)
             continue
+        avail = len(list((src / "rgb").glob("*.png")))
+        print(f"[vram] ({mi}/{len(methods)}) {m}: {avail} frames available at {src.name}/ — "
+              f"sweeping {frames}", flush=True)
         series = []
         for n in frames:
             pdir = _make_prefix_export(src, n, tile, work)
             actual = len(list((pdir / "rgb").glob("*.png")))
-            vram, status, note = _run_prefix(cfg, mcfg, pdir,
-                                             out_root / m / f"n{actual:05d}", device_index, hw_hint)
-            print(f"[vram] {m:12s} n={actual:5d} -> {vram:6.2f} GB [{status}] {note}")
+            odir = out_root / m / f"n{actual:05d}"
+            print(f"[vram]     {m:12s} n={actual:<5d} running… "
+                  f"(log -> {odir}/run.log)", flush=True)
+            vram, status, note = _run_prefix(cfg, mcfg, pdir, odir, device_index, hw_hint)
+            icon = {"completed": "ok", "oom": "OOM", "failed": "FAIL",
+                    "skipped": "skip"}.get(status, status)
+            print(f"[vram]     {m:12s} n={actual:<5d} -> {vram:6.2f} GB  [{icon}]"
+                  f"{('  ' + note) if note else ''}", flush=True)
             series.append((actual, vram, status, note))
             if status == "oom":
+                print(f"[vram]     {m}: hit OOM at n={actual} — curve stops here.", flush=True)
                 break
+            if status == "skipped":
+                break                       # env missing: same for every n, don't retry
         if series:
             pts[m] = series
+    print(f"\n[vram] sweep done: {len(pts)}/{len(methods)} methods produced points.", flush=True)
     return pts
 
 
@@ -228,7 +245,7 @@ def _write_csv(out_csv: Path, pts: dict):
         for m in pts:
             for (nf, vram, status, note) in pts[m]:
                 w.writerow([m, int(round(nf)), f"{vram:.2f}", status, note])
-    print(f"[vram] wrote {out_csv}")
+    print(f"[vram] wrote {out_csv}", flush=True)
 
 
 def _plot(out_png: Path, scene: str, pts: dict, rawpts: dict, card_gb: float,
@@ -281,7 +298,7 @@ def _plot(out_png: Path, scene: str, pts: dict, rawpts: dict, card_gb: float,
     out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=200)
     plt.close(fig)
-    print(f"[vram] wrote {out_png}")
+    print(f"[vram] wrote {out_png}", flush=True)
 
 
 def main():
@@ -309,6 +326,7 @@ def main():
     methods = [m.strip() for m in args.methods.split(",") if m.strip()]
     out = Path(args.out_dir)
     out_csv, out_png = out / "vram_scaling.csv", out / "vram_vs_frames.png"
+    print(f"[vram] source={args.source}  out={out}", flush=True)
 
     if args.source == "perf-csv":
         traj_prefix = args.traj.split("_")[0] if "_" in args.traj else "synthetic"
