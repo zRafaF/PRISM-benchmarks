@@ -7,6 +7,7 @@ Studio ("Report figures" tab). Both write to `results/figures/`:
 | --- | --- | --- |
 | `vram_vs_frames.png` + `vram_scaling.csv` | Peak VRAM vs. sequence length | new VRAM figure in `src/evaluation.typ` ("a sweep of memory against sequence length … is left to future work") |
 | `cubemap_projection.png` (+ 4 standalone panels `cubemap_equirect/faces/depth/fused.png` + `cubemap_projection.txt` caption) | equirectangular → cubemap → fused volume | `fig-cubemap` in `src/engine.typ` |
+| `fusion_perview.png` + `fusion_fused.png` (+ `fusion.txt` caption) | per-view geometry vs fused surface | `fig-fusion` |
 
 The report author copies the finals into `uofa-2026-report/src/assets/` and points the
 figure slots at them. `results/` is gitignored (run outputs); the figures are
@@ -22,6 +23,9 @@ make fig-cubemap        # cubemap figure only (schematic preview, no data)
 # real cubemap from the rendered dataset (no GPU/engine — just render the scene first):
 make render export SCENES="apartment_0" TRAJ=synthetic_5.0hz_s0
 make fig-cubemap-export FIG_SCENE=apartment_0 FIG_TRAJ=synthetic_5.0hz_s0 FIG_FRAME=0
+
+# per-view vs fused panels from the same rendered window (no GPU/engine):
+make fig-fusion FIG_SCENE=apartment_0 FUSION_TRAJ=synthetic_5.0hz_s0 FUSION_START=0 FUSION_WINDOW=16
 
 # on the reference GPU (RTX PRO 6000-class, ~96 GB), with method envs + exports ready:
 make fig-vram-sweep     # real prefix sweep to each method's OOM cap
@@ -100,6 +104,29 @@ Three modes:
 * `--mode illustrative` (**no data**): a clearly-labelled **schematic** (synthetic
   panorama), banner-marked "SCHEMATIC", for wiring the report layout before any render.
   Run `make fig-cubemap`.
+
+## Deliverable 3 — Per-view vs fused (`eval/fig_fusion.py`)
+
+Two **matched, text-free** panels rendered from ONE fixed oblique camera on a white
+background with identical framing (reusing `eval/snapshots._render`, so they match the
+benchmark snapshots): `fusion_perview.png` (raw per-view geometry — overlapping,
+duplicated, floater-laden) and `fusion_fused.png` (the single clean fused surface of the
+**same frames**). Provenance goes in `fusion.txt`. Fusion is the *only* variable: same
+backbone, same frames, same camera on both sides.
+
+* `--mode dataset` (**default, no GPU/engine**): takes one window of overlapping frames
+  from a seeded scene's pano export and back-projects the render's GT depth through the
+  GT poses. LEFT concatenates every frame's points (no fusion → overlap + duplication +
+  edge floaters); RIGHT voxel-fuses the **same** points at `voxel_size` (one point per
+  cell → compact surface, same hashing as the streaming fuser). Run
+  `make fig-fusion FIG_SCENE=<scene> FUSION_TRAJ=<dense_traj> FUSION_START=<i>
+  FUSION_WINDOW=<n>`. Caveat: GT depth is noise-free, so per-pixel *noise* is understated
+  vs a real feed-forward net — the duplication / redundancy / compactness contrast is
+  exact. A dense trajectory (e.g. `synthetic_5.0hz_s0`) gives the strongest overlap.
+* `--mode results` (**uses benchmark output clouds**): LEFT = `results/panovggt/…`
+  (raw full-batch PanoVGGT point map, no PRISM fusion), RIGHT = `results/prism/…` (the
+  nvblox-fused surface from the **same** backbone over the same sequence), GT-aligned.
+  Run `make fig-fusion-results`. This is the real-engine version once those runs exist.
 
 ## Reference hardware / config
 

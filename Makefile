@@ -26,7 +26,8 @@ PYCHK    ?= python3
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all bench-overnight \
-        fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine figures \
+        fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine \
+        fig-fusion fig-fusion-results figures \
         studio preview snapshots docs docs-serve clean clean-results
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
@@ -68,6 +69,8 @@ help:
 	@echo "  make fig-cubemap      cubemap projection figure — SCHEMATIC preview (no data)"
 	@echo "  make fig-cubemap-export  REAL cubemap figure from the dataset export (needs render+export, no GPU)"
 	@echo "  make fig-cubemap-engine  cubemap figure from the engine's own reprojection (needs PRISM env)"
+	@echo "  make fig-fusion       per-view vs fused panels from the dataset export (no GPU)"
+	@echo "  make fig-fusion-results  per-view (panovggt) vs fused (prism) from result clouds"
 	@echo ""
 	@echo "  make all              init -> setup-all -> download -> render -> export ->"
 	@echo "                        run-all -> eval-* -> perf -> report"
@@ -205,6 +208,10 @@ FIG_TRAJ   ?= synthetic_2.0hz_s0
 FIG_FRAME  ?= 0                     # which pano frame the cubemap figure uses
 FIG_FRAMES ?= 1,2,4,8,16,32,64,128,256
 FIG_TILE   ?=                       # set FIG_TILE=1 to loop the sequence past its render length
+# fig-fusion: window of overlapping frames (a dense traj gives the strongest per-view story)
+FUSION_TRAJ  ?= synthetic_5.0hz_s0
+FUSION_START ?= 0
+FUSION_WINDOW ?= 0                  # 0 = config engine.window_size (16)
 fig-vram: setup
 	@echo ">> VRAM-vs-frames from committed seeded perf.csv -> results/figures/"
 	$(ORCH_RUN) eval/vram_scaling.py --source perf-csv --config $(CONFIG) --scene "$(FIG_SCENE)"
@@ -224,6 +231,15 @@ fig-cubemap-engine: setup
 	@echo ">> cubemap projection figure from the ENGINE's own reprojection -> results/figures/"
 	$(ORCH_RUN) eval/fig_cubemap.py --mode export --config $(CONFIG) \
 	  --scene "$(FIG_SCENE)" --traj "$(FIG_TRAJ)" --frame "$(FIG_FRAME)"
+fig-fusion: setup
+	@echo ">> per-view vs fused panels from the dataset export -> results/figures/"
+	$(ORCH_RUN) eval/fig_fusion.py --mode dataset --config $(CONFIG) \
+	  --scene "$(FIG_SCENE)" --traj "$(FUSION_TRAJ)" \
+	  --frame-start "$(FUSION_START)" --window "$(FUSION_WINDOW)"
+fig-fusion-results: setup
+	@echo ">> per-view (panovggt) vs fused (prism) from result clouds -> results/figures/"
+	$(ORCH_RUN) eval/fig_fusion.py --mode results --config $(CONFIG) \
+	  --scene "$(FIG_SCENE)" --traj "$(FUSION_TRAJ)"
 figures: fig-vram fig-cubemap
 	@echo ">> report figures in results/figures/ (vram_vs_frames.png + cubemap_projection.png)"
 

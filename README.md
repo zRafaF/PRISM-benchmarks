@@ -47,8 +47,9 @@ make report                         # -> results/report/report.md (+ fps.png)
 make figures                        # -> results/figures/ (vram_vs_frames.png + csv, cubemap_projection.png)
 ```
 
-Report figures (VRAM-vs-frames + cubemap projection) regenerate with `make figures`
-and download from the Studio's "Report figures" tab — see `documentation/docs/figures.md`.
+Report figures (VRAM-vs-frames, cubemap projection, per-view-vs-fused) regenerate with
+`make figures` / `fig-cubemap-export` / `fig-fusion` and download from the Studio's
+"Report figures" tab — see `documentation/docs/figures.md`.
 
 Add baselines once you've confirmed their runner API seams (see roadmap):
 

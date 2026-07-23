@@ -37,7 +37,7 @@ MAKE_TARGETS = [
     "run-prism", "run-pi3", "run-mapanything", "run-vggtslam", "run-laser",
     "eval-traj", "eval-recon", "eval-metric", "perf", "report", "snapshots",
     "fig-vram", "fig-vram-sweep", "fig-cubemap", "fig-cubemap-export",
-    "fig-cubemap-engine", "figures",
+    "fig-cubemap-engine", "fig-fusion", "fig-fusion-results", "figures",
 ]
 
 # Report figures (first-class artifacts) live here; the Figures tab renders +
@@ -52,6 +52,9 @@ FIG_ARTIFACTS = {
     "Cubemap — depth":           FIG_DIR / "cubemap_depth.png",
     "Cubemap — fused":           FIG_DIR / "cubemap_fused.png",
     "Cubemap — caption":         FIG_DIR / "cubemap_projection.txt",
+    "Fusion — per-view":         FIG_DIR / "fusion_perview.png",
+    "Fusion — fused":            FIG_DIR / "fusion_fused.png",
+    "Fusion — caption":          FIG_DIR / "fusion.txt",
 }
 
 
@@ -358,7 +361,8 @@ def show_cloud(label, max_points, overlay_gt=False):
 # ── Report figures (Deliverables 1 & 2: VRAM sweep + cubemap projection) ───────
 def _fig_gallery():
     order = ["vram_vs_frames.png", "cubemap_projection.png", "cubemap_equirect.png",
-             "cubemap_faces.png", "cubemap_depth.png", "cubemap_fused.png"]
+             "cubemap_faces.png", "cubemap_depth.png", "cubemap_fused.png",
+             "fusion_perview.png", "fusion_fused.png"]
     return [str(FIG_DIR / n) for n in order if (FIG_DIR / n).exists()]
 
 
@@ -420,6 +424,18 @@ def gen_cubemap_engine(scene, traj):
     args = ["--mode", "export"] + (["--scene", scene] if scene and scene != "auto" else [])
     args += ["--traj", traj or "synthetic_2.0hz_s0"]
     yield from _stream_fig_script("eval/fig_cubemap.py", args)
+
+
+def gen_fusion_dataset(scene, traj):
+    args = ["--mode", "dataset"] + (["--scene", scene] if scene and scene != "auto" else [])
+    args += ["--traj", traj or "synthetic_5.0hz_s0"]
+    yield from _stream_fig_script("eval/fig_fusion.py", args)
+
+
+def gen_fusion_results(scene, traj):
+    args = ["--mode", "results"] + (["--scene", scene] if scene and scene != "auto" else [])
+    args += ["--traj", traj or "synthetic_5.0hz_s0"]
+    yield from _stream_fig_script("eval/fig_fusion.py", args)
 
 
 # ── File downloader ───────────────────────────────────────────────────────────
@@ -567,10 +583,14 @@ def build_app():
                 "(equirect RGB + GT depth + validity mask, fixed geometric reprojection; needs "
                 "`render`+`export`, no GPU). "
                 "* **Cubemap — engine**: the engine's own reprojection (needs the PRISM-VGGT env). "
-                "* **Cubemap — schematic**: labelled preview (no data).")
+                "* **Cubemap — schematic**: labelled preview (no data). "
+                "* **Fusion — from dataset**: per-view vs fused panels, same backbone/frames "
+                "(back-projected GT depth: concat vs voxel-fused; needs `render`+`export`). "
+                "* **Fusion — from results**: real panovggt (per-view) vs prism (fused) clouds.")
             with gr.Row():
                 fig_scene = gr.Textbox(value="auto", label="Scene ('auto' = best-covered)", scale=2)
-                fig_traj = gr.Textbox(value="synthetic_2.0hz_s0", label="Traj (sweep/export)", scale=2)
+                fig_traj = gr.Textbox(value="synthetic_2.0hz_s0", label="Traj (sweep/cubemap)", scale=2)
+                fig_ftraj = gr.Textbox(value="synthetic_5.0hz_s0", label="Fusion traj (dense)", scale=2)
             with gr.Row():
                 fig_frames = gr.Textbox(value="1,2,4,8,16,32,64,128,256",
                                         label="Sweep frame grid (comma-separated)", scale=3)
@@ -582,6 +602,9 @@ def build_app():
                 b_cube_data = gr.Button("Cubemap — from dataset (real)", variant="primary")
                 b_cube_eng = gr.Button("Cubemap — engine")
                 b_cube = gr.Button("Cubemap — schematic")
+            with gr.Row():
+                b_fuse_data = gr.Button("Fusion — from dataset (real)", variant="primary")
+                b_fuse_res = gr.Button("Fusion — from result clouds")
             fig_log = gr.Textbox(label="Output", lines=12, autoscroll=True)
             fig_gallery = gr.Gallery(label="Figures", columns=2, height=420)
             fig_files = gr.Files(label="Download artifacts", interactive=False)
@@ -595,6 +618,10 @@ def build_app():
                              [fig_log, fig_gallery, fig_files])
             b_cube.click(gen_cubemap_schematic, [fig_scene, fig_traj],
                          [fig_log, fig_gallery, fig_files])
+            b_fuse_data.click(gen_fusion_dataset, [fig_scene, fig_ftraj],
+                              [fig_log, fig_gallery, fig_files])
+            b_fuse_res.click(gen_fusion_results, [fig_scene, fig_ftraj],
+                             [fig_log, fig_gallery, fig_files])
             demo.load(lambda: (_fig_gallery(), _fig_files()), None, [fig_gallery, fig_files])
 
         with gr.Tab("Downloads"):
