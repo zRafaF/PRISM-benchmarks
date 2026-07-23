@@ -374,66 +374,74 @@ def _montage(imgs: dict, size: int, tint_mask: dict = None):
     return canvas, cell, size, pad, lab_h
 
 
-def compose(equirect, rgb, depth, mask, fused, out_png: Path, schematic: bool, meta: str):
+def _stamp_schematic(arr: np.ndarray) -> np.ndarray:
+    """Small red 'SCHEMATIC' corner label (only for illustrative mode, to stay honest)."""
+    try:
+        from PIL import Image, ImageDraw
+        im = Image.fromarray(arr[..., :3].astype(np.uint8)).convert("RGB")
+        ImageDraw.Draw(im).text((6, 6), "SCHEMATIC", fill=(230, 40, 40))
+        return np.asarray(im)
+    except Exception:
+        return arr
+
+
+def render_outputs(equirect, rgb, depth, mask, fused, out_dir: Path, schematic: bool, meta: str):
+    """Write FOUR clean, standalone panels (no titles / captions / arrows) plus ONE
+    composed figure. The report author places + labels the panels in Typst; the composed
+    figure is a convenience overview. Illustrative mode gets a small 'SCHEMATIC' stamp.
+
+      cubemap_equirect.png   (1) equirectangular panorama (RGB)
+      cubemap_faces.png      (2) six cube faces + validity/seam mask (red = dropped)
+      cubemap_depth.png      (2b) per-face metric depth (omitted if no depth)
+      cubemap_fused.png      (3) fused surface (omitted if not produced)
+      cubemap_projection.png  composed overview of whatever panels exist
+    """
+    import imageio.v2 as imageio
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.patches import FancyArrow
 
+    out_dir.mkdir(parents=True, exist_ok=True)
     fs = next(iter(rgb.values())).shape[0]
     face_rgb, *_ = _montage(rgb, fs, tint_mask=mask)
     depth_rgb = {f: _depth_to_rgb(depth[f]) for f in FACES if f in depth and depth[f] is not None}
-    have_depth = len(depth_rgb) == 6
-    if have_depth:
-        face_depth, *_ = _montage(depth_rgb, fs)
+    face_depth = _montage(depth_rgb, fs)[0] if len(depth_rgb) == 6 else None
 
-    ncol = 4 if have_depth else 3
-    fig = plt.figure(figsize=(4.6 * ncol, 5.0))
-    gs = fig.add_gridspec(1, ncol, wspace=0.28)
-
-    ax0 = fig.add_subplot(gs[0, 0])
-    ax0.imshow(equirect); ax0.set_title("(1) equirectangular\npanorama (RGB)", fontsize=11)
-    ax0.set_xticks([]); ax0.set_yticks([])
-
-    ax1 = fig.add_subplot(gs[0, 1])
-    ax1.imshow(face_rgb)
-    ax1.set_title("(2) six 90 deg cube faces\n+ validity / seam mask (red = dropped)", fontsize=11)
-    ax1.set_xticks([]); ax1.set_yticks([])
-
-    col = 2
-    if have_depth:
-        ax2 = fig.add_subplot(gs[0, col])
-        ax2.imshow(face_depth); ax2.set_title("(2b) per-face metric depth", fontsize=11)
-        ax2.set_xticks([]); ax2.set_yticks([]); col += 1
-
-    ax3 = fig.add_subplot(gs[0, col])
+    # (label, filename, array) for every panel that exists — in pipeline order.
+    panels = [("equirect", "cubemap_equirect.png", np.asarray(equirect)[..., :3]),
+              ("faces", "cubemap_faces.png", face_rgb)]
+    if face_depth is not None:
+        panels.append(("depth", "cubemap_depth.png", face_depth))
     if fused is not None:
-        ax3.imshow(fused)
-    else:
-        ax3.set_facecolor("#eef1f4")
-        ax3.text(0.5, 0.5, "fused surface\n\n[--mode dataset back-projects\nGT depth here; --mode export\nuses the engine's nvblox TSDF]",
-                 ha="center", va="center", fontsize=9, color="#556")
-    ax3.set_title("(3) fused TSDF surface", fontsize=11)
-    ax3.set_xticks([]); ax3.set_yticks([])
+        panels.append(("fused", "cubemap_fused.png", np.asarray(fused)[..., :3]))
 
-    # left->right arrows between panels
-    for i in range(ncol - 1):
-        fig.add_artist(FancyArrow(0.02 + (i + 1) / ncol - 0.012, 0.5, 0.02, 0,
-                                  transform=fig.transFigure, width=0.004,
-                                  head_width=0.02, head_length=0.008, color="#333"))
+    written = []
+    for _lab, fname, arr in panels:
+        img = _stamp_schematic(arr) if schematic else arr
+        p = out_dir / fname
+        imageio.imwrite(p, img.astype(np.uint8))
+        written.append(p)
+        print(f"[fig-cubemap] wrote {p}", flush=True)
 
-    title = "Equirectangular -> cubemap -> fused volume  (PRISM-VGGT projection pipeline)"
-    fig.suptitle(title, fontsize=13, y=1.02)
-    fig.text(0.5, -0.03, meta, ha="center", fontsize=7.5, color="0.4")
-
+    # composed overview — panels side by side, no titles / captions / arrows.
+    ncol = len(panels)
+    fig = plt.figure(figsize=(4.6 * ncol, 4.8))
+    gs = fig.add_gridspec(1, ncol, wspace=0.04)
+    for i, (_lab, _fn, arr) in enumerate(panels):
+        ax = fig.add_subplot(gs[0, i])
+        ax.imshow(arr)
+        ax.axis("off")
     if schematic:
-        fig.text(0.5, 0.5, "SCHEMATIC — regenerate on hardware (--mode export)",
-                 ha="center", va="center", fontsize=22, color="red", alpha=0.20,
-                 rotation=18, fontweight="bold")
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=200, bbox_inches="tight")
+        fig.text(0.5, 0.5, "SCHEMATIC", ha="center", va="center", fontsize=40,
+                 color="red", alpha=0.18, rotation=18, fontweight="bold")
+    composed = out_dir / "cubemap_projection.png"
+    fig.savefig(composed, dpi=200, bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
-    print(f"[fig-cubemap] wrote {out_png}")
+    print(f"[fig-cubemap] wrote {composed}", flush=True)
+    # sidecar caption so the provenance/meta lives next to the assets, not on them.
+    (out_dir / "cubemap_projection.txt").write_text(meta + "\n")
+    print(f"[fig-cubemap] {len(written)} panels + composed; caption -> "
+          f"{out_dir / 'cubemap_projection.txt'}", flush=True)
 
 
 def main():
@@ -449,15 +457,15 @@ def main():
     ap.add_argument("--out-dir", default=str(DEFAULT_OUT))
     args = ap.parse_args()
     cfg = load_config(args.config)
-    out_png = Path(args.out_dir) / "cubemap_projection.png"
+    out_dir = Path(args.out_dir)
     face_size = int(cfg["engine"]["face_size"])
 
     if args.mode == "illustrative":
         # keep the schematic light so it renders fast; the real export uses face_size.
         equ, rgb, depth, mask, fused = _illustrative_intermediates(min(face_size, 384))
-        compose(equ, rgb, depth, mask, fused, out_png, schematic=True,
-                meta="SCHEMATIC (synthetic panorama, standard gnomonic resampling). "
-                     "Not measured data — replace with `--mode dataset` (real export frame).")
+        render_outputs(equ, rgb, depth, mask, fused, out_dir, schematic=True,
+                       meta="SCHEMATIC (synthetic panorama, standard gnomonic resampling). "
+                            "Not measured data — replace with `--mode dataset` (real export frame).")
         return
 
     scene = args.scene if args.scene and args.scene != "auto" else \
@@ -465,21 +473,21 @@ def main():
 
     if args.mode == "dataset":
         equ, rgb, depth, mask, fused, nm = _dataset_intermediates(cfg, scene, args.traj, args.frame)
-        compose(equ, rgb, depth, mask, fused, out_png, schematic=False,
-                meta=f"Real dataset export — {scene}/{args.traj} frame {nm}, face_size={face_size}, "
-                     f"max_depth={cfg['engine']['max_depth']} m. Equirect->cube = fixed geometric "
-                     "reprojection; per-face depth is the render's GT depth (not PRISM's predicted "
-                     "depth); fused panel = GT depth back-projected over a window, top-down. "
-                     "Rendered scene (noise-free; optimistic vs. real Theta X capture).")
+        render_outputs(equ, rgb, depth, mask, fused, out_dir, schematic=False,
+                       meta=f"Real dataset export — {scene}/{args.traj} frame {nm}, face_size={face_size}, "
+                            f"max_depth={cfg['engine']['max_depth']} m. Equirect->cube = fixed geometric "
+                            "reprojection; per-face depth is the render's GT depth (not PRISM's predicted "
+                            "depth); fused panel = GT depth back-projected over a window, top-down. "
+                            "Rendered scene (noise-free; optimistic vs. real Theta X capture).")
         return
 
     # mode == export: real intermediates from the engine's own reprojection.
     equirect, exp_dir, nm = _load_pano_frame(cfg, scene, args.traj, args.frame)
     rgb, depth, mask = _engine_cubemap(equirect, cfg)
     fused = _engine_fused_surface(cfg, scene, args.traj, args.frame)
-    compose(equirect, rgb, depth, mask, fused, out_png, schematic=False,
-            meta=f"Real engine export — {scene}/{args.traj} frame {nm}, face_size={face_size}, "
-                 f"voxel={cfg['engine']['voxel_size']} m, max_depth={cfg['engine']['max_depth']} m. "
+    render_outputs(equirect, rgb, depth, mask, fused, out_dir, schematic=False,
+                   meta=f"Real engine export — {scene}/{args.traj} frame {nm}, face_size={face_size}, "
+                        f"voxel={cfg['engine']['voxel_size']} m, max_depth={cfg['engine']['max_depth']} m. "
                  "Rendered scene (noise-free; optimistic vs. real Theta X capture).")
 
 

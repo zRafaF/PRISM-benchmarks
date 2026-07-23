@@ -44,9 +44,14 @@ MAKE_TARGETS = [
 # serves them. Keep names in sync with eval/vram_scaling.py + eval/fig_cubemap.py.
 FIG_DIR = RESULTS / "figures"
 FIG_ARTIFACTS = {
-    "VRAM vs. frames (plot)":   FIG_DIR / "vram_vs_frames.png",
-    "VRAM scaling (CSV)":       FIG_DIR / "vram_scaling.csv",
-    "Cubemap projection (plot)": FIG_DIR / "cubemap_projection.png",
+    "VRAM vs. frames (plot)":    FIG_DIR / "vram_vs_frames.png",
+    "VRAM scaling (CSV)":        FIG_DIR / "vram_scaling.csv",
+    "Cubemap — composed":        FIG_DIR / "cubemap_projection.png",
+    "Cubemap — equirect":        FIG_DIR / "cubemap_equirect.png",
+    "Cubemap — faces":           FIG_DIR / "cubemap_faces.png",
+    "Cubemap — depth":           FIG_DIR / "cubemap_depth.png",
+    "Cubemap — fused":           FIG_DIR / "cubemap_fused.png",
+    "Cubemap — caption":         FIG_DIR / "cubemap_projection.txt",
 }
 
 
@@ -352,8 +357,9 @@ def show_cloud(label, max_points, overlay_gt=False):
 
 # ── Report figures (Deliverables 1 & 2: VRAM sweep + cubemap projection) ───────
 def _fig_gallery():
-    return [str(p) for p in (FIG_DIR / "vram_vs_frames.png",
-                             FIG_DIR / "cubemap_projection.png") if p.exists()]
+    order = ["vram_vs_frames.png", "cubemap_projection.png", "cubemap_equirect.png",
+             "cubemap_faces.png", "cubemap_depth.png", "cubemap_fused.png"]
+    return [str(FIG_DIR / n) for n in order if (FIG_DIR / n).exists()]
 
 
 def _fig_files():

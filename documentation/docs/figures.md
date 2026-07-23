@@ -6,7 +6,7 @@ Studio ("Report figures" tab). Both write to `results/figures/`:
 | File | Deliverable | Report slot |
 | --- | --- | --- |
 | `vram_vs_frames.png` + `vram_scaling.csv` | Peak VRAM vs. sequence length | new VRAM figure in `src/evaluation.typ` ("a sweep of memory against sequence length … is left to future work") |
-| `cubemap_projection.png` | equirectangular → cubemap → fused volume | `fig-cubemap` in `src/engine.typ` |
+| `cubemap_projection.png` (+ 4 standalone panels `cubemap_equirect/faces/depth/fused.png` + `cubemap_projection.txt` caption) | equirectangular → cubemap → fused volume | `fig-cubemap` in `src/engine.typ` |
 
 The report author copies the finals into `uofa-2026-report/src/assets/` and points the
 figure slots at them. `results/` is gitignored (run outputs); the figures are
@@ -68,10 +68,18 @@ points are labelled, never extrapolated through. Rendered scenes are noise-free
 
 ## Deliverable 2 — Cubemap projection (`eval/fig_cubemap.py`)
 
-Composes, left → right with arrows: (1) the input equirectangular panorama; (2) the six
-reprojected 90° cube faces with per-face metric depth and the **validity / anti-erosion
-seam mask** (the mask that drops smeared depth-discontinuity pixels before TSDF
-integration); (3) the fused TSDF surface.
+Exports **four clean, standalone panels** (no titles, captions, or arrows — so the
+report author places and labels them in Typst) plus **one composed overview**, and a
+sidecar caption file so provenance lives next to the assets rather than on them:
+
+* `cubemap_equirect.png` — the input equirectangular panorama (RGB);
+* `cubemap_faces.png` — the six reprojected 90° cube faces with the **validity /
+  anti-erosion seam mask** overlaid (red = dropped: smeared depth-discontinuity pixels +
+  cube seams, removed before TSDF integration);
+* `cubemap_depth.png` — the per-face metric depth;
+* `cubemap_fused.png` — the fused surface (top-down);
+* `cubemap_projection.png` — the four panels side by side (no arrows/text);
+* `cubemap_projection.txt` — the caption / provenance line for the figure.
 
 Three modes:
 
