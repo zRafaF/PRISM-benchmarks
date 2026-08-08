@@ -26,6 +26,7 @@ PYCHK    ?= python3
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all bench-overnight \
+        bench-status bench-stop \
         ingest-archive report-clean aggregate-clean report-tables verify-clean \
         smoke smoke-check \
         run-vggtslam-arms ablations-vggtslam \
@@ -53,8 +54,8 @@ help:
 	@echo "Run (each method in its OWN env, streaming harness):"
 	@echo "  make run-all          run every configured method -> common results layout"
 	@echo "  make run-<m>          one method: prism|panovggt|pi3|vggtslam|mapanything|laser"
-	@echo "  make ablations        PRISM ablations: guards (nolock/nostill/noguards) + align (se3/sl4)"
-	@echo "  make ablations-align  alignment-group study only: SE(3)+SL(4) vs Sim(3)=prism"
+	@echo "  make ablations        PRISM ablations: guards (nolock/nostill/noguards) + align (sl4/se3)"
+	@echo "  make ablations-align  alignment-group study only: SL(4)+SE(3) vs Sim(3)=prism"
 	@echo ""
 	@echo "Evaluate (orchestrator env; reads only results/, imports no method):"
 	@echo "  make eval-traj        evo ATE/RPE (Sim(3) align)          -> ate.json"
@@ -73,6 +74,11 @@ help:
 	@echo "Before the long run:"
 	@echo "  make smoke            TEST RUN: whole pipeline on a tiny matrix + ETA for the full run"
 	@echo "  make smoke-check      re-validate the last smoke run without re-running it"
+	@echo ""
+	@echo "The long run (multi-hour; detached, survives SSH logout):"
+	@echo "  make bench-overnight  launch the full matrix in the background"
+	@echo "  make bench-status     progress + completion + last log lines"
+	@echo "  make bench-stop       stop it (re-launch resumes; finished runs are skipped)"
 	@echo "  make studio           Studio: browser control panel — ONE-BUTTON pipeline + config + snapshots + viewers"
 	@echo "  make snapshots        standardized paper images of every cloud (GT-aligned, ceiling-clipped)"
 	@echo ""
@@ -181,10 +187,13 @@ run-laser:
 run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
 	@echo ">> all configured methods run"
 
-# PRISM ablations — guard-contribution study + alignment-group study (sim3/se3/sl4).
-# ALIGN=1 runs only the alignment arms; GUARDS=1 runs only the guard arms; default = all.
+# PRISM ablations — guard-contribution study + alignment-group study.
+# `prism` itself is the Sim(3) arm (the deployed default), so the alignment arms here
+# are the OTHER two groups. This list previously said `prism_sim3`, which stopped
+# existing when the default flipped to Sim(3) — `make ablations` would have failed on
+# every alignment arm. Keep it in sync with config.yaml `ablations`.
 ABL_GUARDS ?= prism_nolock prism_nostill prism_noguards
-ABL_ALIGN  ?= prism_sim3 prism_se3
+ABL_ALIGN  ?= prism_sl4 prism_se3
 ablations: setup
 	@echo ">> running PRISM ablations (config.ablations)"
 	@for a in $(ABL_GUARDS) $(ABL_ALIGN); do \
@@ -193,7 +202,7 @@ ablations: setup
 
 # Just the alignment-group study (sim3 is the plain `prism` run; add se3 + sl4).
 ablations-align: setup
-	@echo ">> alignment-group study: SE(3) + SL(4) arms (sim3 = the plain prism run)"
+	@echo ">> alignment-group study: SL(4) + SE(3) arms (Sim(3) = the plain prism run)"
 	@for a in $(ABL_ALIGN); do \
 	  $(ORCH_RUN) adapters/run.py --method $$a --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ) || exit 1; \
 	done
@@ -331,12 +340,67 @@ figures: fig-vram fig-cubemap
 # ── Overnight big benchmark (SSH-proof, resumable, priority-ordered) ──────────
 # Runs the whole matrix in a detached tmux session so it survives disconnect.
 # Reattach: tmux attach -t bench   |   Monitor: tail -f logs/overnight_latest.log
+# Detached launch that survives SSH disconnect. Picks the best backend available
+# rather than hard-failing when tmux is missing (the old behaviour): tmux if present
+# (reattachable), else setsid, else nohup. All three fully detach from the terminal,
+# so closing the SSH session cannot take the run down with it.
+BENCH_SESSION ?= bench
 bench-overnight:
-	@command -v tmux >/dev/null 2>&1 || { echo "tmux not found: run 'nohup bash scripts/run_overnight.sh &' instead"; exit 1; }
-	tmux new -d -s bench 'bash scripts/run_overnight.sh'
-	@echo ">> launched in tmux session 'bench'."
-	@echo "   reattach: tmux attach -t bench"
-	@echo "   monitor : tail -f logs/overnight_latest.log"
+	@if [ -f logs/overnight.pid ] && kill -0 "$$(cat logs/overnight.pid)" 2>/dev/null; then \
+	  echo "!! a benchmark is ALREADY RUNNING (pid $$(cat logs/overnight.pid))."; \
+	  echo "   make bench-status   to watch it   |   make bench-stop   to stop it"; \
+	  exit 1; \
+	fi
+	@mkdir -p logs
+	@if command -v tmux >/dev/null 2>&1; then \
+	  tmux new -d -s $(BENCH_SESSION) 'bash scripts/run_overnight.sh'; \
+	  tmux list-panes -t $(BENCH_SESSION) -F '#{pane_pid}' > logs/overnight.pid 2>/dev/null || true; \
+	  echo ">> launched detached in tmux session '$(BENCH_SESSION)'  [survives logout]"; \
+	  echo "   reattach : tmux attach -t $(BENCH_SESSION)   (detach again with Ctrl-b d)"; \
+	elif command -v setsid >/dev/null 2>&1; then \
+	  setsid nohup bash scripts/run_overnight.sh >/dev/null 2>&1 < /dev/null & \
+	  echo $$! > logs/overnight.pid; \
+	  echo ">> launched detached via setsid (pid $$(cat logs/overnight.pid))  [survives logout]"; \
+	  echo "   no tmux, so there is nothing to reattach to — follow the log instead"; \
+	else \
+	  nohup bash scripts/run_overnight.sh >/dev/null 2>&1 < /dev/null & \
+	  echo $$! > logs/overnight.pid; \
+	  echo ">> launched detached via nohup (pid $$(cat logs/overnight.pid))  [survives logout]"; \
+	fi
+	@sleep 1
+	@echo "   monitor  : make bench-status      (or: tail -f logs/overnight_latest.log)"
+	@echo "   progress : cat logs/overnight_latest.progress"
+	@echo "   stop     : make bench-stop"
+	@echo "   resumable: re-running skips finished runs (FORCE=1 redoes them)"
+
+bench-status:
+	@if [ -f logs/overnight.pid ] && kill -0 "$$(cat logs/overnight.pid)" 2>/dev/null; then \
+	  echo "RUNNING (pid $$(cat logs/overnight.pid))"; \
+	elif command -v tmux >/dev/null 2>&1 && tmux has-session -t $(BENCH_SESSION) 2>/dev/null; then \
+	  echo "RUNNING (tmux session '$(BENCH_SESSION)')"; \
+	else \
+	  echo "NOT RUNNING (finished, or never started)"; \
+	fi
+	@echo ""; echo "--- progress ---"
+	@tail -n 15 logs/overnight_latest.progress 2>/dev/null || echo "(no progress file yet)"
+	@echo ""; echo "--- completion so far ---"
+	@if [ -f results/report_clean/completion.csv ]; then \
+	  cut -d, -f1-5 results/report_clean/completion.csv | sed 's/^/  /'; \
+	else echo "  (no clean report yet — first checkpoint not reached)"; fi
+	@echo ""; echo "--- last 20 log lines ---"
+	@tail -n 20 logs/overnight_latest.log 2>/dev/null || echo "(no log yet)"
+	@echo ""; echo "follow live: tail -f logs/overnight_latest.log"
+
+bench-stop:
+	@if command -v tmux >/dev/null 2>&1 && tmux has-session -t $(BENCH_SESSION) 2>/dev/null; then \
+	  tmux kill-session -t $(BENCH_SESSION) && echo ">> killed tmux session '$(BENCH_SESSION)'"; \
+	fi
+	@if [ -f logs/overnight.pid ]; then \
+	  pkill -TERM -P "$$(cat logs/overnight.pid)" 2>/dev/null || true; \
+	  kill -TERM "$$(cat logs/overnight.pid)" 2>/dev/null || true; \
+	  rm -f logs/overnight.pid; echo ">> stopped"; \
+	else echo ">> nothing to stop"; fi
+	@echo "   re-launch with 'make bench-overnight' — finished runs are skipped."
 
 # ── Studio (browser control panel: run pipeline, config, snapshots, viewers) ──
 studio: setup
