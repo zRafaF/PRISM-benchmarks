@@ -1,0 +1,122 @@
+{
+  "generated_by": "eval/export_report_tables.py",
+  "source": "archive:bigrun_2026-07",
+  "n_input_records": 434,
+  "n_seeded_kept": 368,
+  "n_complete_aggregated": 325,
+  "n_incomplete_excluded": 43,
+  "scenes": [
+    "apartment_0",
+    "apartment_1",
+    "frl_apartment_0",
+    "hotel_0"
+  ],
+  "seeds": [
+    "s0",
+    "s1"
+  ],
+  "exclusions_applied": [
+    "unseeded traj id \u2014 stale 2-scene experiment (co-tenancy-inflated VRAM 70-100 GB)"
+  ],
+  "alignment_arms": [
+    {
+      "arm": "prism_sim3",
+      "group": "Sim(3)",
+      "dof": 7
+    },
+    {
+      "arm": "prism",
+      "group": "SL(4)",
+      "dof": 15
+    },
+    {
+      "arm": "prism_se3",
+      "group": "SE(3)",
+      "dof": 6
+    }
+  ],
+  "tables": {
+    "streaming_comparison": {
+      "status": "ok",
+      "rows": 5,
+      "csv": "streaming_comparison.csv"
+    },
+    "offline_upper_bound": {
+      "status": "ok",
+      "rows": 3,
+      "csv": "offline_upper_bound.csv"
+    },
+    "alignment_study": {
+      "status": "ok",
+      "rows": 3,
+      "csv": "alignment_study.csv"
+    },
+    "alignment_by_motion": {
+      "status": "ok",
+      "rows": 3,
+      "csv": "alignment_by_motion.csv"
+    },
+    "ate_by_motion": {
+      "status": "ok",
+      "rows": 11,
+      "csv": "ate_by_motion.csv"
+    },
+    "per_method_aggregate": {
+      "status": "ok",
+      "rows": 11,
+      "csv": "per_method_aggregate.csv"
+    },
+    "headline_errorbars": {
+      "status": "ok",
+      "rows": 11,
+      "csv": "headline_errorbars.csv"
+    },
+    "seed_repeatability": {
+      "status": "ok",
+      "rows": 94,
+      "csv": "seed_repeatability.csv"
+    },
+    "paired_head_to_head": {
+      "status": "ok",
+      "rows": 60,
+      "csv": "paired_head_to_head.csv"
+    },
+    "completion": {
+      "status": "ok",
+      "rows": 11,
+      "csv": "completion.csv"
+    },
+    "vram_vs_sequence_length": {
+      "status": "ok",
+      "rows": 266,
+      "csv": "vram_vs_sequence_length.csv"
+    }
+  },
+  "not_yet_run": [
+    {
+      "item": "small/easy scene (room_0, office_0)",
+      "status": "config pinned via datasets.replica.must_include; NOT rendered or run",
+      "command": "make split && make render && make export && make run-all"
+    },
+    {
+      "item": "VGGT-SLAM loop-closure-ON arm",
+      "status": "arm defined (vggtslam_loop, VGGTSLAM_MAX_LOOPS=1); NOT run",
+      "command": "make run-vggtslam-arms"
+    },
+    {
+      "item": "seeds 9012 / 3456",
+      "status": "config extended to 4 seeds; only 1234/5678 have data",
+      "command": "make render && make export && make run-all"
+    },
+    {
+      "item": "latency for the 2026-07 archive",
+      "status": "instrumentation fixed for future runs; the 43 archived zero-latency runs cannot be retro-filled and stay excluded",
+      "command": "n/a \u2014 requires re-running the matrix"
+    }
+  ],
+  "standing_caveats": [
+    "Rendered frames are noise-free -> optimistic upper bound vs real captures.",
+    "Metric scale degrades on loops (Sim(3) ~20%, SL(4) ~31%).",
+    "Shipped PRISM has no loop closure."
+  ]
+}

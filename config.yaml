@@ -15,7 +15,13 @@ hardware:
 datasets:
   active: [replica]          # TODAY: Replica (no approval). Later: scannetpp, kitti360, ...
   seed: 1234                 # legacy single seed (used if `seeds` is absent)
-  seeds: [1234, 5678]        # variance study: each scene×traj×rate rendered per seed
+  # Variance study: each scene×traj×rate is rendered once per seed, and the seeds
+  # inside a (scene, traj-family, rate) cell are the repeats the error bars come from.
+  # 2 seeds gives each cell's variance 1 d.o.f. — enough to pool across cells, not
+  # enough to quote a converged interval. The 2026-07 run's seed-to-seed spread on ATE
+  # was 25-60% of the mean, wide enough to swallow several between-method gaps, so the
+  # publication matrix runs 4. Cost is linear: 4 seeds = 2x the 2026-07 wall clock.
+  seeds: [1234, 5678, 9012, 3456]
   root: dataset/raw
 
   replica:                   # fastest zero-approval indoor meshes (NICE-SLAM/iMAP standard)
@@ -24,6 +30,13 @@ datasets:
     up_axis: auto            # detect up as the shortest AABB extent (room height); rotate to Z-up
     scenes: []               # frozen by make_split
     n_scenes_start: 6        # big benchmark: 6 rooms (small offices + large apartments)
+    # Pinned into every split BEFORE the random draw. The 2026-07 matrix drew its
+    # scenes uniformly and landed on four large multi-room apartments + a hotel with
+    # NO small room, making every absolute number pessimistic and incomparable to the
+    # small-room numbers the literature reports. room_0 and office_0 are the two
+    # smallest Replica rooms; pinning them makes the difficulty spread a property of
+    # the config rather than of the RNG.
+    must_include: [room_0, office_0]
     mesh_glob: "*/mesh.ply"
 
   scannetpp:
@@ -120,7 +133,15 @@ streaming:
 # mode: stream = native online SLAM (fed incrementally); batch = feed-forward, all frames
 # in one pass (permutation-equivariant nets like Pi3/MapAnything — windowing misaligns them).
 methods:
-  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours}  # default align = SL(4); prism_sim3/prism_se3 ablate the group
+  # DEPLOYED DEFAULT = Sim(3), set explicitly here rather than inherited from the
+  # engine's own default, so the arm's identity is pinned by the benchmark config and
+  # cannot drift if the PRISM repo changes its default. Basis: the alignment study
+  # (SL(4) is better on open paths but loses decisively on loops — ATE 110 vs 102 cm,
+  # F 0.26 vs 0.34, scale 31% vs 20% — and real deployments loop).
+  # NOTE FOR ANYONE READING OLD RESULTS: in the 2026-07 archive the arm named `prism`
+  # was SL(4). From this config forward `prism` is Sim(3) and SL(4) lives in the
+  # `prism_sl4` ablation arm. eval/aggregate_clean.py carries an era map for this.
+  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours, align_group: sim3, run_env: {PRISM_ALIGN: "sim3"}}
   - {name: panovggt,    camera: pano,     env: submodules/PRISM-VGGT, mode: batch,  metric: false, role: reference}  # raw backbone, full-batch 360° (no PRISM engine) — shows what the engine adds
   - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        mode: batch,  metric: true,  role: baseline}   # Pi3X: approx metric scale
   - {name: mapanything, camera: pinhole,  env: submodules/map-anything, mode: batch, metric: true, role: baseline}  # feed-forward metric
@@ -146,14 +167,28 @@ ablations:
   - {name: prism_nolock,   camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0"}}
   - {name: prism_nostill,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {PRISM_STILL_GUARD: "0"}}
   - {name: prism_noguards, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0", PRISM_STILL_GUARD: "0", PRISM_FLIP_GUARD: "0", PRISM_Z_RELEVEL: "0"}}
-  # Alignment-group study. `prism` (main) is now SL(4) by default, so the arms below
-  # measure the OTHER two groups against it (PRISM_ALIGN switch in the PRISM repo).
-  - {name: prism_sim3,     camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sim3, run_env: {PRISM_ALIGN: "sim3"}}
+  # Alignment-group study. `prism` (main) is Sim(3) — the deployed default — so the
+  # arms below measure the OTHER two groups against it (PRISM_ALIGN switch in the
+  # PRISM repo). Every arm names its group explicitly; none relies on a repo default.
+  - {name: prism_sl4,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sl4,  run_env: {PRISM_ALIGN: "sl4"}}
   - {name: prism_se3,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: se3,  run_env: {PRISM_ALIGN: "se3"}}
+  #  (c) VGGT-SLAM FAIRNESS arms — the baseline in both configurations, so the paper can
+  #      show the head-to-head against VGGT-SLAM's *native* mode (loop closure ON, its
+  #      headline feature) rather than only against the hobbled OFF mode used in 2026-07.
+  #      Named arms, not a mutable global, so a results tree is always self-describing.
+  - {name: vggtslam_noloop, camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "0"}}
+  - {name: vggtslam_loop,   camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "1"}}
 
 # VGGT-SLAM (streaming) tuning — drives its own main.py.
+# FAIRNESS NOTE. The 2026-07 run used max_loops=0 ("to match PRISM's shipped mode",
+# decision D4). Loop closure is VGGT-SLAM's headline feature, so a head-to-head against
+# max_loops=0 is a comparison against a deliberately hobbled configuration and cannot
+# be published as a plain "PRISM beats VGGT-SLAM". Both arms are therefore run and
+# reported side by side (see ablations: vggtslam_noloop / vggtslam_loop) and the
+# per-arm value is set via VGGTSLAM_MAX_LOOPS in run_env, so neither arm depends on
+# this mutable global. The value below is only the fallback for a bare `run-vggtslam`.
 vggtslam:
-  max_loops: 1               # loop closure ON (its strength; native mode). 0 disables.
+  max_loops: 1               # loop closure ON (its native mode). 0 disables.
   submap_size: 16            # frames per SL(4) submap (matches our window)
   min_disparity: 50          # optical-flow keyframe-selection threshold
 # PanoVGGT-no-SLAM ablation intentionally EXCLUDED: full-batch of ours = benchmarking

@@ -33,10 +33,13 @@ paper (offline full-batch Pi3/PanoVGGT beat us on raw F; that is the streaming t
   stress the projective DoF — hence the loop/stop-and-go trajectories in the big run.
   Clean sub-result: the scale DoF helps (Sim(3) > SE(3)).
 
-**Design decision:** default alignment group set to **SL(4)** (best on the preliminary
-data; floor grounding keeps it metric). Sim(3)/SE(3) stay as measured ablation arms
-(`prism_sim3`, `prism_se3`). Revisit after the loop/dwell trajectories — those are
-designed to expose SL(4)'s projective drift, which may reverse this.
+**Design decision (updated after the big run — see decisions D17):** the default
+alignment group is **Sim(3)**, not SL(4). The loop/dwell trajectories did exactly what
+they were designed to do and reversed the preliminary call: SL(4) leads on smooth and
+stop-and-go but loses decisively on loops (ATE 110.5 vs 101.9 cm, F 0.26 vs 0.34, metric
+scale 31.4% vs 20.3%), and real deployments loop. SL(4)/SE(3) stay as measured ablation
+arms (`prism_sl4`, `prism_se3`). Note that pooled across all motion the three groups are
+**not** statistically separable — the trade-off is real only within motion families.
 
 **Honest gaps to close in the big run:** (1) only 2 scenes / no seeds → nothing is
 significant yet; (2) everyone fails on the large apartment (a *backbone* limit, must be

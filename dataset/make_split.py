@@ -33,6 +33,9 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--dataset", default=None, help="default: first in datasets.active")
     ap.add_argument("--n", type=int, default=None, help="override n_scenes_start")
+    ap.add_argument("--must-include", default=None,
+                    help="comma-separated scene ids always pinned into the split "
+                         "(overrides datasets.<name>.must_include)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -43,20 +46,53 @@ def main():
     if not found:
         print(f"[make_split] no scenes found for {dataset} — run 'make download' first.")
         return
+    # `must_include` scenes are pinned into every split before the random draw.
+    # Rationale: the 2026-07 big run drew its scenes uniformly and happened to land on
+    # four large multi-room apartments plus a hotel, with NO small/easy room in the
+    # seeded set. Every absolute number from that matrix is therefore pessimistic and
+    # not comparable to small-room results in the literature. Pinning at least one
+    # small room makes the difficulty spread a property of the config, not of the RNG.
+    dcfg = cfg["datasets"][dataset]
+    must = [s.strip() for s in (args.must_include.split(",") if args.must_include
+                                else dcfg.get("must_include", []) or []) if s and s.strip()]
+    missing = [s for s in must if s not in found]
+    if missing:
+        print(f"[make_split] WARNING: must_include scene(s) absent from {dataset}: "
+              f"{missing} — skipped. Available: {found}")
+    pinned = [s for s in must if s in found]
+
     import random
     random.seed(cfg["datasets"]["seed"])
-    chosen = sorted(random.sample(found, min(n, len(found))))
+    pool = [s for s in found if s not in pinned]
+    n_extra = max(0, min(n, len(found)) - len(pinned))
+    chosen = sorted(pinned + random.sample(pool, min(n_extra, len(pool))))
+    if pinned:
+        print(f"[make_split] pinned via must_include: {pinned}")
 
     # Write the frozen scene list to the gitignored overlay (config.local.yaml), NOT
     # the tracked config.yaml — so `git pull` never clobbers it or conflicts.
+    #
+    # If a temporary run profile is active (PRISM_CONFIG_OVERLAY, e.g. the smoke test's
+    # config.smoke.yaml), freeze into THAT file instead. Otherwise `make split` during a
+    # smoke run would overwrite the real frozen scene list in config.local.yaml — an
+    # expensive thing to lose, and a surprising side effect of running a test.
+    import os
     from bench.config import LOCAL_CONFIG
+    target = LOCAL_CONFIG
+    active = os.environ.get("PRISM_CONFIG_OVERLAY", "").strip()
+    if active:
+        target = Path(active)
+        if not target.is_absolute():
+            target = REPO_ROOT / target
+        print(f"[make_split] PRISM_CONFIG_OVERLAY active -> freezing into {target.name} "
+              f"(config.local.yaml left untouched)")
     overlay = {}
-    if LOCAL_CONFIG.exists():
-        overlay = yaml.safe_load(LOCAL_CONFIG.read_text()) or {}
+    if target.exists():
+        overlay = yaml.safe_load(target.read_text()) or {}
     overlay.setdefault("datasets", {}).setdefault(dataset, {})["scenes"] = chosen
-    LOCAL_CONFIG.write_text(yaml.safe_dump(overlay, sort_keys=False))
+    target.write_text(yaml.safe_dump(overlay, sort_keys=False))
     print(f"[make_split] {dataset}: froze {len(chosen)} scene(s): {chosen}")
-    print(f"[make_split] -> {LOCAL_CONFIG.name} (gitignored; survives git pull)")
+    print(f"[make_split] -> {target.name} (gitignored; survives git pull)")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+Method,ATE cm — smooth,ATE cm — stop-and-go,ATE cm — loop
+laser,88.8,87.5,118.6
+mapanything,97.5,92.7,103.1
+panovggt,72.3,56.0,76.1
+pi3,62.4,57.5,62.5
+prism,44.0,51.9,110.5
+prism_noguards,—,49.1,108.0
+prism_nolock,—,52.0,110.5
+prism_nostill,—,51.9,110.5
+prism_se3,46.6,67.4,101.2
+prism_sim3,46.2,72.3,101.9
+vggtslam,136.4,144.7,132.5

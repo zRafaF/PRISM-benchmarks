@@ -6,6 +6,7 @@ there is exactly one source of truth for scenes, camera params, thresholds, etc.
 from __future__ import annotations
 
 import argparse
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,20 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
     if LOCAL_CONFIG.exists():
         with open(LOCAL_CONFIG, "r", encoding="utf-8") as f:
             cfg = _deep_merge(cfg, yaml.safe_load(f) or {})
+    # One more overlay, merged LAST, selected by env var. This exists so a temporary
+    # run profile (the smoke test's tiny matrix) can override the per-machine
+    # config.local.yaml without moving, backing up or clobbering it — that overlay
+    # holds the frozen scene list from `make split`, and losing it is expensive.
+    extra = os.environ.get("PRISM_CONFIG_OVERLAY", "").strip()
+    if extra:
+        ep = Path(extra)
+        if not ep.is_absolute():
+            ep = REPO_ROOT / ep
+        if not ep.exists():
+            raise SystemExit(f"[config] PRISM_CONFIG_OVERLAY={extra} not found at {ep}")
+        with open(ep, "r", encoding="utf-8") as f:
+            cfg = _deep_merge(cfg, yaml.safe_load(f) or {})
+        cfg.setdefault("_provenance", {})["overlay"] = ep.name
     return cfg
 
 

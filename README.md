@@ -78,13 +78,20 @@ make setup-vggtslam && make run-vggtslam
 ## Ablations, trajectories & the big benchmark
 
 **Alignment-group ablation (core study).** PRISM's submap registration group is switchable
-via `PRISM_ALIGN` in the PRISM engine — `sim3` (7-DoF similarity), `se3` (6-DoF rigid),
-`sl4` (15-DoF projective, VGGT-SLAM's group). **The default is `sl4`** (best recon on the
-preliminary run; floor grounding keeps it metric). The ablation arms `prism_sim3` /
-`prism_se3` measure the other two with everything else held fixed. Key finding: running
-VGGT-SLAM's *own* SL(4) group inside PRISM (`prism`) still beats VGGT-SLAM ~4× on ATE — so
-PRISM's advantage is the panoramic metric engine, not the pose-graph math. Guard ablations
-(`prism_nolock/nostill/noguards`) toggle the drift-control guards.
+via `PRISM_ALIGN` — `sim3` (7-DoF similarity), `se3` (6-DoF rigid), `sl4` (15-DoF
+projective, VGGT-SLAM's group). **The default is `sim3`**, set explicitly in `config.yaml`
+rather than inherited from the engine. The big run showed the choice is *motion-dependent*:
+SL(4) wins on open paths but loses decisively on loops (ATE 110.5 vs 101.9 cm, F 0.26 vs
+0.34, metric scale 31.4% vs 20.3%), and real deployments loop. The ablation arms
+`prism_sl4` / `prism_se3` measure the other two with everything else held fixed. Key
+finding: running VGGT-SLAM's *own* SL(4) group inside PRISM still beats VGGT-SLAM by a
+wide, paired-test-significant margin — so PRISM's advantage is the panoramic metric
+engine, not the pose-graph math. Guard ablations (`prism_nolock/nostill/noguards`) toggle
+the drift-control guards; they show **no** measurable accuracy benefit.
+
+> **Heads-up when reading old results:** in the 2026-07 archive the arm named `prism` was
+> SL(4). From the current config forward `prism` is Sim(3) and SL(4) lives in `prism_sl4`.
+> `eval/aggregate_clean.py` carries an era map so both are labelled correctly.
 
 ```bash
 make ablations          # guard arms + alignment arms (sim3, se3) as their own "methods"
@@ -110,6 +117,22 @@ tmux attach -t bench               # reattach   |   tail -f logs/overnight_lates
 
 The report gains a **Global aggregate** and an **Alignment-group study** table (compute
 impact + fidelity) on top of the per-run tables A/B/C/C2/D.
+
+### Publication-grade aggregation (use this for anything cited)
+
+`make report` aggregates **everything** in `results/` — seeded and unseeded, complete and
+crashed alike. That is what contaminated the 2026-07 tables. For anything the paper cites:
+
+```bash
+make report-clean     # seeded-only + named exclusions + complete-runs-only
+make report-tables    # freeze into the layout uofa-2026-report ingests
+make verify-clean     # fail loudly if a contaminated run leaked in
+make publication      # all three
+```
+
+`report-clean` also emits error bars (within-cell seed std), a paired head-to-head, and a
+per-method **completion table** — read that one first: the 2026-07 run failed 25.6% of its
+PRISM-arm runs, all concentrated on the hardest scenes. See `RESULTS_CHANGELOG.md`.
 
 ## The adapter contract
 
@@ -137,6 +160,7 @@ reconstruction in the VGGT family; beats VGGT-SLAM ~4× on trajectory with a 6×
 map) and `decisions.md` (D1–D16) for the design rationale.
 
 Small-run numbers are labelled **preliminary** (2 scenes, fixed seed). The
-`make bench-overnight` run (6 scenes × 2 seeds × motion-stress trajectories, dedicated
-GPU) is what drops that label. Rendered frames are noise/artifact-free → an optimistic
-upper bound.
+`make bench-overnight` run (6 scenes × 4 seeds × motion-stress trajectories, dedicated
+GPU) is what drops that label — but note the 2026-07 run's seed-to-seed ATE spread was
+25–60% of the mean, so that hedge can currently be dropped for throughput and memory,
+**not** for ATE/F. Rendered frames are noise/artifact-free → an optimistic upper bound.

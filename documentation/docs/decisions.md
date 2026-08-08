@@ -100,7 +100,7 @@ surface — the "fluffy dots"), and **precision@2cm** (sharpness). Computed on t
 cloud (identical voxel dedup for all). These quantify the visible sharpness advantage of
 PRISM's TSDF surface over per-pixel feed-forward pointmaps.
 
-## D15 — Alignment-group ablation + SL(4) as the default
+## D15 — Alignment-group ablation + SL(4) as the default  *(SUPERSEDED by D17)*
 Added `PRISM_ALIGN` to the PRISM engine to switch the submap registration group:
 **sim3** (7-DoF similarity), **se3** (6-DoF rigid at locked scale), **sl4** (15-DoF
 projective homography fit from the DENSE overlap point maps — VGGT-SLAM's group,
@@ -119,6 +119,44 @@ Beyond the smooth spline we add two trajectory families that stress streaming dr
 should diverge from Sim(3)). Big run = 6 scenes × 2 seeds × {smooth rate-sweep, stopgo,
 loop} on a dedicated GPU, via `scripts/run_overnight.sh` (resumable, priority-ordered,
 report checkpoints). This is the run that drops the "preliminary" label.
+
+## D17 — Default alignment group reverted to Sim(3)  *(supersedes D15)*
+D15 set the default to SL(4) on preliminary 2-easy-scene data and explicitly said
+"revisit the default after the loop/dwell trajectories". The big run ran them, and they
+reversed the call: the choice is **motion-dependent**, not uniformly in SL(4)'s favour.
+
+| Trajectory (2 Hz) | SL(4) ATE / F / scale% | Sim(3) ATE / F / scale% |
+|---|---|---|
+| smooth | **44.0** / **0.46** / 10.3 | 46.2 / 0.41 / **10.0** |
+| stop-and-go | **51.9** / **0.43** / **12.1** | 72.3 / 0.38 / 16.0 |
+| loop | 110.5 / 0.26 / 31.4 | **101.9** / **0.34** / **20.3** |
+
+SL(4)'s projective freedom accumulates non-rigid drift once the path closes — exactly
+the failure Sim(3)/SE(3) forbid by construction, and the loop trajectory made it visible.
+Since real deployments loop, **the default is Sim(3)**, set explicitly in `config.yaml`
+(`run_env: {PRISM_ALIGN: "sim3"}`) rather than inherited from the engine, so the arm's
+identity cannot drift if the PRISM repo changes its own default. SL(4) moves to the
+`prism_sl4` ablation arm.
+
+Two caveats attached to this decision. First, **pooled across all motion the three groups
+are not statistically separable** (paired test, p = 0.29-1.00); the trade-off is real only
+*within* motion families, and the stratified table is the result — not the marginal means.
+Second, **arm naming changed meaning**: in the 2026-07 archive `prism` was SL(4); from
+this decision forward `prism` is Sim(3). `eval/aggregate_clean.py` carries an era map
+(`ALIGN_ERAS`) so historical results stay correctly labelled.
+
+## D18 — Publication aggregation is separate from `make report`
+`make report` aggregates every run present in `results/`, which is how the 2026-07
+"Global aggregate" ended up mixing the seeded matrix with stale 2-scene runs carrying
+co-tenancy-inflated VRAM. Rather than change its behaviour (per-scene browsing still
+wants everything), publication-facing aggregation lives in `make report-clean`
+(`eval/aggregate_clean.py`): seeded-only, named exclusions, and **complete runs only**.
+
+The last filter matters more than it looks: 43 of 368 seeded runs produced no evaluable
+output, all of them PRISM arms, and their `eff_fps` was computed from the *input* frame
+count — so including them inflated PRISM's throughput. `make verify-clean` is the
+regression guard and fails non-zero if any contaminated run reaches a clean table. See
+`RESULTS_CHANGELOG.md`.
 
 ## Conflict note (brief vs. 05)
 05 marked the ScanNet-render pipeline "build deferred" and prioritised perf + lab

@@ -1,0 +1,4 @@
+Group (arm),DoF,N,Eff.FPS↑,per-win s↓,VRAM GB↓,Scale err %↓,ATE cm↓,Drift %/m↓,Masked F↑,Outlier %↓
+Sim(3) (prism_sim3),7,30,2.84,1.53,15.89,14.0,68.9,49.1,0.396,2.48
+SL(4) (prism),15,31,2.88,1.60,15.95,14.6,65.3,52.2,0.417,2.44
+SE(3) (prism_se3),6,31,2.93,1.52,16.01,13.4,67.1,48.6,0.393,2.46

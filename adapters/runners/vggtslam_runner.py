@@ -15,6 +15,7 @@ Scale-free -> metric=false. Emits poses.tum, cloud.ply, perf_runner.json.
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -34,12 +35,22 @@ def main():
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    import os
     import yaml
     cfg = yaml.safe_load(Path(args.config).read_text())
     vs = cfg.get("vggtslam", {})
     submap = int(vs.get("submap_size", cfg["engine"]["window_size"]))
-    max_loops = int(vs.get("max_loops", 1))          # 1 = loop closure on (native); 0 = off
-    min_disp = float(vs.get("min_disparity", 50))    # optical-flow keyframe threshold
+    # Per-arm override via run_env, so the loop-closure-ON and loop-closure-OFF arms
+    # are two independently named methods rather than one mutable global. Loop closure
+    # is VGGT-SLAM's headline feature: publishing only the OFF arm understates it.
+    max_loops = int(os.environ.get("VGGTSLAM_MAX_LOOPS", vs.get("max_loops", 1)))
+    min_disp = float(os.environ.get("VGGTSLAM_MIN_DISPARITY", vs.get("min_disparity", 50)))
+    print(f"[vggtslam_runner] submap_size={submap} max_loops={max_loops} "
+          f"(loop closure {'ON' if max_loops else 'OFF'}) min_disparity={min_disp}")
+    # Record the exact configuration next to the results so the arm is self-describing.
+    (out / "arm_config.json").write_text(json.dumps(
+        {"max_loops": max_loops, "loop_closure": bool(max_loops),
+         "submap_size": submap, "min_disparity": min_disp}, indent=2))
 
     rgb_dir = Path(args.in_dir) / "rgb"
     poses_txt = out / "poses.txt"

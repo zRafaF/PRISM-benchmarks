@@ -16,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench.config import REPO_ROOT, load_config
 
 COLUMNS = ["method", "dataset", "scene", "traj", "variant", "n_frames",
-           "eff_fps", "latency_end_to_end_s", "per_window_latency_med_s",
+           "n_frames_input", "n_frames_done", "completed", "returncode",
+           "eff_fps", "latency_end_to_end_s", "latency_source",
+           "per_window_latency_med_s", "per_window_source", "n_windows",
            "vram_avg_gb", "vram_peak_gb", "gpu_util_avg_pct", "gpu_power_avg_w",
            "cpu_ram_peak_gb", "ckpt_size_mb", "tsdf_block_count",
            "gpu_name", "gpu_total_gb", "hw_id"]
@@ -36,12 +38,29 @@ def main():
         method, dataset, scene, traj, variant = parts[i + 1:i + 6]
         d = json.loads(pj.read_text())
         pw = d.get("per_window_latency_s") or []
+        # Prefer the runner's measured per-window distribution; fall back to the
+        # orchestrator-derived average written by adapters/base.py. Either way the
+        # companion *_source column says which it is, so a derived average is never
+        # silently read as a measured median.
+        if pw:
+            pw_med = round(st.median(pw), 4)
+        elif d.get("per_window_latency_med_s"):
+            pw_med = round(d["per_window_latency_med_s"], 4)
+        else:
+            pw_med = ""
         rows.append({
             "method": method, "dataset": dataset, "scene": scene, "traj": traj,
             "variant": variant, "n_frames": d.get("n_frames", 0),
+            "n_frames_input": d.get("n_frames_input", ""),
+            "n_frames_done": d.get("n_frames_done", ""),
+            "completed": d.get("completed", ""),
+            "returncode": d.get("returncode", ""),
             "eff_fps": round(d.get("eff_fps", 0), 3),
             "latency_end_to_end_s": round(d.get("latency_end_to_end_s", 0), 3),
-            "per_window_latency_med_s": round(st.median(pw), 4) if pw else "",
+            "latency_source": d.get("latency_source", "unavailable"),
+            "per_window_latency_med_s": pw_med,
+            "per_window_source": d.get("per_window_source", "unavailable"),
+            "n_windows": d.get("n_windows", ""),
             "vram_avg_gb": round(d.get("vram_avg_gb", 0), 3),
             "vram_peak_gb": round(d.get("vram_peak_gb", 0), 3),
             "gpu_util_avg_pct": round(d.get("gpu_util_avg_pct", 0), 1),

@@ -1,0 +1,39 @@
+# ============================================================================
+# Smoke-test run profile — a deliberately tiny matrix that exercises the ENTIRE
+# pipeline end to end before committing a GPU to the real overnight run.
+# ============================================================================
+# Merged on top of config.yaml + config.local.yaml via PRISM_CONFIG_OVERLAY, so it
+# never touches your frozen scene list. Used by `make smoke` / scripts/smoke_test.sh.
+#
+# Design rules — every one of these exists because of something that actually bit us:
+#
+#  * TWO seeds, not one. With a single seed `resolve_trajs` emits no `_sN` suffix, the
+#    runs are not "seeded", and the whole clean-aggregation path (which is seeded-only)
+#    would be silently untested — the exact path we most need to trust.
+#  * ALL THREE motion families. 30 of the 43 failed runs in the 2026-07 big run were on
+#    stopgo/loop. A smoke that only ran the smooth spline would have passed happily
+#    while the real run lost a quarter of its PRISM arms.
+#  * Tiny n_frames. Runtime here is dominated by model load, not frames, so shrinking
+#    frames buys most of the speedup without skipping any code path.
+#  * A SMALL scene. Fast to render, and it also exercises the `must_include` pinning.
+# ============================================================================
+
+datasets:
+  seeds: [1234, 5678]            # two seeds -> `_s0`/`_s1` -> the seeded path is tested
+  replica:
+    n_scenes_start: 1
+    must_include: [room_0]       # smallest Replica room; override with SMOKE_SCENE
+
+trajectories:
+  n_frames: 20                   # ceiling — ~2 windows at window_size=16, overlap=4
+  rates_hz: [2.0]                # one rate; the rate sweep is not what we're testing
+  extra_kinds:
+    stopgo: {rates_hz: [2.0], n_stops: 1, dwell_s: 2.0}
+    loop:   {rates_hz: [2.0]}
+
+# Full-batch baselines see every frame at once; 20 is far below any VRAM ceiling.
+baselines:
+  max_frames: null
+
+report:
+  label: "SMOKE TEST — not for citation"

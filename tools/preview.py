@@ -16,6 +16,7 @@ Only a fixed allowlist of make targets can be run — no arbitrary shell.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +37,11 @@ MAKE_TARGETS = [
     "setup-vggtslam", "setup-laser", "download", "split", "render", "export",
     "run-prism", "run-pi3", "run-mapanything", "run-vggtslam", "run-laser",
     "eval-traj", "eval-recon", "eval-metric", "perf", "report", "snapshots",
+    # Publication path (seeded-only). `report` aggregates EVERYTHING in results/,
+    # which is what contaminated the 2026-07 tables; these are the clean ones.
+    "ingest-archive", "report-clean", "report-tables", "verify-clean", "publication",
+    # Fairness arms + the pre-flight test run.
+    "run-vggtslam-arms", "smoke", "smoke-check",
     "fig-vram", "fig-vram-sweep", "fig-cubemap", "fig-cubemap-export",
     "fig-cubemap-engine", "fig-fusion", "fig-fusion-results", "figures",
 ]
@@ -139,6 +145,10 @@ def full_pipeline(scenes, methods, rates_csv, max_frames, clean_first, do_snapsh
     targets = (["clean-results"] if clean_first else []) + ["render", "export"]
     targets += [f"run-{m}" for m in methods]
     targets += ["eval-traj", "eval-recon", "eval-metric", "perf", "report"]
+    # Always finish on the publication path: the clean seeded-only aggregate, the
+    # report-facing bundle, and the contamination check. Cheap (no GPU) and it means
+    # the one-button run leaves behind numbers that are actually citable.
+    targets += ["report-clean", "report-tables", "verify-clean"]
     if do_snapshots:
         targets.append("snapshots")
     yield from run_targets(targets, scenes, "all")
@@ -183,9 +193,30 @@ def _zip_dir(d: Path):
     return shutil.make_archive(os.path.join(tmp, d.name or "snapshots"), "zip", root_dir=str(d))
 
 
+# Snapshot filenames are  <method>__<scene>_<traj>_<variant>__<mask>__<view>__<bg>.png
+# (and  GT__<scene>_<traj>__<mask>__<view>__<bg>.png). Scene and traj are joined by an
+# underscore with no separator, so they're split on the trajectory-family prefix.
+_TRAJ_RE = re.compile(r"_(?:synthetic|stopgo|loop)_\d")
+
+
 def _snap_scene(n):
+    """Scene id from a snapshot filename.
+
+    Previously this split on the literal '_synthetic_', which silently produced
+    garbage for the stop-and-go and loop families (and for pinhole runs, whose
+    variant is itself called 'synthetic_fov' — so 'room_0_loop_2.0hz_s1_synthetic_fov'
+    came back as 'room_0_loop_2.0hz_s1'). Splitting on the family prefix instead
+    handles every trajectory id and both camera variants.
+    """
     body = n.split("__", 1)[1] if "__" in n else n
-    return body.split("_synthetic_")[0]
+    return _TRAJ_RE.split(body, maxsplit=1)[0]
+
+
+def _snap_traj(n):
+    """Trajectory id ('synthetic_2.0hz_s0', 'loop_2.0hz_s1', ...) or '' if absent."""
+    body = n.split("__", 1)[1] if "__" in n else n
+    m = re.search(r"(synthetic|stopgo|loop)_\d[^_]*(?:_s\d+)?", body)
+    return m.group(0) if m else ""
 
 
 def _snap_method(n):
@@ -196,11 +227,23 @@ def _snap_view(n):
     return "oblique" if "__oblique__" in n else ("top" if "__top__" in n else "")
 
 
+def _snap_mask(n):
+    """Co-visibility variant encoded in the filename (full | covis | masked).
+
+    Older snapshots predate the variant field and have no '__<mask>__' segment;
+    they are reported as 'full', which is what they were.
+    """
+    for mv in ("full", "covis", "masked"):
+        if f"__{mv}__" in n:
+            return mv
+    return "full"
+
+
 def _snap_bg(n):
     return "black" if n.endswith("__black.png") else ("white" if n.endswith("__white.png") else "")
 
 
-def _filter_snaps(scenes, methods, views, bgs):
+def _filter_snaps(scenes, methods, views, bgs, masks=None, trajs=None):
     """Filter snapshot PNGs by multi-select criteria (empty list = no filter on that field)."""
     if not SNAP_DIR.exists():
         return []
@@ -215,6 +258,10 @@ def _filter_snaps(scenes, methods, views, bgs):
             continue
         if bgs and _snap_bg(n) not in bgs:
             continue
+        if masks and _snap_mask(n) not in masks:
+            continue
+        if trajs and _snap_traj(n) not in trajs:
+            continue
         files.append(str(p))
     return files
 
@@ -222,9 +269,9 @@ def _filter_snaps(scenes, methods, views, bgs):
 PAGE_SIZE = 24
 
 
-def snap_page(scenes, methods, views, bgs, page):
+def snap_page(scenes, methods, views, bgs, masks, trajs, page):
     """Return (paths_for_page, status_text) — paginated so the gallery always loads."""
-    files = _filter_snaps(scenes, methods, views, bgs)
+    files = _filter_snaps(scenes, methods, views, bgs, masks, trajs)
     n = len(files)
     pages = max(1, (n + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(1, min(int(page or 1), pages))
@@ -232,10 +279,10 @@ def snap_page(scenes, methods, views, bgs, page):
     return sl, f"{n} images match · page {page}/{pages}  ({PAGE_SIZE}/page)"
 
 
-def zip_filtered(scenes, methods, views, bgs):
+def zip_filtered(scenes, methods, views, bgs, masks, trajs):
     """Zip the currently-filtered snapshots for download."""
     import zipfile
-    files = _filter_snaps(scenes, methods, views, bgs)
+    files = _filter_snaps(scenes, methods, views, bgs, masks, trajs)
     if not files:
         return None
     tmp = tempfile.mkdtemp()
@@ -248,6 +295,11 @@ def zip_filtered(scenes, methods, views, bgs):
 
 def _snap_scene_choices():
     return sorted({_snap_scene(p.name) for p in SNAP_DIR.glob("*.png")}) if SNAP_DIR.exists() else []
+
+
+def _snap_traj_choices():
+    return sorted({t for t in (_snap_traj(p.name) for p in SNAP_DIR.glob("*.png")) if t}) \
+        if SNAP_DIR.exists() else []
 
 
 def _snap_method_choices():
@@ -452,6 +504,77 @@ def prepare_download(selected_path):
     return shutil.make_archive(os.path.join(tmp, os.path.basename(full) or "archive"), "zip", root_dir=full)
 
 
+# ── Smoke test + clean-results helpers ────────────────────────────────────────
+CLEAN_DIR = RESULTS / "report_clean"
+TABLES_DIR = RESULTS / "report_tables"
+
+
+def run_smoke(traj, methods_csv):
+    """Stream the smoke test. Env vars (not make vars) drive scripts/smoke_test.sh."""
+    env = os.environ.copy()
+    if (traj or "").strip() and traj.strip() != "all":
+        env["SMOKE_TRAJ"] = traj.strip()
+    if (methods_csv or "").strip():
+        env["SMOKE_METHODS"] = methods_csv.replace(",", " ").strip()
+    buf = ["Running smoke test — this exercises EVERY stage and method on a tiny "
+           "matrix, then projects how long the full run will take.\n"]
+    yield "".join(buf), None
+    try:
+        proc = subprocess.Popen(["bash", "scripts/smoke_test.sh"], cwd=str(REPO_ROOT),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, bufsize=1, env=env)
+    except Exception as e:
+        yield f"failed to launch: {e}", None
+        return
+    for line in iter(proc.stdout.readline, ""):
+        buf.append(line)
+        print(line, end="")
+        yield "".join(buf[-400:]), None
+    proc.wait()
+    logs = sorted((REPO_ROOT / "logs").glob("smoke_*.log"))
+    buf.append(f"\n=== smoke test exited {proc.returncode} "
+               f"({'PASSED' if proc.returncode == 0 else 'FAILED'}) ===\n")
+    yield "".join(buf[-400:]), (str(logs[-1]) if logs else None)
+
+
+def _read_clean(name, limit=None):
+    p = CLEAN_DIR / name
+    if not p.exists():
+        return f"_{name} not found — run **report-clean** first._"
+    txt = p.read_text(encoding="utf-8", errors="replace")
+    if limit:
+        txt = "\n".join(txt.splitlines()[:limit])
+    return txt
+
+
+def _csv_md(name, max_rows=40):
+    """Render a clean-results CSV as a markdown table for display."""
+    import csv as _csv
+    p = CLEAN_DIR / name
+    if not p.exists():
+        return f"_{name} not found — run **report-clean** first._"
+    with open(p, newline="", encoding="utf-8") as f:
+        rows = list(_csv.reader(f))
+    if not rows:
+        return f"_{name} is empty._"
+    head, body = rows[0], rows[1:max_rows + 1]
+    out = "| " + " | ".join(head) + " |\n| " + " | ".join("---" for _ in head) + " |\n"
+    for r in body:
+        out += "| " + " | ".join(r) + " |\n"
+    if len(rows) - 1 > len(body):
+        out += f"\n_{len(rows) - 1 - len(body)} more row(s) — download the CSV._"
+    return out
+
+
+def clean_bundle_files():
+    """Every emitted clean/report-facing artifact, for download."""
+    files = []
+    for d in (CLEAN_DIR, TABLES_DIR):
+        if d.exists():
+            files += [str(p) for p in sorted(d.iterdir()) if p.is_file()]
+    return files
+
+
 def build_app():
     import gradio as gr
     with gr.Blocks(title="PRISM-benchmarks Studio") as demo:
@@ -505,10 +628,25 @@ def build_app():
         with gr.Tab("Snapshots"):
             gr.Markdown("Standardized paper images — every cloud aligned to GT (ground on "
                         "floor), ceiling clipped, black & white backgrounds.")
+            gr.Markdown(
+                "**Co-visibility variants.** A 360° cloud looks more complete than a "
+                "pinhole one because it *saw* more, not because it reconstructed better. "
+                "The scored comparison masks every cloud down to the shared observed "
+                "volume, so each render comes in three flavours: **full** (everything), "
+                "**covis** (kept in colour + masked-away points in grey — the honest "
+                "figure), **masked** (only what the F-score actually scored).")
             with gr.Row():
                 keep_h = gr.Slider(0.0, 3.0, value=2.0, step=0.1, label="Keep height (m)")
                 snap_maxp = gr.Slider(20000, 400000, value=150000, step=10000, label="Max points")
                 snap_ptsize = gr.Slider(0.5, 15.0, value=5.0, step=0.5, label="Point size")
+            with gr.Row():
+                snap_masks = gr.CheckboxGroup(
+                    ["full", "covis", "masked"], value=["full", "covis", "masked"],
+                    label="Mask variants to render")
+                drop_alpha = gr.Slider(0.02, 1.0, value=0.18, step=0.02,
+                                       label="Masked-away opacity (covis)")
+                drop_grey = gr.Slider(0.0, 1.0, value=0.55, step=0.05,
+                                      label="Masked-away grey level (covis)")
             snap_btn = gr.Button("Generate snapshots (all methods × scenes × rates)", variant="primary")
             gr.Markdown("**Filter (multi-select; empty = all) + paginate:**")
             with gr.Row():
@@ -517,6 +655,10 @@ def build_app():
             with gr.Row():
                 f_view = gr.Dropdown(["oblique", "top"], value=["oblique"], multiselect=True, label="Views")
                 f_bg = gr.Dropdown(["black", "white"], value=["white"], multiselect=True, label="Backgrounds")
+                f_mask = gr.Dropdown(["full", "covis", "masked"], value=["covis"],
+                                     multiselect=True, label="Mask variant")
+                f_traj = gr.Dropdown(_snap_traj_choices(), value=[], multiselect=True,
+                                     label="Trajectory")
                 f_page = gr.Number(value=1, precision=0, label="Page")
                 show_btn = gr.Button("Show / next page", variant="primary")
             snap_status = gr.Markdown("")
@@ -525,19 +667,29 @@ def build_app():
                 dl_btn = gr.Button("Zip filtered for download")
                 snap_zip = gr.File(label="Download", interactive=False)
 
-            def _gen(kh, mp, ps):
+            def _gen(kh, mp, ps, masks, dalpha, dgrey):
                 from eval import snapshots
+                mv = [m for m in (masks or snapshots.MASK_VARIANTS)]
                 snapshots.generate(load_config("config.yaml"), keep_h=float(kh),
-                                   max_points=int(mp), point_size=float(ps))
-                imgs, status = snap_page([], [], ["oblique"], ["white"], 1)
+                                   max_points=int(mp), point_size=float(ps),
+                                   mask_variants=mv, dropped_alpha=float(dalpha),
+                                   dropped_grey=float(dgrey))
+                first = "covis" if "covis" in mv else mv[0]
+                imgs, status = snap_page([], [], ["oblique"], ["white"], [first], [], 1)
                 return (imgs, status, gr.update(choices=_snap_scene_choices()),
-                        gr.update(choices=_snap_method_choices()))
+                        gr.update(choices=_snap_method_choices()),
+                        gr.update(choices=_snap_traj_choices()))
 
-            snap_btn.click(_gen, [keep_h, snap_maxp, snap_ptsize],
-                           [gallery, snap_status, f_scene, f_method])
-            show_btn.click(snap_page, [f_scene, f_method, f_view, f_bg, f_page], [gallery, snap_status])
-            dl_btn.click(zip_filtered, [f_scene, f_method, f_view, f_bg], snap_zip)
-            demo.load(lambda: snap_page([], [], ["oblique"], ["white"], 1), None, [gallery, snap_status])
+            snap_btn.click(_gen, [keep_h, snap_maxp, snap_ptsize, snap_masks,
+                                  drop_alpha, drop_grey],
+                           [gallery, snap_status, f_scene, f_method, f_traj])
+            show_btn.click(snap_page,
+                           [f_scene, f_method, f_view, f_bg, f_mask, f_traj, f_page],
+                           [gallery, snap_status])
+            dl_btn.click(zip_filtered,
+                         [f_scene, f_method, f_view, f_bg, f_mask, f_traj], snap_zip)
+            demo.load(lambda: snap_page([], [], ["oblique"], ["white"], ["covis"], [], 1),
+                      None, [gallery, snap_status])
 
         with gr.Tab("Point cloud"):
             clouds = list_clouds()
@@ -623,6 +775,63 @@ def build_app():
             b_fuse_res.click(gen_fusion_results, [fig_scene, fig_ftraj],
                              [fig_log, fig_gallery, fig_files])
             demo.load(lambda: (_fig_gallery(), _fig_files()), None, [fig_gallery, fig_files])
+
+        with gr.Tab("✅ Clean results & smoke test"):
+            gr.Markdown(
+                "### Before the long run\n"
+                "`make report` aggregates **everything** in `results/` — seeded and "
+                "unseeded, complete and crashed alike. That is what contaminated the "
+                "2026-07 tables. Everything on this tab uses the **seeded-only, "
+                "complete-runs-only** path instead.\n\n"
+                "Run the **smoke test** first: it drives every stage and every method "
+                "over a tiny matrix, validates the artifacts, and projects how many "
+                "hours the real run will take — so a broken env costs you 20 minutes "
+                "instead of a wasted night.")
+            with gr.Row():
+                sm_traj = gr.Textbox(value="all", label="SMOKE_TRAJ "
+                                     "(e.g. synthetic_2.0hz_s0 for a ~5 min check)", scale=2)
+                sm_methods = gr.Textbox(value="", label="SMOKE_METHODS (blank = all)", scale=2)
+            sm_btn = gr.Button("🔥  Run SMOKE TEST", variant="primary")
+            sm_out = gr.Textbox(label="Live output", lines=20, autoscroll=True)
+            sm_log = gr.File(label="Download smoke log", interactive=False)
+            sm_btn.click(run_smoke, [sm_traj, sm_methods], [sm_out, sm_log])
+
+            gr.Markdown("---\n### Clean aggregation")
+            with gr.Row():
+                cl_src = gr.Dropdown(["auto", "live", "archive"], value="auto",
+                                     label="SOURCE (live = results/, archive = committed snapshot)")
+                cl_btn = gr.Button("Run report-clean + report-tables + verify-clean",
+                                   variant="primary")
+            cl_out = gr.Textbox(label="Live output", lines=14, autoscroll=True)
+            cl_log = gr.File(label="Download log", interactive=False)
+
+            def _run_clean(src):
+                yield from run_targets(["report-clean", "report-tables", "verify-clean"],
+                                       "", "all")
+            cl_btn.click(_run_clean, [cl_src], [cl_out, cl_log])
+
+            gr.Markdown("---\n### Completion / failure rate — **read this before any mean**\n"
+                        "A method missing runs here is not comparable to one that "
+                        "finished all of them.")
+            comp_md = gr.Markdown()
+            gr.Markdown("### Streaming comparison (with throughput)")
+            stream_md = gr.Markdown()
+            gr.Markdown("### Headline metrics with error bars")
+            eb_md = gr.Markdown()
+            gr.Markdown("### Paired head-to-head (what actually separates)")
+            pair_md = gr.Markdown()
+            refresh_btn = gr.Button("Refresh tables")
+            clean_files = gr.Files(label="Download clean tables + report bundle",
+                                   interactive=False)
+
+            def _refresh():
+                return (_csv_md("completion.csv"), _csv_md("streaming.csv"),
+                        _csv_md("headline_errorbars.csv"),
+                        _csv_md("paired_head_to_head.csv", max_rows=60),
+                        clean_bundle_files())
+            refresh_btn.click(_refresh, None,
+                              [comp_md, stream_md, eb_md, pair_md, clean_files])
+            demo.load(_refresh, None, [comp_md, stream_md, eb_md, pair_md, clean_files])
 
         with gr.Tab("Downloads"):
             explorer = gr.FileExplorer(root_dir=str(REPO_ROOT), ignore_glob=".*",

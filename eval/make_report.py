@@ -1,5 +1,16 @@
 """Aggregate results into reports. Reads only results/<...>/{perf,ate,recon,metric}.json.
 
+.. warning::
+   This module aggregates **every** run present in ``results/`` — seeded and unseeded,
+   complete and crashed alike. That is what contaminated the 2026-07 "Global aggregate"
+   (stale 2-scene runs with co-tenancy-inflated VRAM mixed into the seeded matrix).
+   It is kept as-is for backwards compatibility and for per-scene browsing.
+
+   **For anything publication-facing use ``make report-clean``**
+   (``eval/aggregate_clean.py``), which filters to seeded-only, applies named
+   exclusions, drops runs that produced no evaluable output, and emits error bars.
+   ``make verify-clean`` asserts the result is uncontaminated.
+
 Writes:
   results/report/<scene>/report.md   — full tables (A/B/C/C2/D/traj) for ONE scene
   results/report/report.md           — GLOBAL: a per-method mean across all scenes×rates
@@ -180,7 +191,12 @@ def aggregate_global(runs, cfg) -> str:
 #  Compares what the extra DoF cost, on BOTH compute (the "computing impact") AND
 #  metric fidelity. Only the alignment arms are shown so the transform group is the
 #  only variable (backbone / fusion / trajectory identical across the three).
-_ALIGN_ARMS = [("prism", "SL(4)", 15), ("prism_sim3", "Sim(3)", 7), ("prism_se3", "SE(3)", 6)]
+#  `prism` is Sim(3) from config.yaml onward (the deployed default, set explicitly via
+#  run_env), with SL(4) in the prism_sl4 arm. In the 2026-07 archive `prism` was SL(4)
+#  and Sim(3) lived in prism_sim3 — so both spellings are listed and only the arms
+#  actually present are rendered. See eval/aggregate_clean.py ALIGN_ERAS.
+_ALIGN_ARMS = [("prism", "Sim(3)", 7), ("prism_sl4", "SL(4)", 15),
+               ("prism_se3", "SE(3)", 6), ("prism_sim3", "Sim(3) [legacy arm]", 7)]
 
 
 def alignment_study(runs, cfg) -> str:

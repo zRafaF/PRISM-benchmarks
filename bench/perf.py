@@ -20,9 +20,24 @@ from pathlib import Path
 class PerfResult:
     method: str
     n_frames: int = 0
+    # n_frames_input = frames the method was ASKED to process (from the export meta);
+    # n_frames_done  = frames it actually emitted a pose for. These diverge when a run
+    # dies part-way. eff_fps is computed from n_frames (= done, falling back to input)
+    # so a partial run can never report a throughput higher than it achieved.
+    n_frames_input: int = 0
+    n_frames_done: int = 0
+    completed: bool = False
+    returncode: int | None = None
     wall_s: float = 0.0
     eff_fps: float = 0.0
     latency_end_to_end_s: float = 0.0
+    # Provenance for the latency figures — "runner" (method self-reported),
+    # "orchestrator_wall" / "derived_wall_over_windows" (orchestrator fallback), or
+    # "unavailable". Never let a fallback masquerade as a measurement.
+    latency_source: str = "unavailable"
+    per_window_source: str = "unavailable"
+    per_window_latency_med_s: float | None = None
+    n_windows: int = 0
     per_window_latency_s: list[float] = field(default_factory=list)
     vram_peak_gb: float = 0.0
     vram_avg_gb: float = 0.0

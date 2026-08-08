@@ -26,9 +26,12 @@ PYCHK    ?= python3
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all bench-overnight \
+        ingest-archive report-clean aggregate-clean report-tables verify-clean \
+        smoke smoke-check \
+        run-vggtslam-arms ablations-vggtslam \
         fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine \
         fig-fusion fig-fusion-results figures \
-        studio preview snapshots docs docs-serve clean clean-results
+        studio preview snapshots docs docs-serve clean clean-results publication
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -59,6 +62,17 @@ help:
 	@echo "  make eval-metric      OUR absolute-scale accuracy (metric methods) -> metric.json"
 	@echo "  make perf             throughput/latency + avg & peak VRAM + GPU util -> perf.csv"
 	@echo "  make report           aggregate everything -> tables + plots (md/csv/png)"
+	@echo ""
+	@echo "Publication-grade aggregation (seeded-only; excludes contaminated runs):"
+	@echo "  make report-clean     CLEAN seeded-only aggregate -> results/report_clean/"
+	@echo "  make report-tables    report-facing CSV/JSON/md bundle for uofa-2026-report"
+	@echo "  make verify-clean     assert no contaminated run leaked into the clean output"
+	@echo "  make ingest-archive   archived big-run snapshot -> tidy per-run records"
+	@echo "  make publication      report-clean + report-tables + verify-clean"
+	@echo ""
+	@echo "Before the long run:"
+	@echo "  make smoke            TEST RUN: whole pipeline on a tiny matrix + ETA for the full run"
+	@echo "  make smoke-check      re-validate the last smoke run without re-running it"
 	@echo "  make studio           Studio: browser control panel — ONE-BUTTON pipeline + config + snapshots + viewers"
 	@echo "  make snapshots        standardized paper images of every cloud (GT-aligned, ceiling-clipped)"
 	@echo ""
@@ -199,6 +213,77 @@ report: setup
 all: init setup-all download render export run-all eval-traj eval-recon eval-metric perf report
 	@echo ">> full pipeline complete — see results/report/"
 
+# ── Publication-grade aggregation ─────────────────────────────────────────────
+# `make report` keeps its original behaviour (aggregate EVERYTHING in results/) so
+# nothing downstream breaks. The publication path is separate and additive:
+#
+#   report-clean   seeded-only + named exclusions + complete-runs-only
+#   report-tables  freeze those into the column layout uofa-2026-report ingests
+#   verify-clean   fail loudly if a contaminated run reached the clean output
+#
+# NOTE ON `clean-results`: it remains the DESTRUCTIVE housekeeping target it has
+# always been (rm -rf results/*). The findings doc asks for "make clean-results" to
+# mean seeded-only aggregation; repurposing a destructive target would be a footgun,
+# so that job lives in `report-clean` instead. See RESULTS_CHANGELOG.md.
+#
+# SOURCE=auto|live|archive — `auto` uses results/ when populated, else the committed
+# archive snapshot, so the clean report reproduces even with no results tree on disk.
+SOURCE   ?= auto
+RUN_ID   ?= bigrun_2026-07
+
+ingest-archive: setup
+	@echo ">> archived snapshot ($(RUN_ID)) -> tidy per-run records"
+	$(ORCH_RUN) eval/ingest_archive.py --run-id $(RUN_ID)
+
+report-clean: setup
+	@echo ">> CLEAN seeded-only aggregate (source=$(SOURCE))"
+	@if [ "$(SOURCE)" != "live" ]; then $(MAKE) --no-print-directory ingest-archive; fi
+	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source $(SOURCE) --run-id $(RUN_ID)
+aggregate-clean: report-clean          # alias
+
+report-tables: report-clean
+	@echo ">> report-facing table bundle -> results/report_tables/"
+	$(ORCH_RUN) eval/export_report_tables.py
+
+verify-clean: setup
+	@echo ">> verifying the clean aggregate contains no contaminated runs"
+	$(ORCH_RUN) eval/verify_clean.py --run-id $(RUN_ID)
+
+# ── Smoke test — prove the pipeline works BEFORE the long run ────────────────
+# Tiny matrix (1 small scene x 3 motion families x 2 seeds x every method) through
+# every stage, then eval/smoke_check.py validates the artifacts and projects how long
+# the real run will take. Uses config.smoke.yaml as an additive overlay, so your
+# frozen scene list in config.local.yaml is never touched.
+#
+#   make smoke                                  # full check (recommended)
+#   make smoke SMOKE_TRAJ=synthetic_2.0hz_s0    # ~5 min sanity check
+#   make smoke SMOKE_METHODS="prism pi3"        # subset the methods
+smoke: setup
+	@echo ">> SMOKE TEST — full pipeline on a tiny matrix (see logs/smoke_latest.log)"
+	bash scripts/smoke_test.sh
+
+smoke-check: setup
+	@echo ">> validating the last smoke run's artifacts only (no re-run)"
+	PRISM_CONFIG_OVERLAY=config.smoke.yaml $(ORCH_RUN) eval/smoke_check.py --config $(CONFIG)
+
+publication: report-clean report-tables verify-clean
+	@echo ">> publication artifacts ready:"
+	@echo "   results/report_clean/clean_report.md   (analysis)"
+	@echo "   results/report_tables/                 (for uofa-2026-report)"
+	@echo "   RESULTS_CHANGELOG.md                   (what changed and why)"
+
+# ── VGGT-SLAM fairness arms ───────────────────────────────────────────────────
+# The 2026-07 head-to-head used loop closure OFF (max_loops=0) — VGGT-SLAM's headline
+# feature disabled. Both arms are run so the paper reports the baseline in its native
+# mode as well. Needs the VGGT-SLAM env + exports; GPU required.
+ABL_VGGTSLAM ?= vggtslam_noloop vggtslam_loop
+run-vggtslam-arms: setup
+	@echo ">> VGGT-SLAM fairness arms: loop closure OFF and ON"
+	@for a in $(ABL_VGGTSLAM); do \
+	  $(ORCH_RUN) adapters/run.py --method $$a --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ) || exit 1; \
+	done
+ablations-vggtslam: run-vggtslam-arms
+
 # ── Report figures (Deliverables 1 & 2) -> results/figures/ ────────────────────
 # fig-vram is reproducible from the committed seeded perf.csv (no GPU). fig-vram-sweep
 # and fig-cubemap-export need the reference GPU + method envs/exports. FIG_SCENE /
@@ -275,5 +360,7 @@ docs-serve:
 clean:
 	@find . -name __pycache__ -type d -not -path './submodules/*' -exec rm -rf {} + 2>/dev/null || true
 	@echo "cleaned __pycache__"
+# DESTRUCTIVE. Wipes the results tree. This is NOT the seeded-only aggregator —
+# that is `make report-clean`. Kept destructive on purpose (see RESULTS_CHANGELOG.md).
 clean-results:
-	@rm -rf results/* && echo "cleared results/"
+	@rm -rf results/* && echo "cleared results/  (for the CLEAN AGGREGATE use: make report-clean)"

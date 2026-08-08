@@ -1,0 +1,12 @@
+method,n_total,n_complete,n_incomplete,incomplete_pct,incomplete_by_scene,incomplete_by_motion
+laser,40,40,0,0.0,—,—
+mapanything,40,40,0,0.0,—,—
+panovggt,40,40,0,0.0,—,—
+pi3,40,40,0,0.0,—,—
+prism,40,31,9,22.5,"apartment_1:4, hotel_0:5","loop:2, smooth:4, stop-and-go:3"
+prism_noguards,16,11,5,31.2,"apartment_1:2, hotel_0:3","loop:2, stop-and-go:3"
+prism_nolock,16,11,5,31.2,"apartment_1:2, hotel_0:3","loop:2, stop-and-go:3"
+prism_nostill,16,11,5,31.2,"apartment_1:2, hotel_0:3","loop:2, stop-and-go:3"
+prism_se3,40,31,9,22.5,"apartment_1:4, hotel_0:5","loop:2, smooth:4, stop-and-go:3"
+prism_sim3,40,30,10,25.0,"apartment_0:1, apartment_1:4, hotel_0:5","loop:2, smooth:5, stop-and-go:3"
+vggtslam,40,40,0,0.0,—,—
