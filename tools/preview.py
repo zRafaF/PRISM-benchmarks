@@ -41,7 +41,7 @@ MAKE_TARGETS = [
     # which is what contaminated the 2026-07 tables; these are the clean ones.
     "ingest-archive", "report-clean", "report-tables", "verify-clean", "publication",
     # Fairness arms + the pre-flight test run.
-    "run-vggtslam-arms", "smoke", "smoke-check",
+    "run-vggtslam-arms", "smoke", "smoke-check", "bundle",
     "fig-vram", "fig-vram-sweep", "fig-cubemap", "fig-cubemap-export",
     "fig-cubemap-engine", "fig-fusion", "fig-fusion-results", "figures",
 ]
@@ -575,6 +575,70 @@ def clean_bundle_files():
     return files
 
 
+# ── Results bundle (one-click download) ───────────────────────────────────────
+def bundle_estimate_md(categories):
+    """Markdown size table for the current selection, sizing EVERY category so the
+    cost of including the point clouds is visible before you commit to it."""
+    from eval import bundle_results as br
+    # None = first load (use defaults); [] = the user explicitly unticked everything,
+    # which must not silently fall back to the defaults.
+    cats = list(br.DEFAULT_ON) if categories is None else list(categories)
+    rows, total, count = br.estimate(cats)
+    md = ("| Include | Category | Files | Size | What it is |\n"
+          "| --- | --- | ---: | ---: | --- |\n")
+    for cat, n, size, inc in rows:
+        md += (f"| {'✅' if inc else '—'} | `{cat}` | {n} | {br.human(size)} | "
+               f"{br.CATEGORIES[cat][1]} |\n")
+    if not cats:
+        return md + "\n> Nothing selected — tick at least one category above.\n"
+    md += f"\n**Selected: {count} files, {br.human(total)}** (uncompressed).\n"
+    if total > 2 * 1024 ** 3:
+        md += ("\n> ⚠️ **Over 2 GB.** Browser downloads of this size are unreliable. "
+               "Untick `clouds`, or pull it off the box directly:\n"
+               "> ```\n> rsync -avz <host>:<repo>/results/ ./results/\n> ```\n")
+    elif total == 0:
+        md += "\n> Nothing found — has the benchmark run yet?\n"
+    return md
+
+
+def bundle_build(categories, compress):
+    """Build the zip, streaming progress. Yields (status_md, file) for Gradio."""
+    from eval import bundle_results as br
+    from datetime import datetime
+    cats = list(br.DEFAULT_ON) if categories is None else list(categories)
+    if not cats:
+        yield "Nothing selected — tick at least one category above.", None
+        return
+    _rows, total, count = br.estimate(cats)
+    if count == 0:
+        yield ("Nothing to bundle: the selected categories contain no files. "
+               "Has the benchmark run yet?"), None
+        return
+    out = (REPO_ROOT / "results" / "bundles" /
+           f"prism-benchmarks_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
+    yield (f"Bundling {count} files ({br.human(total)})… "
+           f"large selections take a while — the clouds are stored uncompressed."), None
+    state = {"done": 0}
+
+    def _p(i, n):
+        state["done"] = i
+    try:
+        br.build(cats, out, compress=compress, progress=_p)
+    except Exception as e:
+        yield f"**Bundle failed:** `{e.__class__.__name__}: {e}`", None
+        return
+    size = out.stat().st_size
+    yield (f"**Done — {count} files, {br.human(size)} zipped.**\n\n"
+           f"Saved on the benchmark box at `{out.relative_to(REPO_ROOT)}` "
+           f"(also downloadable below). Open `MANIFEST.txt` inside for what's included "
+           f"and what to read first."), str(out)
+
+
+def existing_bundles():
+    d = RESULTS / "bundles"
+    return [str(p) for p in sorted(d.glob("*.zip"), reverse=True)] if d.exists() else []
+
+
 def build_app():
     import gradio as gr
     with gr.Blocks(title="PRISM-benchmarks Studio") as demo:
@@ -833,11 +897,44 @@ def build_app():
                               [comp_md, stream_md, eb_md, pair_md, clean_files])
             demo.load(_refresh, None, [comp_md, stream_md, eb_md, pair_md, clean_files])
 
-        with gr.Tab("Downloads"):
+        with gr.Tab("📦 Download results"):
+            gr.Markdown(
+                "### Download the whole benchmark as one .zip\n"
+                "Tables, per-run metrics, trajectories, snapshots, figures, logs and "
+                "config — everything needed to read, re-plot or archive the run.\n\n"
+                "**Point clouds are off by default.** They dominate `results/` "
+                "(6–103 MB each in the 2026-07 run), so including them on a full matrix "
+                "means tens of gigabytes. Hit *Estimate size* to see the real number "
+                "for this run before deciding.")
+            from eval import bundle_results as _br
+            b_cats = gr.CheckboxGroup(
+                list(_br.CATEGORIES), value=list(_br.DEFAULT_ON),
+                label="What to include")
+            with gr.Row():
+                b_compress = gr.Checkbox(
+                    value=True, label="Compress (off = faster, bigger)")
+                b_est_btn = gr.Button("Estimate size")
+                b_go = gr.Button("📦  Build & download .zip", variant="primary")
+            b_table = gr.Markdown()
+            b_status = gr.Markdown()
+            b_file = gr.File(label="Your bundle", interactive=False)
+            gr.Markdown("**Previously built bundles** (they live on the benchmark box "
+                        "under `results/bundles/`):")
+            b_prev = gr.Files(label="Earlier bundles", interactive=False)
+
+            b_est_btn.click(bundle_estimate_md, [b_cats], b_table)
+            b_cats.change(bundle_estimate_md, [b_cats], b_table)
+            b_go.click(bundle_build, [b_cats, b_compress], [b_status, b_file]) \
+                .then(lambda: existing_bundles(), None, b_prev)
+            demo.load(lambda: (bundle_estimate_md(list(_br.DEFAULT_ON)),
+                               existing_bundles()), None, [b_table, b_prev])
+
+            gr.Markdown("---\n### Browse the server filesystem\n"
+                        "For anything the bundle doesn't cover.")
             explorer = gr.FileExplorer(root_dir=str(REPO_ROOT), ignore_glob=".*",
                                        file_count="single", label="Server filesystem")
             dl = gr.File(label="Download ready", interactive=False)
-            gr.Button("Prepare download", variant="primary").click(prepare_download, explorer, dl)
+            gr.Button("Prepare download").click(prepare_download, explorer, dl)
     return demo
 
 

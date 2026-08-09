@@ -28,7 +28,7 @@ PYCHK    ?= python3
         eval-traj eval-recon eval-metric perf report all bench-overnight \
         bench-status bench-stop \
         ingest-archive report-clean aggregate-clean report-tables verify-clean \
-        smoke smoke-check \
+        smoke smoke-check bundle bundle-estimate \
         run-vggtslam-arms ablations-vggtslam \
         fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine \
         fig-fusion fig-fusion-results figures \
@@ -79,6 +79,11 @@ help:
 	@echo "  make bench-overnight  launch the full matrix in the background"
 	@echo "  make bench-status     progress + completion + last log lines"
 	@echo "  make bench-stop       stop it (re-launch resumes; finished runs are skipped)"
+	@echo ""
+	@echo "Take the results away:"
+	@echo "  make bundle-estimate  what a bundle would contain + how big (check before building)"
+	@echo "  make bundle           zip results+snapshots+logs+tables -> results/bundles/"
+	@echo "                        (point clouds excluded; BUNDLE_INCLUDE=all adds them)"
 	@echo "  make studio           Studio: browser control panel — ONE-BUTTON pipeline + config + snapshots + viewers"
 	@echo "  make snapshots        standardized paper images of every cloud (GT-aligned, ceiling-clipped)"
 	@echo ""
@@ -257,6 +262,25 @@ report-tables: report-clean
 verify-clean: setup
 	@echo ">> verifying the clean aggregate contains no contaminated runs"
 	$(ORCH_RUN) eval/verify_clean.py --run-id $(RUN_ID)
+
+# ── Package the results for download ─────────────────────────────────────────
+# One .zip of everything worth keeping. Point clouds are EXCLUDED by default: they
+# dominate results/ (6-103 MB each in 2026-07), so a full matrix with clouds is tens
+# of GB — past what a browser download will tolerate. Always estimate first.
+#
+#   make bundle-estimate                 # what would go in, and how big
+#   make bundle                          # everything except point clouds
+#   make bundle BUNDLE_INCLUDE=all       # including clouds (very large)
+#   make bundle BUNDLE_INCLUDE=reports,snapshots
+BUNDLE_INCLUDE ?= default
+BUNDLE_OUT     ?=
+bundle: setup
+	@echo ">> packaging results -> results/bundles/"
+	$(ORCH_RUN) eval/bundle_results.py --include "$(BUNDLE_INCLUDE)" \
+	  $(if $(BUNDLE_OUT),--out "$(BUNDLE_OUT)",)
+
+bundle-estimate: setup
+	$(ORCH_RUN) eval/bundle_results.py --include "$(BUNDLE_INCLUDE)" --estimate
 
 # ── Smoke test — prove the pipeline works BEFORE the long run ────────────────
 # Tiny matrix (1 small scene x 3 motion families x 2 seeds x every method) through
