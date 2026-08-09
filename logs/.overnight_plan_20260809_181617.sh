@@ -1,0 +1,10 @@
+CORE='prism panovggt pi3 mapanything vggtslam laser'
+ALIGN='prism_sl4 prism_se3'
+VSLAM='vggtslam_noloop vggtslam_loop vggtslam_w16'
+GUARD=''
+SCENES_FROZEN=office_4
+TRAJS='synthetic_0.5hz_s0 synthetic_0.5hz_s1 synthetic_0.5hz_s2 synthetic_2.0hz_s0 synthetic_2.0hz_s1 synthetic_2.0hz_s2 synthetic_5.0hz_s0 synthetic_5.0hz_s1 synthetic_5.0hz_s2 loop_2.0hz_s0 loop_2.0hz_s1 loop_2.0hz_s2'
+NSEEDS=3
+SEEDS='1234 5678 9012'
+NFRAMES=300
+NSCENES_TARGET=6

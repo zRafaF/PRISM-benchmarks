@@ -28,7 +28,7 @@ PYCHK    ?= python3
         eval-traj eval-recon eval-metric perf report all bench-overnight \
         bench-status bench-stop \
         ingest-archive report-clean aggregate-clean report-tables verify-clean \
-        smoke smoke-check bundle bundle-estimate \
+        smoke smoke-check bundle bundle-estimate capacity-sweep \
         run-vggtslam-arms ablations-vggtslam \
         fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine \
         fig-fusion fig-fusion-results figures \
@@ -79,6 +79,7 @@ help:
 	@echo "  make bench-overnight  launch the full matrix in the background"
 	@echo "  make bench-status     progress + completion + last log lines"
 	@echo "  make bench-stop       stop it (re-launch resumes; finished runs are skipped)"
+	@echo "  make capacity-sweep   find each method's real OOM cap (the streaming argument)"
 	@echo ""
 	@echo "Take the results away:"
 	@echo "  make bundle-estimate  what a bundle would contain + how big (check before building)"
@@ -262,6 +263,28 @@ report-tables: report-clean
 verify-clean: setup
 	@echo ">> verifying the clean aggregate contains no contaminated runs"
 	$(ORCH_RUN) eval/verify_clean.py --run-id $(RUN_ID)
+
+# ── Capacity / OOM sweep — where each method actually runs out of memory ─────
+# This is the PRIMARY source of the OOM evidence, deliberately separated from the main
+# matrix. The matrix runs at a fixed n_frames (300) and records any natural OOM, but
+# that only tells you "it OOMed at 300". The prefix sweep feeds each method growing
+# prefixes of one real sequence until it dies, so you get the actual cap per method
+# plus a clean VRAM-vs-length curve — at a tiny fraction of the cost of running the
+# whole matrix long enough to provoke it.
+#
+# Streaming methods should walk off the right-hand side of the plot flat; full-batch
+# methods should hit a wall. That contrast IS the argument for a streaming engine.
+# (LASER's KITTI table reports VGGT / Pi3 / Fast3R as OOM on every sequence, so
+# reporting a capacity limit like this is established practice.)
+#
+# --tile loops the sequence past its rendered length, so the grid can exceed n_frames.
+CAP_SCENE  ?= auto
+CAP_TRAJ   ?= synthetic_5.0hz_s0
+CAP_FRAMES ?= 16,32,64,96,128,192,256,384,512,768,1024
+capacity-sweep: setup
+	@echo ">> capacity sweep: growing prefixes until each method OOMs -> results/figures/"
+	$(ORCH_RUN) eval/vram_scaling.py --source sweep --config $(CONFIG) \
+	  --scene "$(CAP_SCENE)" --traj "$(CAP_TRAJ)" --frames "$(CAP_FRAMES)" --logx --tile
 
 # ── Package the results for download ─────────────────────────────────────────
 # One .zip of everything worth keeping. Point clouds are EXCLUDED by default: they

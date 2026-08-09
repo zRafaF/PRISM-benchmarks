@@ -167,7 +167,7 @@ def _make_prefix_export(src_export: Path, n: int, tile: bool, work: Path) -> Pat
     for sub in ("rgb", "depth", "mask"):
         (dst / sub).mkdir(parents=True, exist_ok=True)
     for i, nm in enumerate(sel):
-        for sub, ext in (("rgb", ".png"), ("depth", ".npy"), ("mask", ".png")):
+        for sub, ext in (("rgb", ".png"), ("depth", ".png"), ("mask", ".png")):
             s = src_export / sub / f"{nm}{ext}"
             if s.exists():
                 d = (dst / sub / f"{i:05d}{ext}")

@@ -20,8 +20,10 @@ datasets:
   # 2 seeds gives each cell's variance 1 d.o.f. — enough to pool across cells, not
   # enough to quote a converged interval. The 2026-07 run's seed-to-seed spread on ATE
   # was 25-60% of the mean, wide enough to swallow several between-method gaps, so the
-  # publication matrix runs 4. Cost is linear: 4 seeds = 2x the 2026-07 wall clock.
-  seeds: [1234, 5678, 9012, 3456]
+  # publication matrix runs 3 — enough to pool a real within-cell variance (2 gives
+  # each cell 1 d.o.f.), without the 4th seed's +33% on a matrix that is already ~13 h.
+  # Add 3456 back if the error bars still overlap where it matters.
+  seeds: [1234, 5678, 9012]
   root: dataset/raw
 
   replica:                   # fastest zero-approval indoor meshes (NICE-SLAM/iMAP standard)
@@ -99,9 +101,19 @@ trajectories:
   # cleanest evidence for the paper's central claim; LASER's KITTI table does the same
   # thing, reporting VGGT / Pi3 / Fast3R as OOM on every sequence.
   #
-  # Cost: render time and disk scale linearly, so this is ~3x the 200-frame matrix.
-  # `make bench-overnight` prints frames/traj in its plan — check it before launching.
-  n_frames: 600
+  # 300 is the chosen operating point. Cost scales linearly in frames AND seeds; at
+  # 600 frames x 4 seeds the matrix was ~39 h of GPU and ~427 GB of exports (estimated
+  # by fitting wall = load + b*frames per method on the 2026-07 runs). The shipped
+  # matrix -- 300 frames, 3 seeds, no stop-and-go, no guard arms, 16-bit PNG depth --
+  # is 792 runs at ~10 h and ~30 GB, and still lengthens the 5 Hz sequences over the 200
+  # cap — those were already being truncated at ~196-198 frames, so this is where the
+  # extra length actually lands.
+  #
+  # The exact OOM/capacity limits come from the dedicated prefix sweep
+  # (`make capacity-sweep`) rather than from this matrix: it finds each method's real
+  # OOM frame count on one scene instead of only telling you "it OOMed at 300".
+  # Natural OOMs here are still recorded (perf.json `oom`, capacity.csv).
+  n_frames: 300
   # RATE SWEEP: one trajectory per capture rate -> traj id "synthetic_<rate>hz".
   # Low rate = sparse, wide-baseline (favours feed-forward); high rate = dense overlap
   # (favours streaming, and pushes full-batch toward the VRAM ceiling). Covers the spectrum.
@@ -118,8 +130,15 @@ trajectories:
   # runtime. These are the paths designed to STRESS streaming drift & the guards:
   #   stopgo — walk, stand still (dwell), walk again → noise accumulation + still-guard
   #   loop   — return to & re-observe the start → loop-closure / drift-correction test
+  # STOP-AND-GO IS DISABLED for the publication run (2026-08-09). It is the most
+  # expensive family relative to what it buys right now: it costs ~3.7 h of GPU on
+  # its own, plus it is the only stressor the guard ablation arms exist for. PRISM
+  # collapses on it (masked F 0.717 -> 0.088 vs ~2x degradation for every baseline)
+  # and that is a real, unexplained result — but it is not diagnosed, so it is being
+  # omitted from the paper rather than reported half-understood.
+  # Re-enable by uncommenting; nothing else needs to change.
   extra_kinds:
-    stopgo: {rates_hz: [2.0], n_stops: 2, dwell_s: 5.0}
+    # stopgo: {rates_hz: [2.0], n_stops: 2, dwell_s: 5.0}
     loop:   {rates_hz: [2.0]}
 
 # ── PRISM engine knobs (mirror the live/report config) ────────────────────────
@@ -182,9 +201,14 @@ baselines:
 #      se3 (6-DoF rigid at locked scale), sl4 (15-DoF projective, VGGT-SLAM's group).
 #      The report's "Alignment study" table compares them on quality AND compute cost.
 ablations:
-  - {name: prism_nolock,   camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0"}}
-  - {name: prism_nostill,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {PRISM_STILL_GUARD: "0"}}
-  - {name: prism_noguards, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0", PRISM_STILL_GUARD: "0", PRISM_FLIP_GUARD: "0", PRISM_Z_RELEVEL: "0"}}
+  #  GUARD ARMS DISABLED alongside stop-and-go. The still-guard's only stressor is
+  #  dwelling, so with stopgo off these three arms measure nothing new — and the
+  #  2026-07 result was already an honest negative ("no measurable accuracy benefit",
+  #  guards ON 83.9 cm ATE vs OFF 81.2). Keeping them would cost ~3.7 h to re-confirm
+  #  a null. Re-enable together with stopgo if the guard study goes back in the paper.
+  # - {name: prism_nolock,   camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0"}}
+  # - {name: prism_nostill,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {PRISM_STILL_GUARD: "0"}}
+  # - {name: prism_noguards, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, run_env: {LOCK_SCALE_AFTER_FIRST: "0", PRISM_STILL_GUARD: "0", PRISM_FLIP_GUARD: "0", PRISM_Z_RELEVEL: "0"}}
   # Alignment-group study. `prism` (main) is Sim(3) — the deployed default — so the
   # arms below measure the OTHER two groups against it (PRISM_ALIGN switch in the
   # PRISM repo). Every arm names its group explicitly; none relies on a repo default.

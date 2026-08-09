@@ -46,6 +46,32 @@ from bench.config import REPO_ROOT, load_config
 from eval.snapshots import _render, _subsample, _clip_ceiling, VIEWS
 from eval.fig_cubemap import _equirect_pixel_dirs, _load_tum
 
+
+# -- depth I/O ---------------------------------------------------------------
+# Depth is stored as 16-bit PNG in MILLIMETRES, not float32 .npy. Depth was 78% of
+# all export bytes (2.15 MB/frame for the pano alone) purely because .npy is
+# uncompressed. 16-bit PNG is ~88% smaller, gives exactly 1 mm precision over a 65 m
+# range (against a 4.5 m max_depth and a 20 mm voxel, so precision is nowhere near
+# the binding constraint), and is what TUM / ScanNet / Replica all use. Readers stay
+# backward compatible with existing .npy exports so old renders keep working.
+DEPTH_SCALE = 1000.0          # metres -> millimetres
+
+
+def load_depth(dir_, name):
+    """Depth for frame `name` from <dir_>/depth/: .png (mm) or legacy .npy (m)."""
+    import numpy as _np
+    from pathlib import Path as _P
+    d = _P(dir_) / "depth"
+    p = d / f"{name}.png"
+    if p.exists():
+        import imageio.v2 as _imageio
+        return _imageio.imread(p).astype(_np.float32) / DEPTH_SCALE
+    p = d / f"{name}.npy"
+    if p.exists():
+        return _np.load(p).astype(_np.float32)
+    return None
+
+
 DEFAULT_OUT = REPO_ROOT / "results" / "figures"
 
 

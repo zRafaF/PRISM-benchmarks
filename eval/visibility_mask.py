@@ -20,6 +20,32 @@ from pathlib import Path
 import numpy as np
 
 
+# -- depth I/O ---------------------------------------------------------------
+# Depth is stored as 16-bit PNG in MILLIMETRES, not float32 .npy. Depth was 78% of
+# all export bytes (2.15 MB/frame for the pano alone) purely because .npy is
+# uncompressed. 16-bit PNG is ~88% smaller, gives exactly 1 mm precision over a 65 m
+# range (against a 4.5 m max_depth and a 20 mm voxel, so precision is nowhere near
+# the binding constraint), and is what TUM / ScanNet / Replica all use. Readers stay
+# backward compatible with existing .npy exports so old renders keep working.
+DEPTH_SCALE = 1000.0          # metres -> millimetres
+
+
+def load_depth(dir_, name):
+    """Depth for frame `name` from <dir_>/depth/: .png (mm) or legacy .npy (m)."""
+    import numpy as _np
+    from pathlib import Path as _P
+    d = _P(dir_) / "depth"
+    p = d / f"{name}.png"
+    if p.exists():
+        import imageio.v2 as _imageio
+        return _imageio.imread(p).astype(_np.float32) / DEPTH_SCALE
+    p = d / f"{name}.npy"
+    if p.exists():
+        return _np.load(p).astype(_np.float32)
+    return None
+
+
+
 def _load_tum_poses(path: Path):
     from scipy.spatial.transform import Rotation
     ts, poses = [], []
@@ -65,9 +91,8 @@ def build_mask(points_w: np.ndarray, pinhole_export_dir: Path, cfg: dict) -> np.
         in_range = (z > 0) & (z <= far)
         vis = in_img & in_range
         if rigorous and i < len(names):
-            dp = depth_dir / f"{names[i]}.npy"
-            if dp.exists():
-                gt_depth = np.load(dp)
+            gt_depth = load_depth(pinhole_export_dir, names[i])
+            if gt_depth is not None:
                 u = np.clip(uv[:, 0].astype(int), 0, W - 1)
                 v = np.clip(uv[:, 1].astype(int), 0, H - 1)
                 gd = gt_depth[v, u]

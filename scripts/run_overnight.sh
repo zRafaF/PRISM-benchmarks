@@ -144,7 +144,13 @@ fi
 
 # ── Stale results from a different matrix? (this is what masked the last run) ─
 if [ -d results ] && [ "${FORCE:-0}" != "1" ]; then
-  EXISTING=$(ls -d results/*/*/*/ 2>/dev/null | awk -F/ '{print $4}' | sort -u | tr '\n' ' ')
+  # Enumerate REAL run dirs by their perf.json at the canonical depth:
+  #   results/<method>/<dataset>/<scene>/<traj>/<variant>/perf.json   -> scene is $4
+  # A directory glob is not enough: it also matches results/report*/ AND any extracted
+  # results bundle sitting under results/ (which nests its own results/ tree one level
+  # deeper), so it reported method names and "report_clean" as if they were scenes --
+  # misleading precisely when you are deciding whether the tree is stale.
+  EXISTING=$(ls results/*/*/*/*/*/perf.json 2>/dev/null | awk -F/ '{print $4}' | sort -u | tr '\n' ' ')
   if [ -n "$EXISTING" ]; then
     log "NOTE: results/ already contains runs for scene(s): $EXISTING"
     log "      Completed runs are SKIPPED (resume). If those are stale smoke results,"
@@ -252,8 +258,12 @@ checkpoint P1
 
 # Phase 2 — motion stress at seed 0. This is where 30 of the 43 failures were in
 # 2026-07, so it runs early: if PRISM is going to fall over, find out by checkpoint 2.
-log "### Phase 2: motion stress  (loop + stop-and-go, seed 0)"
-for fam in loop_2.0hz stopgo_2.0hz; do
+# Stress families come from TRAJS (i.e. from config.trajectories.extra_kinds), not a
+# hardcoded list — disabling stop-and-go in the config must not leave this loop asking
+# for a trajectory that was never rendered.
+STRESS_FAMS=$(echo "$TRAJS" | tr ' ' '\n' | grep -E '^(loop|stopgo)_' | sed 's/_s[0-9]*$//' | sort -u | tr '\n' ' ')
+log "### Phase 2: motion stress  (${STRESS_FAMS:-<none configured>}, seed 0)"
+for fam in $STRESS_FAMS; do
   t=$([ "$NSEEDS" -le 1 ] && echo "$fam" || echo "${fam}_s0")
   run_set "$t" $CORE $ALIGN $VSLAM $GUARD
 done
@@ -263,8 +273,9 @@ log "### Phase 3: variance  (seeds 1..$((NSEEDS - 1)) of the primary trajectorie
 if [ "$NSEEDS" -gt 1 ]; then
   for i in $(seq 1 $((NSEEDS - 1))); do
     run_set "synthetic_2.0hz_s${i}" $CORE $ALIGN $VSLAM
-    run_set "loop_2.0hz_s${i}"      $CORE $ALIGN $VSLAM $GUARD
-    run_set "stopgo_2.0hz_s${i}"    $CORE $ALIGN $VSLAM $GUARD
+    for fam in $STRESS_FAMS; do
+      run_set "${fam}_s${i}" $CORE $ALIGN $VSLAM $GUARD
+    done
     checkpoint "P3.s${i}"
   done
 else

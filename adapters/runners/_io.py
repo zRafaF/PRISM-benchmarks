@@ -12,6 +12,32 @@ from pathlib import Path
 import numpy as np
 
 
+# -- depth I/O ---------------------------------------------------------------
+# Depth is stored as 16-bit PNG in MILLIMETRES, not float32 .npy. Depth was 78% of
+# all export bytes (2.15 MB/frame for the pano alone) purely because .npy is
+# uncompressed. 16-bit PNG is ~88% smaller, gives exactly 1 mm precision over a 65 m
+# range (against a 4.5 m max_depth and a 20 mm voxel, so precision is nowhere near
+# the binding constraint), and is what TUM / ScanNet / Replica all use. Readers stay
+# backward compatible with existing .npy exports so old renders keep working.
+DEPTH_SCALE = 1000.0          # metres -> millimetres
+
+
+def load_depth(dir_, name):
+    """Depth for frame `name` from <dir_>/depth/: .png (mm) or legacy .npy (m)."""
+    import numpy as _np
+    from pathlib import Path as _P
+    d = _P(dir_) / "depth"
+    p = d / f"{name}.png"
+    if p.exists():
+        import imageio.v2 as _imageio
+        return _imageio.imread(p).astype(_np.float32) / DEPTH_SCALE
+    p = d / f"{name}.npy"
+    if p.exists():
+        return _np.load(p).astype(_np.float32)
+    return None
+
+
+
 def _read_png(path: Path) -> np.ndarray:
     try:
         import imageio.v2 as imageio
@@ -37,8 +63,7 @@ def load_sequence(in_dir: Path):
     rgb, depth, mask = [], [], []
     for nm in names:
         rgb.append(_read_png(in_dir / "rgb" / f"{nm}.png")[..., :3])
-        dp = in_dir / "depth" / f"{nm}.npy"
-        depth.append(np.load(dp) if dp.exists() else None)
+        depth.append(load_depth(in_dir, nm))
         mp = in_dir / "mask" / f"{nm}.png"
         mask.append(_read_png(mp) if mp.exists() else None)
     return {"names": names, "rgb": rgb, "depth": depth, "mask": mask,

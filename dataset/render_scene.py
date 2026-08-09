@@ -332,7 +332,13 @@ def _save_frame(dir_: Path, i: int, rgb: np.ndarray, depth: np.ndarray, mask: np
     (dir_ / "depth").mkdir(exist_ok=True)
     (dir_ / "mask").mkdir(exist_ok=True)
     imageio.imwrite(dir_ / "rgb" / f"{name}.png", rgb)
-    np.save(dir_ / "depth" / f"{name}.npy", depth.astype(np.float32))
+    # 16-bit PNG in millimetres instead of float32 .npy: depth was 78% of all
+    # export bytes purely because .npy is uncompressed. 1 mm precision over 65 m
+    # is far finer than the 20 mm voxel and 50 mm F-score threshold, and it is the
+    # standard RGB-D dataset format. Cuts the whole export by ~68%.
+    _d_mm = np.clip(np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0) * 1000.0,
+                    0, 65535).astype(np.uint16)
+    _write_scalar_png(dir_ / "depth" / f"{name}.png", _d_mm)
     imageio.imwrite(dir_ / "mask" / f"{name}.png", mask)
 
 
