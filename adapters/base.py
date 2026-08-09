@@ -107,19 +107,64 @@ def run_method(name: str):
                     result.n_frames_done = _count_poses(rp.poses_tum)
                     result.n_frames = result.n_frames_done or result.n_frames_input
                     result.returncode = proc.returncode
+                    result.failure_kind = _classify_failure(rp.run_log, proc.returncode)
+                    result.oom = (result.failure_kind == "oom")
                     result.completed = bool(proc.returncode == 0 and result.n_frames_done)
                     smp.summarize(result)
                     _merge_runner_perf(rp, result, window=int(cfg["engine"]["window_size"]),
                                        overlap=int(cfg["engine"]["overlap"]))
                     result.write(rp.perf_json)
-                    if not result.completed:
-                        print(f"[{name}]   -> FAILED rc={proc.returncode} "
+                    if result.oom:
+                        print(f"[{name}]   -> OUT OF MEMORY at {result.n_frames_input} "
+                              f"frames (peak {result.vram_peak_gb:.1f} GB of "
+                              f"{result.gpu_total_gb} GB) — RECORDED as an OOM result, "
+                              f"not a harness failure. See {rp.run_log}")
+                    elif not result.completed:
+                        print(f"[{name}]   -> FAILED ({result.failure_kind}) "
+                              f"rc={proc.returncode} "
                               f"({result.n_frames_done}/{result.n_frames_input} frames) "
                               f"— see {rp.run_log}")
                     else:
                         print(f"[{name}]   -> {result.eff_fps:.2f} FPS, peak VRAM "
                               f"{result.vram_peak_gb:.2f} GB, e2e {result.latency_end_to_end_s:.1f}s "
                               f"[latency_source={result.latency_source}]")
+
+
+# Signatures of an out-of-memory death, in the runner's log. OOM is NOT a bug in the
+# harness and NOT a missing run — for a full-batch method it is a genuine, reportable
+# property of the method (LASER's KITTI table reports VGGT / Pi3 / Fast3R as OOM on
+# every sequence, so there is published precedent for stating it plainly). Recording
+# it is the point: it is the cleanest evidence for why a streaming, bounded-memory
+# engine is needed at all.
+_OOM_PATTERNS = (
+    "cuda out of memory",
+    "torch.cuda.outofmemoryerror",
+    "outofmemoryerror",
+    "cublas_status_alloc_failed",
+    "cudnn_status_alloc_failed",
+    "failed to allocate",
+    "std::bad_alloc",
+    "out of memory",
+)
+
+
+def _classify_failure(run_log, returncode: int | None) -> str | None:
+    """None if the run looks fine, else 'oom' | 'error' | 'killed'.
+
+    'killed' covers the OOM-killer (SIGKILL = -9), which is what a *host* RAM
+    exhaustion looks like from here — worth separating from a CUDA OOM.
+    """
+    if returncode == 0:
+        return None
+    try:
+        text = run_log.read_text(errors="replace").lower() if run_log.exists() else ""
+    except Exception:
+        text = ""
+    if any(p in text for p in _OOM_PATTERNS):
+        return "oom"
+    if returncode in (-9, 137):
+        return "killed"
+    return "error"
 
 
 def _count_poses(poses_tum) -> int:

@@ -25,7 +25,20 @@ datasets:
     must_include: [room_0]       # smallest Replica room; override with SMOKE_SCENE
 
 trajectories:
-  n_frames: 20                   # ceiling — ~2 windows at window_size=16, overlap=4
+  # 20 frames was too short to test anything that matters, and the 2026-08-08 smoke
+  # proved it three ways:
+  #   * the `loop` family never returned to its start, so smooth and loop produced
+  #     near-identical results for every method — the loop path went untested;
+  #   * PRISM built a single window, so `is_first_window` was always true and the
+  #     PRISM_ALIGN arms (sim3/sl4/se3) were byte-identical — the alignment study
+  #     went untested;
+  #   * VGGT-SLAM's keyframe selection yielded 8 keyframes < submap_size, so it built
+  #     ONE submap with ZERO loop closures — its entire method went untested, and the
+  #     loop-closure fairness arm with it.
+  # 120 clears all three: >2 PRISM windows, >32 keyframes for a second VGGT-SLAM
+  # submap at w=32, and a loop long enough to close. Still ~5x faster than the real
+  # 600-frame matrix.
+  n_frames: 120
   rates_hz: [2.0]                # one rate; the rate sweep is not what we're testing
   extra_kinds:
     stopgo: {rates_hz: [2.0], n_stops: 1, dwell_s: 2.0}

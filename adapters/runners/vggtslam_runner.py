@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -45,12 +46,9 @@ def main():
     # is VGGT-SLAM's headline feature: publishing only the OFF arm understates it.
     max_loops = int(os.environ.get("VGGTSLAM_MAX_LOOPS", vs.get("max_loops", 1)))
     min_disp = float(os.environ.get("VGGTSLAM_MIN_DISPARITY", vs.get("min_disparity", 50)))
+    submap = int(os.environ.get("VGGTSLAM_SUBMAP_SIZE", submap))
     print(f"[vggtslam_runner] submap_size={submap} max_loops={max_loops} "
           f"(loop closure {'ON' if max_loops else 'OFF'}) min_disparity={min_disp}")
-    # Record the exact configuration next to the results so the arm is self-describing.
-    (out / "arm_config.json").write_text(json.dumps(
-        {"max_loops": max_loops, "loop_closure": bool(max_loops),
-         "submap_size": submap, "min_disparity": min_disp}, indent=2))
 
     rgb_dir = Path(args.in_dir) / "rgb"
     poses_txt = out / "poses.txt"
@@ -64,10 +62,53 @@ def main():
            "--min_disparity", str(min_disp)]
     print("[vggtslam_runner] $", " ".join(cmd))
     t0 = time.perf_counter()
-    rc = subprocess.run(cmd).returncode
+    # Capture stdout so the submap / loop-closure counts can be parsed out of it,
+    # while still echoing everything to our own stdout (which the adapter tees to
+    # run.log). Those two counts are the only way to tell whether VGGT-SLAM's method
+    # actually engaged, and they decide whether the run is citable at all.
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, bufsize=1)
+    captured = []
+    for line in proc.stdout:
+        captured.append(line)
+        sys.stdout.write(line)
+    rc = proc.wait()
     wall = time.perf_counter() - t0
     if rc != 0:
         print(f"[vggtslam_runner] main.py exited {rc}")
+
+    # ── Degeneracy check ────────────────────────────────────────────────────
+    # VGGT-SLAM's contribution IS the multi-submap SL(4) pose graph plus loop
+    # closure. With a single submap there is no inter-submap registration and no
+    # loop closure: it degenerates to plain feed-forward VGGT, and any head-to-head
+    # against it is meaningless (the 2026-08 smoke hit exactly this — 8 keyframes,
+    # 1 submap, 0 loop closures, and the loop/no-loop arms returned identical ATE).
+    log_text = "".join(captured)
+    def _grab(pattern, cast=int, default=None):
+        m = re.search(pattern, log_text)
+        return cast(m.group(1)) if m else default
+    n_submaps = _grab(r"Total number of submaps in map\s+(\d+)")
+    n_loops = _grab(r"Total number of loop closures in map\s+(\d+)")
+    degenerate = (n_submaps is not None and n_submaps < 2)
+    if degenerate:
+        print(f"[vggtslam_runner] *** WARNING: only {n_submaps} submap(s) and "
+              f"{n_loops} loop closure(s). VGGT-SLAM's pose-graph and loop-closure "
+              f"machinery did NOT engage — this run measures plain feed-forward VGGT, "
+              f"not VGGT-SLAM. Do not cite it as a head-to-head. Raise the frame "
+              f"count, or lower submap_size ({submap}) / min_disparity ({min_disp}) "
+              f"so more than {submap} keyframes survive.")
+    elif n_submaps is not None:
+        print(f"[vggtslam_runner] {n_submaps} submaps, {n_loops} loop closures "
+              f"— method engaged")
+
+    # Record the exact configuration + engagement evidence next to the results, so
+    # the arm is self-describing and the degeneracy is visible in the aggregate.
+    (out / "arm_config.json").write_text(json.dumps(
+        {"max_loops": max_loops, "loop_closure": bool(max_loops),
+         "submap_size": submap, "min_disparity": min_disp,
+         "n_submaps": n_submaps, "n_loop_closures": n_loops,
+         "method_engaged": (not degenerate) if n_submaps is not None else None,
+         "degenerate_single_submap": degenerate}, indent=2))
 
     # poses.txt is already TUM (frame_id = timestamp) -> poses.tum
     if poses_txt.exists():

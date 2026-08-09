@@ -84,8 +84,24 @@ camera:
 # ── Trajectories (both variants rendered) ─────────────────────────────────────
 trajectories:
   variants: [synthetic_spline]   # (+ dataset_path once the per-dataset pose importer lands)
-  n_frames: 200              # CEILING: max frames even if speed/rate would give more
-                             # (full-batch baselines are near the VRAM limit at 200)
+  # CEILING: max frames even if speed/rate would give more.
+  #
+  # This was 200, chosen because "full-batch baselines are near the VRAM limit at 200".
+  # That capped the sequence length of EVERY method to protect the offline ones — which
+  # penalises exactly the property the streaming engines exist for. A bounded-memory
+  # streamer looks unremarkable when nothing is allowed to get long enough to exhaust
+  # memory.
+  #
+  # 600 deliberately runs past the full-batch ceiling. Feed-forward methods (Pi3,
+  # MapAnything, PanoVGGT) are EXPECTED to OOM on the longer / denser sequences, and an
+  # OOM is now RECORDED as a first-class result (perf.json `oom` + `failure_kind`,
+  # reported in the capacity table) rather than counted as a failed run. That is the
+  # cleanest evidence for the paper's central claim; LASER's KITTI table does the same
+  # thing, reporting VGGT / Pi3 / Fast3R as OOM on every sequence.
+  #
+  # Cost: render time and disk scale linearly, so this is ~3x the 200-frame matrix.
+  # `make bench-overnight` prints frames/traj in its plan — check it before launching.
+  n_frames: 600
   # RATE SWEEP: one trajectory per capture rate -> traj id "synthetic_<rate>hz".
   # Low rate = sparse, wide-baseline (favours feed-forward); high rate = dense overlap
   # (favours streaming, and pushes full-batch toward the VRAM ceiling). Covers the spectrum.
@@ -148,8 +164,10 @@ methods:
   - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
   - {name: laser,       camera: pinhole,  env: submodules/LASER,      mode: stream, metric: false, role: baseline}   # training-free streaming (wraps Pi3); pinhole
 
-# Feed-forward baselines process every frame at once; cap frames only if GPU memory is
-# tight (null = use all). Subsampling keeps global frame indices as TUM timestamps.
+# Feed-forward baselines process every frame at once. `max_frames` would subsample to
+# keep them under the VRAM ceiling — deliberately left null so they are NOT protected:
+# we want the real capacity limit, recorded. Set it only if you need a run to complete
+# for some other reason, and say so in the paper if you do.
 baselines:
   max_frames: null
 
@@ -178,19 +196,40 @@ ablations:
   #      Named arms, not a mutable global, so a results tree is always self-describing.
   - {name: vggtslam_noloop, camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "0"}}
   - {name: vggtslam_loop,   camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "1"}}
+  #      A matched-window arm kept for the ablation story: same submap size as OUR
+  #      engine window (16). It is NOT the published configuration — cite vggtslam
+  #      (w=32) for the head-to-head and use this only to show the effect of w.
+  - {name: vggtslam_w16,    camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: ablation,  runner: vggtslam, run_env: {VGGTSLAM_SUBMAP_SIZE: "16", VGGTSLAM_MAX_LOOPS: "1"}}
 
 # VGGT-SLAM (streaming) tuning — drives its own main.py.
-# FAIRNESS NOTE. The 2026-07 run used max_loops=0 ("to match PRISM's shipped mode",
-# decision D4). Loop closure is VGGT-SLAM's headline feature, so a head-to-head against
-# max_loops=0 is a comparison against a deliberately hobbled configuration and cannot
-# be published as a plain "PRISM beats VGGT-SLAM". Both arms are therefore run and
-# reported side by side (see ablations: vggtslam_noloop / vggtslam_loop) and the
-# per-arm value is set via VGGTSLAM_MAX_LOOPS in run_env, so neither arm depends on
-# this mutable global. The value below is only the fallback for a bare `run-vggtslam`.
+#
+# CONFIGURED TO MATCH THE PUBLISHED PAPER, not to match our window. Rationale: any
+# claim of the form "PRISM beats VGGT-SLAM" has to be against VGGT-SLAM as published,
+# otherwise a reviewer reads it as a strawman. From the VGGT-SLAM paper (NeurIPS 2025,
+# arXiv:2505.12549) and its 2.0 follow-up (arXiv:2601.19887):
+#
+#   * submap size w = 32 is the HEADLINE configuration for every published number
+#     (7-Scenes avg ATE 0.067 m; TUM avg ATE 0.053 m for the SL(4) variant). The
+#     w-sweep in their appendix shows w matters a lot: TUM SL(4) goes 0.115 (w=8)
+#     -> 0.083 (w=16) -> 0.053 (w=32). Running w=16 costs them ~55% ATE, unprompted.
+#     Our previous `submap_size: 16` ("matches our window") was therefore handing
+#     them a materially worse configuration than they publish.
+#   * min_disparity 50 px is the repo default and is what VGGT-SLAM 2.0 states it
+#     uses ("the same parameter used by VGGT-SLAM for minimum disparity (50 pixels)").
+#     The 1.0 paper text says 25 px; we follow the repo + 2.0, and record it.
+#   * They average over >= 5 runs because RANSAC makes the method stochastic. Our
+#     seeds give us repeats, but note the variation is the METHOD's, not just the
+#     scene's.
+#
+# DEGENERACY GUARD: with w=32, a sequence must yield >32 keyframes before a SECOND
+# submap exists — and with only one submap there is no inter-submap SL(4)
+# registration and no loop closure, i.e. the entire method is inactive. The runner
+# now parses the submap/loop-closure counts out of the log and writes them to
+# arm_config.json, and warns loudly when submaps < 2. Check that before citing.
 vggtslam:
   max_loops: 1               # loop closure ON (its native mode). 0 disables.
-  submap_size: 16            # frames per SL(4) submap (matches our window)
-  min_disparity: 50          # optical-flow keyframe-selection threshold
+  submap_size: 32            # PUBLISHED headline config (was 16 = our window size)
+  min_disparity: 50          # repo default + VGGT-SLAM 2.0; the 1.0 paper text says 25
 # PanoVGGT-no-SLAM ablation intentionally EXCLUDED: full-batch of ours = benchmarking
 # PanoVGGT alone, not the streaming engine. (Decision 2026-07-13.)
 

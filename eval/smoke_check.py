@@ -206,6 +206,80 @@ def main():
     else:
         r.add(WARN, "snapshots", "not generated (skipped?)")
 
+    # ── Did the smoke actually EXERCISE the things it claims to? ─────────────
+    #  The 2026-08-08 smoke passed every check above while testing almost nothing:
+    #  the sequences were too short for the loop to close, for PRISM to build a
+    #  second window, or for VGGT-SLAM to build a second submap. A smoke test that
+    #  cannot fail on that is worse than no smoke test, because it grants confidence.
+    def _runs(method):
+        d = results / method
+        return sorted(p for p in d.glob("*/*/*/*") if p.is_dir()) if d.exists() else []
+
+    # (a) every method must pose EVERY input frame
+    for method in methods:
+        bad = []
+        for d in _runs(method):
+            perf = _load(d / "perf.json") or {}
+            ni, nd = perf.get("n_frames_input"), perf.get("n_frames_done")
+            # Keyframe-selecting methods (VGGT-SLAM) legitimately emit fewer poses.
+            if ni and nd and nd < ni and method not in ("vggtslam", "vggtslam_loop",
+                                                        "vggtslam_noloop", "vggtslam_w16"):
+                bad.append(f"{d.name}:{nd}/{ni}")
+        r.check(not bad, f"{method}: posed every input frame",
+                bad_detail=f"dropped frames in {len(bad)} run(s) [{', '.join(bad[:3])}] — "
+                           f"this method is scored on a shorter trajectory than the "
+                           f"baselines, which biases it")
+
+    # (b) VGGT-SLAM must actually build >1 submap, else its method is inactive
+    for method in [m for m in methods if m.startswith("vggtslam")]:
+        degen = []
+        for d in _runs(method):
+            arm = _load(d / "arm_config.json") or {}
+            if arm.get("degenerate_single_submap"):
+                degen.append(f"{d.name}:{arm.get('n_submaps')}submap")
+        r.check(not degen, f"{method}: pose graph engaged (>1 submap)",
+                bad_detail=f"{len(degen)} run(s) built a single submap — no SL(4) "
+                           f"registration, no loop closure. It is running as plain "
+                           f"feed-forward VGGT; a head-to-head would be a strawman. "
+                           f"Lengthen the sequence or lower submap_size/min_disparity")
+
+    # (c) loop must differ from smooth, else the loop family is not looping
+    def _mean_ate(method, fam):
+        vals = []
+        for d in _runs(method):
+            if not d.parent.name.startswith(fam):
+                continue
+            a = _load(d / "ate.json") or {}
+            if a.get("ate_rmse_m") is not None:
+                vals.append(a["ate_rmse_m"])
+        return sum(vals) / len(vals) if vals else None
+
+    same = []
+    for method in methods:
+        sm, lp = _mean_ate(method, "synthetic_"), _mean_ate(method, "loop_")
+        if sm and lp and abs(sm - lp) / max(sm, 1e-9) < 0.02:      # within 2%
+            same.append(method)
+    r.check(len(same) < max(2, len(methods) // 2),
+            "loop trajectory differs from smooth",
+            ok_detail="the loop family is exercising revisit behaviour",
+            bad_detail=f"{len(same)} method(s) scored within 2% on loop vs smooth "
+                       f"({', '.join(same[:4])}) — the 'loop' path is probably too "
+                       f"short to return to its start, so the loop/revisit code path "
+                       f"is UNTESTED")
+
+    # (d) the alignment arms must diverge, else PRISM_ALIGN is doing nothing
+    align_arms = [m for m in ("prism", "prism_sl4", "prism_se3") if m in methods]
+    if len(align_arms) > 1:
+        per_arm = {m: _mean_ate(m, "") for m in align_arms}
+        vals = [v for v in per_arm.values() if v]
+        spread = (max(vals) - min(vals)) / max(max(vals), 1e-9) if len(vals) > 1 else 0
+        r.check(spread > 0.01, "alignment arms diverge (PRISM_ALIGN is live)",
+                ok_detail=f"ATE spread {100 * spread:.1f}% across {align_arms}",
+                bad_detail=f"arms {align_arms} agree to within {100 * spread:.2f}% — "
+                           f"PRISM_ALIGN only takes effect from the SECOND window "
+                           f"onward, so the sequence is too short to test it "
+                           f"(needs > 2*window_size - overlap frames)")
+
     # ── ETA projection for the real matrix ───────────────────────────────────
     print()
     if durations:

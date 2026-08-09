@@ -17,6 +17,7 @@ from bench.config import REPO_ROOT, load_config
 
 COLUMNS = ["method", "dataset", "scene", "traj", "variant", "n_frames",
            "n_frames_input", "n_frames_done", "completed", "returncode",
+           "oom", "failure_kind",
            "eff_fps", "latency_end_to_end_s", "latency_source",
            "per_window_latency_med_s", "per_window_source", "n_windows",
            "vram_avg_gb", "vram_peak_gb", "gpu_util_avg_pct", "gpu_power_avg_w",
@@ -55,6 +56,8 @@ def main():
             "n_frames_done": d.get("n_frames_done", ""),
             "completed": d.get("completed", ""),
             "returncode": d.get("returncode", ""),
+            "oom": d.get("oom", False),
+            "failure_kind": d.get("failure_kind") or "",
             "eff_fps": round(d.get("eff_fps", 0), 3),
             "latency_end_to_end_s": round(d.get("latency_end_to_end_s", 0), 3),
             "latency_source": d.get("latency_source", "unavailable"),

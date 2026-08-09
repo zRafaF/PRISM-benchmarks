@@ -28,6 +28,12 @@ class PerfResult:
     n_frames_done: int = 0
     completed: bool = False
     returncode: int | None = None
+    # OOM is a first-class RESULT, not a missing run: for a full-batch method it is a
+    # real capacity limit worth publishing. failure_kind is None | 'oom' | 'killed' |
+    # 'error' so the aggregate can separate "ran out of memory at N frames" from
+    # "crashed for some other reason".
+    oom: bool = False
+    failure_kind: str | None = None
     wall_s: float = 0.0
     eff_fps: float = 0.0
     latency_end_to_end_s: float = 0.0

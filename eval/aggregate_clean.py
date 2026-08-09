@@ -129,7 +129,11 @@ def load_live_runs() -> list[dict]:
         runs.append({
             "method": parts[i + 1], "dataset": parts[i + 2], "scene": parts[i + 3],
             "traj": parts[i + 4], "variant": parts[i + 5],
-            "n_frames": p.get("n_frames"), "eff_fps": p.get("eff_fps"),
+            "n_frames": p.get("n_frames"),
+            "n_frames_input": p.get("n_frames_input"),
+            "n_frames_done": p.get("n_frames_done"),
+            "oom": p.get("oom"), "failure_kind": p.get("failure_kind"),
+            "eff_fps": p.get("eff_fps"),
             "latency_end_to_end_s": p.get("latency_end_to_end_s"),
             "per_window_latency_med_s": (
                 st.median(p["per_window_latency_s"]) if p.get("per_window_latency_s") else None),
@@ -168,7 +172,8 @@ def load_archive_runs(run_id: str) -> list[dict]:
                 if v == "" or v is None:
                     rec[k] = None
                 elif k in ("method", "dataset", "scene", "traj", "variant",
-                           "gpu_name", "hw_id", "source", "latency_source"):
+                           "gpu_name", "hw_id", "source", "latency_source",
+                           "per_window_source", "failure_kind"):
                     rec[k] = v
                 elif k == "metric_capable":
                     rec[k] = v in ("True", "true", "1")
@@ -333,19 +338,53 @@ def main():
     for m in methods:
         tot = [r for r in kept if r["method"] == m]
         bad = [r for r in tot if not is_complete(r)]
+        # OOM is separated out because it is a RESULT, not a defect: a full-batch
+        # method exhausting VRAM at N frames is a publishable capacity limit, whereas
+        # an 'error' incompletion is a bug to chase. Lumping them together would both
+        # hide the capacity story and overstate the bug count.
+        oomed = [r for r in tot if str(r.get("failure_kind") or "").lower() == "oom"]
+        othr = [r for r in bad if r not in oomed]
         by_scene = ", ".join(f"{s}:{sum(1 for r in bad if r['scene'] == s)}"
                              for s in sorted({r["scene"] for r in bad})) or "—"
         by_motion = ", ".join(f"{mo}:{sum(1 for r in bad if motion_of(r['traj']) == mo)}"
                               for mo in sorted({motion_of(r["traj"]) for r in bad})) or "—"
-        comp_rows.append([m, len(tot), len(tot) - len(bad), len(bad),
+        comp_rows.append([m, len(tot), len(tot) - len(bad), len(othr), len(oomed),
                           f"{100 * len(bad) / len(tot):.1f}" if tot else "—",
                           by_scene, by_motion])
-    write_csv("completion.csv",
-              ["method", "n_total", "n_complete", "n_incomplete", "incomplete_pct",
-               "incomplete_by_scene", "incomplete_by_motion"], comp_rows)
-    blob["completion"] = [dict(zip(
-        ["method", "n_total", "n_complete", "n_incomplete", "incomplete_pct",
-         "by_scene", "by_motion"], r)) for r in comp_rows]
+    comp_h = ["method", "n_total", "n_complete", "n_failed", "n_oom", "incomplete_pct",
+              "incomplete_by_scene", "incomplete_by_motion"]
+    write_csv("completion.csv", comp_h, comp_rows)
+    blob["completion"] = [dict(zip(comp_h, r)) for r in comp_rows]
+
+    # ---- capacity / OOM table -------------------------------------------------
+    #  The deployability result: how long a sequence each method survives. For the
+    #  full-batch methods this is the ceiling their design implies; for the streaming
+    #  ones it should simply not appear.
+    cap_rows = []
+    for m in methods:
+        tot = [r for r in kept if r["method"] == m]
+        ok = [r for r in tot if is_complete(r)]
+        oomed = [r for r in tot if str(r.get("failure_kind") or "").lower() == "oom"]
+
+        def _nf(r):
+            v = r.get("n_frames_input") or r.get("n_frames")
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                return None
+        ok_f = [x for x in (_nf(r) for r in ok) if x]
+        oom_f = [x for x in (_nf(r) for r in oomed) if x]
+        peak = [r["vram_peak_gb"] for r in ok if r.get("vram_peak_gb")]
+        cap_rows.append([
+            m, len(tot), len(oomed),
+            max(ok_f) if ok_f else "—",          # longest sequence completed
+            min(oom_f) if oom_f else "—",        # shortest sequence that OOMed
+            fmt(max(peak), 1, 2) if peak else "—",
+        ])
+    cap_h = ["method", "n_runs", "n_oom", "max_frames_completed",
+             "min_frames_oom", "max_vram_peak_gb"]
+    write_csv("capacity.csv", cap_h, cap_rows)
+    blob["capacity"] = [dict(zip(cap_h, r)) for r in cap_rows]
 
     # ---- per-method aggregate (replaces "Global aggregate") ---------------
     agg = {m: method_block([r for r in agg_set if r["method"] == m]) for m in methods}
@@ -596,8 +635,17 @@ def main():
         "reports a spuriously high fps; averaging those in inflates throughput. "
         "See the completion table for the failure breakdown.\n",
         "## Completion / failure rate\n",
-        md_table(["Method", "N total", "N complete", "N incomplete", "Incomplete %",
+        "*`N oom` is counted separately from `N failed`: an out-of-memory run is a "
+        "recorded capacity result, not a defect.*\n",
+        md_table(["Method", "N total", "N complete", "N failed", "N OOM", "Incomplete %",
                   "By scene", "By motion"], comp_rows), "",
+        "## Capacity — how long a sequence each method survives\n",
+        "*The deployability result. Full-batch methods ingest every view at once, so "
+        "their memory grows with sequence length until it doesn't fit; a bounded-memory "
+        "streaming engine should simply never appear in the OOM column. Sequence lengths "
+        "are deliberately NOT capped to protect the offline methods.*\n",
+        md_table(["Method", "N runs", "N OOM", "Longest completed (frames)",
+                  "Shortest OOM (frames)", "Max peak VRAM GB"], cap_rows), "",
         "## Per-method aggregate (clean, seeded, complete runs only)\n",
         md_table(hdr, rows), "",
         "## Streaming comparison (native streaming mode; throughput included)\n",
