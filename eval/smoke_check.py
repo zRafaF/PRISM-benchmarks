@@ -340,8 +340,15 @@ def main():
         n_scenes = len(full["datasets"]["replica"].get("scenes") or []) or \
             full["datasets"]["replica"].get("n_scenes_start", 6)
         n_trajs = len(resolve_trajs(full, "all"))
-        n_methods = len(full.get("methods", [])) + len(full.get("ablations", []))
-        full_runs = n_scenes * n_trajs * n_methods
+        # Sweep arms run on a REDUCED set (one scene, ~4 trajectories -- Phase 5 of
+        # run_overnight.sh), NOT the full grid. Counting them at scenes x trajs
+        # over-stated the matrix by ~40% and would have had you budgeting 15 h for an
+        # ~8 h run.
+        abl = full.get("ablations", [])
+        n_sweep = len([m for m in abl if m.get("role") == "sweep"])
+        n_methods = len(full.get("methods", [])) + len(abl)
+        n_main = n_methods - n_sweep
+        full_runs = n_scenes * n_trajs * n_main + n_sweep * 4
         # The smoke caps frames hard, so per-run time will grow roughly with frame
         # count on top of a fixed model-load cost. Report the honest bracket rather
         # than one falsely precise number.
@@ -352,8 +359,9 @@ def main():
         print("PROJECTED COST OF THE FULL RUN")
         print(f"  smoke: {smoke_runs} runs, mean {mean_s:.1f}s/run "
               f"({smoke_frames} frames cap)")
-        print(f"  full : {n_scenes} scenes x {n_trajs} trajectories x {n_methods} methods "
-              f"= {full_runs} runs ({full_frames} frames cap)")
+        print(f"  full : {n_scenes} scenes x {n_trajs} trajs x {n_main} main methods "
+              f"+ {n_sweep} sweep arms on a reduced set = {full_runs} runs "
+              f"({full_frames} frames cap)")
         print(f"  ETA  : {lo:.1f} h (if model-load dominates) .. "
               f"{hi:.1f} h (if frame count dominates)")
         print("  The truth is usually nearer the low end — model load is a fixed cost "

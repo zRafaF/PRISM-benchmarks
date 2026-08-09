@@ -108,6 +108,8 @@ PY
 
 ALL_METHODS="$CORE $ALIGN $VSLAM $GUARD $SWEEP"
 N_METHODS=$(echo $ALL_METHODS | wc -w)
+N_MAIN=$(echo $CORE $ALIGN $VSLAM $GUARD | wc -w)
+N_SWEEP=$(echo ${SWEEP:-} | wc -w)
 N_TRAJS=$(echo $TRAJS | wc -w)
 N_SCENES=$(echo ${SCENES_FROZEN:-} | wc -w)
 
@@ -130,9 +132,11 @@ cat <<PLAN
       guards : ${GUARD:-<none>}
       sweep  : ${SWEEP:-<none>}  (voxel/max_depth curve; reduced scene+traj set, see Phase 5)
 
-  TOTAL PLANNED RUNS : $(( ${N_SCENES:-0} * N_TRAJS * N_METHODS ))   (scenes x trajs x methods)
-      ... but the guard arms only run on the stress trajectories, so the real
-      total is printed as [n/N] on every run below.
+  TOTAL PLANNED RUNS : ~$(( ${N_SCENES:-0} * N_TRAJS * N_MAIN + N_SWEEP * 4 ))
+      = ${N_SCENES:-0} scenes x $N_TRAJS trajs x $N_MAIN main methods  ($(( ${N_SCENES:-0} * N_TRAJS * N_MAIN )))
+      + $N_SWEEP sweep arms on ONE scene x ~4 trajs             (~$(( N_SWEEP * 4 )))
+      Sweep arms deliberately do NOT run the full grid (Phase 5). Guard arms, if any,
+      only run the stress trajectories. The exact count is printed as [n] per run.
 
   If any number above looks wrong -- especially "scenes frozen" being 1, or an
   empty method list -- STOP NOW (make bench-stop) rather than burning a night.
