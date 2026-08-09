@@ -285,7 +285,18 @@ def main():
     if durations:
         mean_s = sum(durations) / len(durations)
         smoke_runs = sum(per_method_runs.values())
-        full = load_config(args.full_config)
+        # Load the FULL matrix config with the smoke overlay suppressed. Otherwise
+        # PRISM_CONFIG_OVERLAY (still exported by smoke_test.sh) merges on top and the
+        # "full run" projection is computed from the smoke's own tiny matrix -- which is
+        # how it reported "6 trajectories, 120 frames, ETA 1.9 h .. 1.9 h" for a run that
+        # is actually 12 trajectories at 300 frames.
+        import os as _os
+        _saved = _os.environ.pop("PRISM_CONFIG_OVERLAY", None)
+        try:
+            full = load_config(args.full_config)
+        finally:
+            if _saved is not None:
+                _os.environ["PRISM_CONFIG_OVERLAY"] = _saved
         n_scenes = len(full["datasets"]["replica"].get("scenes") or []) or \
             full["datasets"]["replica"].get("n_scenes_start", 6)
         n_trajs = len(resolve_trajs(full, "all"))
