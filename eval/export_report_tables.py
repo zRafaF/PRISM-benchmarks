@@ -52,6 +52,17 @@ TABLES = {
         "motion.csv",
         "ATE by motion family, all methods (2 Hz)",
         "Trajectory accuracy split by smooth / stop-and-go / loop."),
+    "voxel_sweep": (
+        "voxel_sweep.csv",
+        "Fidelity vs memory — the engine's operating curve",
+        "PRISM at several voxel / max_depth operating points. The only method here "
+        "with a tunable memory-fidelity trade; report the curve, not its best point."),
+    "recon_literature": (
+        "recon_literature.csv",
+        "Reconstruction in literature units (metres)",
+        "ATE / Accuracy / Completeness / Chamfer in metres — the only columns that can "
+        "sit beside a published baseline table, since no baseline paper reports an "
+        "F-score."),
     "per_method_aggregate": (
         "aggregate_per_method.csv",
         "Per-method aggregate (clean, seeded, complete runs only)",

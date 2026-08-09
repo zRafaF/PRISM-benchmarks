@@ -1,0 +1,30 @@
+
+################################################################################
+#  PRISM overnight benchmark — RUN PLAN                      stamp=20260809_202605
+################################################################################
+  scenes frozen    : 1 -> office_4
+  target scenes    : 6   (datasets.<ds>.n_scenes_start)
+  seeds            : 3  [1234 5678 9012]
+  frames/traj      : 300
+  trajectories     : 12
+      synthetic_0.5hz_s0 synthetic_0.5hz_s1 synthetic_0.5hz_s2 synthetic_2.0hz_s0 synthetic_2.0hz_s1 synthetic_2.0hz_s2 synthetic_5.0hz_s0 synthetic_5.0hz_s1 synthetic_5.0hz_s2 loop_2.0hz_s0 loop_2.0hz_s1 loop_2.0hz_s2
+  methods          : 16
+      core   : prism panovggt pi3 mapanything vggtslam laser
+      align  : prism_sl4 prism_se3
+      vggt   : vggtslam_noloop vggtslam_loop vggtslam_w16
+      guards : <none>
+      sweep  : prism_vox010 prism_vox040 prism_vox080 prism_depth30 prism_depth60  (voxel/max_depth curve; reduced scene+traj set, see Phase 5)
+
+  TOTAL PLANNED RUNS : 192   (scenes x trajs x methods)
+      ... but the guard arms only run on the stress trajectories, so the real
+      total is printed as [n/N] on every run below.
+
+  If any number above looks wrong -- especially "scenes frozen" being 1, or an
+  empty method list -- STOP NOW (make bench-stop) rather than burning a night.
+################################################################################
+
+[20:26:05] NOTE: only 1 scene(s) frozen but n_scenes_start=6.
+[20:26:05]       'make split' runs below and should freeze 6; the plan is
+[20:26:05]       re-printed after it so you can confirm before the method runs start.
+[20:26:10] DRY_RUN=1 — plan printed, exiting without running anything.
+rm: cannot remove 'logs/.overnight_plan_20260809_202605.sh': Operation not permitted

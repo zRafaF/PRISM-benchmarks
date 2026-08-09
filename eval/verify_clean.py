@@ -53,10 +53,30 @@ PUBLISHED = {
     "laser":       (86.8, 56.7, 0.35, 0.22, 6.1, 3.35, 9.7, None, 8.4),
     "vggtslam":    (132.0, 159.4, 0.22, 0.16, 102.2, 3.71, 8.9, None, 8.9),
 }
-# Column index in aggregate_per_method.csv for each published value.
-PUB_COLS = [2, 3, 4, 5, 6, 7, 8, 9, 10]
+# Columns are resolved BY HEADER TEXT, never by index. Hardcoded indices silently
+# mis-map the moment a column is inserted: adding Acc/Compl/Chamfer shifted everything
+# right and the check started comparing masked-F against the published outlier %,
+# reporting a "failure" that was purely an off-by-three in the verifier.
 PUB_NAMES = ["ATE cm", "drift %/m", "masked F", "360 F", "map MB",
              "outlier %", "prec@2cm", "scale %", "VRAM GB"]
+# published-name -> the substring that identifies its column in the CSV header
+PUB_HEADER = {
+    "ATE cm": "ATE cm", "drift %/m": "drift %/m", "masked F": "Masked F",
+    "360 F": "Full-360 F", "map MB": "Map MB", "outlier %": "Outlier %",
+    "prec@2cm": "Prec@2cm", "scale %": "Scale err %", "VRAM GB": "VRAM peak GB",
+}
+
+
+def _resolve_cols(header: list[str]) -> dict:
+    """published-name -> column index, matched on header text."""
+    out = {}
+    for name, needle in PUB_HEADER.items():
+        idx = next((i for i, h in enumerate(header) if needle in h), None)
+        if idx is None:
+            raise SystemExit(f"[verify_clean] column {needle!r} not found in "
+                             f"aggregate_per_method.csv header: {header}")
+        out[name] = idx
+    return out
 
 
 def fail(msgs: list[str], msg: str):
@@ -175,15 +195,17 @@ def main():
         else:
             with open(verify_dir / "aggregate_per_method.csv", newline="",
                       encoding="utf-8") as f:
-                got = {r[0]: r for r in list(csv.reader(f))[1:]}
+                _rows = list(csv.reader(f))
+            cols = _resolve_cols(_rows[0])
+            got = {r[0]: r for r in _rows[1:]}
             for method, vals in PUBLISHED.items():
                 if method not in got:
                     fail(errors, f"published check: method {method} absent from recompute")
                     continue
-                for name, col, want in zip(PUB_NAMES, PUB_COLS, vals):
+                for name, want in zip(PUB_NAMES, vals):
                     if want is None:
                         continue
-                    cell = got[method][col]
+                    cell = got[method][cols[name]]
                     if cell in ("—", "N/A"):
                         fail(errors, f"published check: {method}.{name} missing")
                         continue

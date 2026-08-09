@@ -78,6 +78,16 @@ STREAMING = ["prism", "prism_sim3", "prism_sl4", "prism_se3", "laser", "vggtslam
 OFFLINE = ["panovggt", "pi3", "mapanything"]
 GUARD_ARMS = ["prism_nolock", "prism_nostill", "prism_noguards"]
 
+# Fidelity-vs-memory sweep arms. They are the SAME engine at a different operating
+# point, so putting them in the per-method aggregate or the streaming comparison would
+# be double-counting PRISM and would flatter or muddy the headline depending on which
+# way the knob went. They get their own table instead; `prism` is the reference point.
+SWEEP_PREFIXES = ("prism_vox", "prism_depth")
+
+
+def is_sweep(method: str) -> bool:
+    return method.startswith(SWEEP_PREFIXES)
+
 #  The arm named `prism` does NOT mean the same thing in every results era, and
 #  silently mislabelling it would invert the study's conclusion:
 #
@@ -124,6 +134,8 @@ def load_live_runs() -> list[dict]:
         for name in ("perf", "ate", "recon", "metric"):
             f = d / f"{name}.json"
             j[name] = json.loads(f.read_text()) if f.exists() else {}
+        _a = d / "arm_config.json"
+        j["arm"] = json.loads(_a.read_text()) if _a.exists() else {}
         p, a, rc, mt = j["perf"], j["ate"], j["recon"], j["metric"]
         masked, full = rc.get("masked", {}) or {}, rc.get("full_360", {}) or {}
         runs.append({
@@ -133,6 +145,14 @@ def load_live_runs() -> list[dict]:
             "n_frames_input": p.get("n_frames_input"),
             "n_frames_done": p.get("n_frames_done"),
             "oom": p.get("oom"), "failure_kind": p.get("failure_kind"),
+            # Baseline self-reported engagement evidence (currently VGGT-SLAM's submap /
+            # loop-closure counts). A run where the method's own machinery never engaged
+            # is not a valid head-to-head datapoint, so it has to travel with the run.
+            "n_submaps": (j.get("arm") or {}).get("n_submaps"),
+            "n_loop_closures": (j.get("arm") or {}).get("n_loop_closures"),
+            "degenerate": (j.get("arm") or {}).get("degenerate_single_submap"),
+            "voxel_size": (j.get("arm") or {}).get("voxel_size"),
+            "max_depth": (j.get("arm") or {}).get("max_depth"),
             "eff_fps": p.get("eff_fps"),
             "latency_end_to_end_s": p.get("latency_end_to_end_s"),
             "per_window_latency_med_s": (
@@ -260,6 +280,15 @@ def method_block(rs: list[dict]) -> dict:
         "ate_cm": mean([r["ate_rmse_m"] for r in rs]) and mean([r["ate_rmse_m"] for r in rs]) * 100,
         "drift_pct_m": mean([r["rpe_per_m"] for r in rs]) and mean([r["rpe_per_m"] for r in rs]) * 100,
         "masked_f": mean([r["masked_fscore"] for r in rs]),
+        # Accuracy / Completeness / Chamfer, in METRES, masked. These are the metrics
+        # every baseline paper actually reports (VGGT-SLAM Tab.3 ATE/Acc/Compl/Chamfer;
+        # LASER Tab.4 Acc/Comp/NC; VGGT and PanoVGGT Acc/Comp/Overall) and NONE of them
+        # reports an F-score at any threshold — F@5cm is our own addition. Without these
+        # columns our tables share no metric with the literature and cannot be placed
+        # against a single published number.
+        "masked_acc_m": mean([r["masked_accuracy_m"] for r in rs]),
+        "masked_compl_m": mean([r["masked_completeness_m"] for r in rs]),
+        "masked_chamfer_m": mean([r["masked_chamfer_m"] for r in rs]),
         "full360_f": mean([r["full360_fscore"] for r in rs]),
         "map_mb": mean([r["map_size_mb"] for r in rs]),
         "outlier_pct": (mean([r["sor_outlier_pct"] for r in rs]) or 0) * 100
@@ -348,11 +377,13 @@ def main():
                              for s in sorted({r["scene"] for r in bad})) or "—"
         by_motion = ", ".join(f"{mo}:{sum(1 for r in bad if motion_of(r['traj']) == mo)}"
                               for mo in sorted({motion_of(r["traj"]) for r in bad})) or "—"
+        degen = [r for r in tot if r.get("degenerate")]
         comp_rows.append([m, len(tot), len(tot) - len(bad), len(othr), len(oomed),
+                          len(degen),
                           f"{100 * len(bad) / len(tot):.1f}" if tot else "—",
                           by_scene, by_motion])
-    comp_h = ["method", "n_total", "n_complete", "n_failed", "n_oom", "incomplete_pct",
-              "incomplete_by_scene", "incomplete_by_motion"]
+    comp_h = ["method", "n_total", "n_complete", "n_failed", "n_oom", "n_degenerate",
+              "incomplete_pct", "incomplete_by_scene", "incomplete_by_motion"]
     write_csv("completion.csv", comp_h, comp_rows)
     blob["completion"] = [dict(zip(comp_h, r)) for r in comp_rows]
 
@@ -387,12 +418,17 @@ def main():
     blob["capacity"] = [dict(zip(cap_h, r)) for r in cap_rows]
 
     # ---- per-method aggregate (replaces "Global aggregate") ---------------
-    agg = {m: method_block([r for r in agg_set if r["method"] == m]) for m in methods}
+    methods_main = [m for m in methods if not is_sweep(m)]
+    agg = {m: method_block([r for r in agg_set if r["method"] == m])
+           for m in methods_main}
     agg = {m: v for m, v in agg.items() if v["n"]}
-    hdr = ["Method", "N", "ATE cm↓", "drift %/m↓", "Masked F↑", "Full-360 F↑", "Map MB↓",
+    hdr = ["Method", "N", "ATE cm↓", "drift %/m↓", "Acc m↓", "Compl m↓", "Chamfer m↓",
+           "Masked F↑", "Full-360 F↑", "Map MB↓",
            "Outlier %↓", "Prec@2cm %↑", "Scale err %↓", "VRAM peak GB↓",
            "per-win lat s↓", "Eff.FPS↑"]
     rows = [[m, a["n"], fmt(a["ate_cm"], 1, 1), fmt(a["drift_pct_m"], 1, 1),
+             fmt(a["masked_acc_m"], 1, 4), fmt(a["masked_compl_m"], 1, 4),
+             fmt(a["masked_chamfer_m"], 1, 4),
              fmt(a["masked_f"], 1, 3), fmt(a["full360_f"], 1, 3), fmt(a["map_mb"], 1, 1),
              fmt(a["outlier_pct"], 1, 2), fmt(a["prec2cm_pct"], 1, 1),
              fmt(a["scale_err_pct"], 1, 1, na="N/A"), fmt(a["vram_peak_gb"], 1, 2),
@@ -400,6 +436,57 @@ def main():
             for m, a in sorted(agg.items())]
     write_csv("aggregate_per_method.csv", hdr, rows)
     blob["aggregate_per_method"] = agg
+
+    # ---- fidelity vs memory sweep -----------------------------------------
+    #  The operating curve. `prism` is the reference point (the deployed 0.02 m /
+    #  4.5 m config); each sweep arm moves ONE knob. Read it as "what does the knob
+    #  buy", not as a menu to pick the best F from — the baselines get no equivalent
+    #  tuning, so quoting a swept number as the headline would be tuning on the test
+    #  set. Only runs on the reduced sweep scene/trajectory set.
+    sweep_present = [m for m in methods if is_sweep(m)]
+    if sweep_present:
+        sw_rows = []
+        for m in ["prism"] + sorted(sweep_present):
+            rs = [r for r in agg_set if r["method"] == m]
+            if not rs:
+                continue
+            b = method_block(rs)
+            arm = next((r for r in rs if r.get("voxel_size")), {})
+            sw_rows.append([
+                m, b["n"],
+                arm.get("voxel_size", "0.02 (default)"),
+                arm.get("max_depth", "4.5 (default)"),
+                fmt(b["masked_f"], 1, 3), fmt(b["full360_f"], 1, 3),
+                fmt(b["masked_acc_m"], 1, 4), fmt(b["masked_compl_m"], 1, 4),
+                fmt(b["map_mb"], 1, 1), fmt(b["vram_peak_gb"], 1, 2),
+                fmt(b["per_window_lat_s"], 1, 2), fmt(b["outlier_pct"], 1, 2),
+            ])
+        sw_h = ["Arm", "N", "voxel m", "max_depth m", "Masked F↑", "360 F↑",
+                "Acc m↓", "Compl m↓", "Map MB↓", "VRAM peak GB↓", "per-win s↓",
+                "Outlier %↓"]
+        write_csv("voxel_sweep.csv", sw_h, sw_rows)
+        blob["voxel_sweep"] = [dict(zip(sw_h, r)) for r in sw_rows]
+    else:
+        sw_rows, sw_h = [], []
+
+    # ---- literature-comparable recon table --------------------------------
+    #  Column semantics deliberately match the published baseline tables so our numbers
+    #  can be placed next to theirs: ATE (m), Accuracy (m), Completeness (m), Chamfer
+    #  (m) -- exactly VGGT-SLAM's Table 3. No thresholded F-score here on purpose.
+    #  Caveat that belongs with any such comparison: they measure on real captures
+    #  (TUM / 7-Scenes / ScanNet), we measure on rendered Replica with co-visibility
+    #  masking and ICP refinement, so these are NOT drop-in comparable -- they are
+    #  comparable in KIND, which is the most that can honestly be claimed.
+    lit_rows = []
+    for m, a in sorted(agg.items()):
+        lit_rows.append([m, a["n"],
+                         fmt(a["ate_cm"] and a["ate_cm"] / 100.0, 1, 4),
+                         fmt(a["masked_acc_m"], 1, 4),
+                         fmt(a["masked_compl_m"], 1, 4),
+                         fmt(a["masked_chamfer_m"], 1, 4)])
+    lit_h = ["Method", "N", "ATE m↓", "Accuracy m↓", "Completeness m↓", "Chamfer m↓"]
+    write_csv("recon_literature.csv", lit_h, lit_rows)
+    blob["recon_literature"] = [dict(zip(lit_h, r)) for r in lit_rows]
 
     # ---- streaming vs offline (native modes never mixed) ------------------
     def subset_table(names, fname, key):
@@ -580,7 +667,7 @@ def main():
 
     ref = "prism_sim3" if any(r["method"] == "prism_sim3" for r in agg_set) else "prism"
     pair_rows = []
-    for other in [m for m in methods if m != ref]:
+    for other in [m for m in methods_main if m != ref]:
         idx_a = {(r["scene"], r["traj"]): r for r in agg_set if r["method"] == ref}
         idx_b = {(r["scene"], r["traj"]): r for r in agg_set if r["method"] == other}
         shared = sorted(set(idx_a) & set(idx_b))
@@ -637,8 +724,13 @@ def main():
         "## Completion / failure rate\n",
         "*`N oom` is counted separately from `N failed`: an out-of-memory run is a "
         "recorded capacity result, not a defect.*\n",
-        md_table(["Method", "N total", "N complete", "N failed", "N OOM", "Incomplete %",
-                  "By scene", "By motion"], comp_rows), "",
+        "> **`N degenerate`** counts runs where the method's own machinery never "
+        "engaged — currently VGGT-SLAM runs that built a single submap, so no SL(4) "
+        "registration and no loop closure ran and the result is plain feed-forward "
+        "VGGT. Those runs are NOT a valid head-to-head datapoint; if this column is "
+        "non-zero, say so or exclude them before claiming a win over that baseline.\n",
+        md_table(["Method", "N total", "N complete", "N failed", "N OOM", "N degenerate",
+                  "Incomplete %", "By scene", "By motion"], comp_rows), "",
         "## Capacity — how long a sequence each method survives\n",
         "*The deployability result. Full-batch methods ingest every view at once, so "
         "their memory grows with sequence length until it doesn't fit; a bounded-memory "
@@ -648,6 +740,23 @@ def main():
                   "Shortest OOM (frames)", "Max peak VRAM GB"], cap_rows), "",
         "## Per-method aggregate (clean, seeded, complete runs only)\n",
         md_table(hdr, rows), "",
+        *( ["## Fidelity vs memory — the engine's operating curve\n",
+             "*PRISM is the only method here with a tunable memory/fidelity trade; the "
+             "feed-forward baselines have exactly one operating point, at 25-45 GB. "
+             "`prism` is the deployed reference (0.02 m voxel, 4.5 m max_depth) and each "
+             "arm moves one knob. Report the CURVE — quoting the best swept F as the "
+             "headline would be tuning on the test set, since no baseline gets "
+             "equivalent tuning. Reduced scene/trajectory set, so N is small.*\n",
+             md_table(sw_h, sw_rows), ""] if sw_rows else [] ),
+        "## Reconstruction in literature units (metres, no threshold)\n",
+        "*Column semantics match the published baseline tables (VGGT-SLAM Tab. 3 is "
+        "ATE / Acc / Compl / Chamfer in metres; LASER, VGGT and PanoVGGT report "
+        "Acc / Comp / Overall). **No baseline paper reports an F-score at any "
+        "threshold** — F@5cm is our addition, so these are the only columns that can be "
+        "placed beside a published number. They are comparable in KIND only: the "
+        "published numbers come from real captures (TUM / 7-Scenes / ScanNet), ours "
+        "from rendered Replica with co-visibility masking and ICP refinement.*\n",
+        md_table(lit_h, lit_rows), "",
         "## Streaming comparison (native streaming mode; throughput included)\n",
         md_table(stream_h, stream_r), "",
         "## Full-batch offline upper bound (ingest all views at once)\n",

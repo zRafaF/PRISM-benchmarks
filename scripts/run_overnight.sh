@@ -75,8 +75,10 @@ ms, ab = c.get('methods', []), c.get('ablations', [])
 core  = [m['name'] for m in ms]
 align = [m['name'] for m in ab if m.get('align_group')]
 vslam = [m['name'] for m in ab if m.get('runner') == 'vggtslam']
+sweep = [m['name'] for m in ab if m.get('role') == 'sweep']
 guard = [m['name'] for m in ab
-         if not m.get('align_group') and m.get('runner') != 'vggtslam']
+         if not m.get('align_group') and m.get('runner') != 'vggtslam'
+         and m.get('role') != 'sweep']
 ds     = c['datasets'][c['datasets']['active'][0]]
 scenes = list(ds.get('scenes') or [])
 seeds  = list(c['datasets'].get('seeds') or [c['datasets'].get('seed')])
@@ -87,6 +89,7 @@ with open(sys.argv[1], 'w') as f:
     put('ALIGN',  ' '.join(align))
     put('VSLAM',  ' '.join(vslam))
     put('GUARD',  ' '.join(guard))
+    put('SWEEP',  ' '.join(sweep))
     put('SCENES_FROZEN', ' '.join(scenes))
     put('TRAJS',  ' '.join(trajs))
     put('NSEEDS', len(seeds))
@@ -103,7 +106,7 @@ PY
 [ -z "${ALIGN:-}" ] && log "WARNING: no alignment-group ablation arms found in config.ablations"
 [ -z "${VSLAM:-}" ] && log "WARNING: no VGGT-SLAM fairness arms found in config.ablations"
 
-ALL_METHODS="$CORE $ALIGN $VSLAM $GUARD"
+ALL_METHODS="$CORE $ALIGN $VSLAM $GUARD $SWEEP"
 N_METHODS=$(echo $ALL_METHODS | wc -w)
 N_TRAJS=$(echo $TRAJS | wc -w)
 N_SCENES=$(echo ${SCENES_FROZEN:-} | wc -w)
@@ -125,6 +128,7 @@ cat <<PLAN
       align  : ${ALIGN:-<none>}
       vggt   : ${VSLAM:-<none>}
       guards : ${GUARD:-<none>}
+      sweep  : ${SWEEP:-<none>}  (voxel/max_depth curve; reduced scene+traj set, see Phase 5)
 
   TOTAL PLANNED RUNS : $(( ${N_SCENES:-0} * N_TRAJS * N_METHODS ))   (scenes x trajs x methods)
       ... but the guard arms only run on the stress trajectories, so the real
@@ -290,6 +294,46 @@ for t in $TRAJS; do
   esac
 done
 checkpoint P4
+
+# ── Phase 5: fidelity-vs-memory sweep (PRISM only, REDUCED set) ─────────────
+# Deliberately not the full matrix: the sweep answers "what does the voxel/max_depth
+# knob buy", which needs a few points on one representative scene, not 6 scenes x 12
+# trajectories. Running it across everything would roughly double the night for no
+# extra information. 5 arms x SWEEP_TRAJS on SWEEP_SCENE ~= 30 runs.
+SWEEP_SCENE="${SWEEP_SCENE:-}"
+if [ -z "$SWEEP_SCENE" ]; then
+  # a mid-size scene: skip the two pinned small rooms if there is anything else
+  SWEEP_SCENE=$(echo "$SCENES_AFTER" | tr ' ' '\n' | grep -vE '^(room_0|office_0)$' | head -1)
+  [ -z "$SWEEP_SCENE" ] && SWEEP_SCENE=$(echo "$SCENES_AFTER" | awk '{print $1}')
+fi
+SWEEP_TRAJS="${SWEEP_TRAJS:-}"
+if [ -z "$SWEEP_TRAJS" ]; then
+  if [ "$NSEEDS" -le 1 ]; then
+    SWEEP_TRAJS="synthetic_2.0hz synthetic_5.0hz loop_2.0hz"
+  else
+    SWEEP_TRAJS="synthetic_2.0hz_s0 synthetic_2.0hz_s1 synthetic_5.0hz_s0 loop_2.0hz_s0"
+  fi
+fi
+if [ -n "${SWEEP:-}" ]; then
+  log "### Phase 5: fidelity/memory sweep — scene=$SWEEP_SCENE  trajs=$SWEEP_TRAJS"
+  log "###          arms: $SWEEP  (plus 'prism' itself as the 0.02 m / 4.5 m reference)"
+  for t in $SWEEP_TRAJS; do
+    for m in $SWEEP; do
+      RUN_N=$((RUN_N + 1))
+      log ">>> RUN [$RUN_N]  method=$m  traj=$t  scene=$SWEEP_SCENE  (sweep)"
+      if $RUN adapters/run.py --method "$m" --config config.yaml \
+             --scenes "$SWEEP_SCENE" --traj "$t"; then
+        RUN_OK=$((RUN_OK + 1)); note "ok   $t  $m (sweep)"
+      else
+        RUN_FAIL=$((RUN_FAIL + 1)); note "FAIL $t  $m (sweep)"
+        log "!!! FAILED sweep method=$m traj=$t — continuing"
+      fi
+    done
+  done
+  checkpoint P5-sweep
+else
+  log "### Phase 5: no sweep arms configured — skipping"
+fi
 
 # ── Stage 3: standardized snapshots, all co-visibility mask variants ────────
 log "### Stage 3: snapshots (primary trajectories; full/covis/masked variants)"

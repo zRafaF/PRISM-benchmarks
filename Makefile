@@ -264,6 +264,25 @@ verify-clean: setup
 	@echo ">> verifying the clean aggregate contains no contaminated runs"
 	$(ORCH_RUN) eval/verify_clean.py --run-id $(RUN_ID)
 
+# ── Fidelity-vs-memory sweep (PRISM only) ────────────────────────────────────
+# Runs automatically as Phase 5 of the overnight; this target re-runs it standalone.
+# PRISM-only by construction: the overrides are env vars read solely by prism_runner,
+# because cfg.engine.voxel_size is ALSO used by panovggt/pi3 for their fusion dedup.
+SWEEP_SCENE ?=
+SWEEP_TRAJS ?=
+ablation-voxel: setup
+	@echo ">> fidelity/memory sweep: voxel + max_depth (PRISM only)"
+	@arms=$$(uv run python -c "from bench.config import load_config; \
+	  print(' '.join(m['name'] for m in load_config('$(CONFIG)').get('ablations',[]) \
+	  if m.get('role')=='sweep'))"); \
+	 scene="$(SWEEP_SCENE)"; trajs="$(SWEEP_TRAJS)"; \
+	 [ -z "$$trajs" ] && trajs="synthetic_2.0hz_s0 synthetic_2.0hz_s1 synthetic_5.0hz_s0 loop_2.0hz_s0"; \
+	 echo "   arms : $$arms"; echo "   scene: $${scene:-<all frozen>}"; echo "   trajs: $$trajs"; \
+	 for t in $$trajs; do for m in $$arms; do \
+	   $(ORCH_RUN) adapters/run.py --method $$m --config $(CONFIG) --scenes "$$scene" --traj $$t || true; \
+	 done; done
+	@echo ">> now: make report-clean  (adds results/report_clean/voxel_sweep.csv)"
+
 # ── Capacity / OOM sweep — where each method actually runs out of memory ─────
 # This is the PRIMARY source of the OOM evidence, deliberately separated from the main
 # matrix. The matrix runs at a fixed n_frames (300) and records any natural OOM, but

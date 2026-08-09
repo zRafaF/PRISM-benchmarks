@@ -51,10 +51,22 @@ def main():
     prism_dir = repo_root / "submodules" / "PRISM-VGGT"
     config_path = prism_dir / "third_party" / "PanoVGGT" / "training" / "config" / "default.yaml"
     perception = PanoVGGTBackend(config_path=str(config_path), weights_path=str(ckpt))
+    # Voxel / max-depth overrides for the fidelity-vs-memory sweep. These are read
+    # ONLY here, never from cfg["engine"], because panovggt_runner.py and pi3_runner.py
+    # use cfg["engine"]["voxel_size"] for their OWN fusion dedup — sweeping the config
+    # key would silently re-tune the baselines alongside PRISM and invalidate the
+    # comparison. Env vars keep the sweep strictly PRISM-side.
+    import os as _os
+    _voxel = float(_os.environ.get("PRISM_VOXEL_SIZE", eng["voxel_size"]))
+    _maxd = float(_os.environ.get("PRISM_MAX_DEPTH", eng["max_depth"]))
+    if _voxel != eng["voxel_size"] or _maxd != eng["max_depth"]:
+        print(f"[prism_runner] SWEEP override: voxel_size={_voxel} (cfg "
+              f"{eng['voxel_size']}), max_depth={_maxd} (cfg {eng['max_depth']})")
+
     engine = StreamingWindowEngine(
         perception,
-        voxel_size=eng["voxel_size"],
-        max_depth=eng["max_depth"],
+        voxel_size=_voxel,
+        max_depth=_maxd,
         face_size=eng["face_size"],
     )
     engine.processing_mode = eng.get("processing_mode", "parallel")
@@ -100,6 +112,12 @@ def main():
     except Exception:
         pass
     ckpt_mb = ckpt.stat().st_size / 1e6 if ckpt.exists() else 0.0
+    import json as _json
+    (out / "arm_config.json").write_text(_json.dumps(
+        {"voxel_size": _voxel, "max_depth": _maxd,
+         "window_size": ws, "overlap": ov,
+         "is_sweep_arm": bool(_voxel != eng["voxel_size"] or _maxd != eng["max_depth"])},
+        indent=2))
     _io.write_runner_perf(out, per_window_latency_s=per_window,
                           latency_end_to_end_s=wall, ckpt_size_mb=ckpt_mb, extra=extra)
     print(f"[prism_runner] {len(poses)} poses, {len(pts)} pts, {len(per_window)} windows, {wall:.1f}s")

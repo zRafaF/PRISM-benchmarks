@@ -220,6 +220,22 @@ ablations:
   #      Named arms, not a mutable global, so a results tree is always self-describing.
   - {name: vggtslam_noloop, camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "0"}}
   - {name: vggtslam_loop,   camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "1"}}
+  #  (d) FIDELITY-vs-MEMORY SWEEP (PRISM only). The engine's voxel size and max_depth
+  #      are the two knobs that trade map fidelity against memory, and PRISM is the only
+  #      method here that HAS such a knob — the feed-forward baselines have exactly one
+  #      operating point, at 25-45 GB. So this is not a defence against "are you
+  #      handicapped by a 2 cm voxel", it is a result: a bounded-memory engine exposes an
+  #      operating curve. Overrides go through PRISM_VOXEL_SIZE / PRISM_MAX_DEPTH, read
+  #      only by prism_runner, because cfg.engine.voxel_size is ALSO used by
+  #      panovggt/pi3 for their fusion dedup and sweeping it would move the baselines.
+  #      `prism` itself (voxel 0.02, max_depth 4.5) is the reference point on the curve.
+  #      These run on a REDUCED scene/traj set (see scripts/run_overnight.sh Phase 5),
+  #      not the whole matrix, and are excluded from the headline tables.
+  - {name: prism_vox010,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.01"}}
+  - {name: prism_vox040,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.04"}}
+  - {name: prism_vox080,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.08"}}
+  - {name: prism_depth30, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_MAX_DEPTH: "3.0"}}
+  - {name: prism_depth60, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_MAX_DEPTH: "6.0"}}
   #      A matched-window arm kept for the ablation story: same submap size as OUR
   #      engine window (16). It is NOT the published configuration — cite vggtslam
   #      (w=32) for the head-to-head and use this only to show the effect of w.
