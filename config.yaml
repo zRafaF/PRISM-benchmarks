@@ -116,14 +116,31 @@ trajectories:
   n_frames: 300
   # RATE SWEEP: one trajectory per capture rate -> traj id "synthetic_<rate>hz".
   # Low rate = sparse, wide-baseline (favours feed-forward); high rate = dense overlap
-  # (favours streaming, and pushes full-batch toward the VRAM ceiling). Covers the spectrum.
+  # (favours streaming, and pushes full-batch toward the VRAM ceiling).
   # baseline (inter-frame distance) = speed/rate — THIS is what drives quality, not FPS:
-  #   0.5 Hz -> 1.00 m,  2.0 Hz -> 0.25 m,  5.0 Hz -> 0.10 m  (at speed 0.5 m/s)
-  rates_hz: [0.5, 2.0, 5.0]  # SMOOTH baseline gets the full rate sweep
+  #   2.0 Hz -> 0.25 m,  5.0 Hz -> 0.10 m  (at speed 0.5 m/s)
+  #
+  # 0.5 Hz REMOVED after the 2026-08-09 run. It was not measuring capture rate, it was
+  # measuring near-absence of data: a 1.0 m spacing over a room-sized circuit produced
+  # 6-to-21-frame sequences. Below PRISM's 16-frame window the alignment arms are inert
+  # (PRISM_ALIGN is only consulted from the 2nd window), and three office_0 runs failed
+  # Umeyama outright with "Degenerate covariance rank". Nothing about a method was
+  # observable there. If the wide-baseline regime is wanted back, get it by raising the
+  # walking speed at a fixed rate, not by starving the sequence.
+  rates_hz: [2.0, 5.0]       # SMOOTH baseline gets the rate sweep
   synthetic_spline:
     speed_mps: 0.5           # constant walking speed; inter-frame baseline = speed/rate
     min_clearance_m: 0.30    # collision-free sampling against the mesh occupancy
     loop: false
+    # ── Reaching n_frames (see dataset/trajectories.py::synthetic_spline) ──
+    # Sequence length is path_len * rate / speed, so n_frames used to only TRUNCATE.
+    # These are the levers that lengthen the path, cheapest distortion first.
+    n_waypoints: 12          # lever 1: a longer circuit (was 8) — costs nothing
+    min_span_m: 3.0          # waypoints must SPAN the room, not cluster (office_0 guard)
+    max_laps: 4              # lever 2: repeat the circuit; keeps the baseline exact,
+                             #   but adds revisits — say so when reporting loop closure
+    min_speed_mps: 0.15      # lever 3: slow the walk; changes the baseline, last resort
+    min_frames: 32           # hard floor — refuse to emit a stationary "trajectory"
 
   # NEW trajectory families for the big benchmark (each renders as '<kind>_<rate>hz[_sN]').
   # They run at 2 Hz only (the new axis is the MOTION pattern, not the rate) to bound

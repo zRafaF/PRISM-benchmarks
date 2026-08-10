@@ -92,6 +92,22 @@ if [ "$SMOKE_KEEP" != "1" ]; then
   rm -rf results/* 2>/dev/null || true
 fi
 
+# ── pre-flight over the FULL scene list ────────────────────────────────────
+# The smoke deliberately runs ONE scene, so on its own it can never surface a
+# scene-specific failure — and that is exactly what cost the 2026-08-09 night: room_2
+# could not produce a trajectory at all, office_0 could only produce a 0.6 m one, and
+# the smoke's room_0 was fine. check-scenes builds the waypoints + spline for every
+# frozen scene without rendering anything, so it costs seconds and covers all of them.
+# Run WITHOUT the smoke overlay, or it would only ever check the smoke's own scene.
+say "pre-flight: every FROZEN scene x trajectory buildable (full config, no rendering)"
+if ( unset PRISM_CONFIG_OVERLAY; make check-scenes ) >>"$LOG" 2>&1; then
+  echo "    ok: pre-flight (all scenes can produce all trajectories)" | tee -a "$LOG"
+else
+  echo "    FAILED: pre-flight — a scene cannot produce a usable trajectory (see $LOG)" \
+    | tee -a "$LOG"
+  FAILED_STAGES+=("scene pre-flight")
+fi
+
 # ── dataset ────────────────────────────────────────────────────────────────
 MK=(SCENES="$SMOKE_SCENE" TRAJ="$SMOKE_TRAJ")
 stage "render (pano + pinhole + GT)"    make render "${MK[@]}"

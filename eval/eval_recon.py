@@ -34,7 +34,21 @@ def _export_base(dataset, scene, traj) -> Path:
 
 
 def _metrics(pred_pts, gt_pts, thr, clean=None):
+    """Reconstruction metrics for one cloud pair.
+
+    Returns None when either side is EMPTY. That happens for real: a run whose
+    predicted cloud lands entirely outside the co-visibility frustum leaves
+    `pred_pts[keep_pred]` with zero rows, and every statistic below is undefined
+    on an empty array (`np.percentile` raises IndexError, `.mean()` warns and
+    returns nan). Returning None instead of raising is what keeps ONE degenerate
+    run from taking down the whole eval pass — which is exactly what happened on
+    2026-08-09, where `vggtslam/office_0/synthetic_0.5hz_s1` (co-vis kept 0 of
+    198881 pred points) crashed eval_recon and cost 196 of 590 runs their
+    reconstruction metrics.
+    """
     import open3d as o3d
+    if len(pred_pts) == 0 or len(gt_pts) == 0:
+        return None
     pred = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pred_pts))
     gt = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(gt_pts))
     d_pred_gt = np.asarray(pred.compute_point_cloud_distance(gt))   # accuracy
@@ -155,49 +169,101 @@ def main():
     icp_cfg = cfg["eval"].get("icp", {"enabled": True, "max_dist_m": 0.15})
     clean = cfg["eval"].get("cleanliness", {"noise_threshold_m": 0.10, "precision_threshold_m": 0.02})
 
-    for cloud in (REPO_ROOT / "results").glob("*/*/*/*/*/cloud.ply"):
-        import open3d as o3d
-        method, dataset, scene, traj, variant = _run_meta(cloud.parent)
-        pred_pts = np.asarray(o3d.io.read_point_cloud(str(cloud)).points)
-        print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}")
-        print(f"[eval_recon]   pred cloud: {len(pred_pts)} pts "
-              f"bbox={np.round(pred_pts.min(0),2)}..{np.round(pred_pts.max(0),2)}"
-              if len(pred_pts) else "[eval_recon]   pred cloud EMPTY")
-        if len(pred_pts) == 0:
+    n_ok = n_skip = n_err = 0
+    # sorted() so the traversal order is reproducible; Path.glob returns raw
+    # directory order, which made the 2026-08-09 crash cut an arbitrary — and
+    # therefore unexplainable — subset of methods out of the results.
+    clouds = sorted((REPO_ROOT / "results").glob("*/*/*/*/*/cloud.ply"))
+    print(f"[eval_recon] {len(clouds)} cloud(s) to evaluate")
+    for cloud in clouds:
+        try:
+            res = _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean)
+        except Exception as exc:                      # noqa: BLE001 — see below
+            # One bad run must never abort the pass. Before this guard, a single
+            # empty co-visibility mask killed eval_recon and 196 of 590 runs
+            # silently lost their reconstruction metrics, because the overnight
+            # driver calls this script with `|| true`.
+            n_err += 1
+            print(f"[eval_recon] !!! ERROR on {cloud.parent}: "
+                  f"{type(exc).__name__}: {exc}")
             continue
-        gt_pts = _gt_cloud(dataset, scene, traj)
-        print(f"[eval_recon]   GT cloud:   {len(gt_pts)} pts "
-              f"bbox={np.round(gt_pts.min(0),2)}..{np.round(gt_pts.max(0),2)}")
+        if res:
+            n_ok += 1
+        else:
+            n_skip += 1
+    print(f"\n[eval_recon] SUMMARY: {n_ok} evaluated, {n_skip} skipped "
+          f"(empty cloud), {n_err} errored")
+    if n_err:
+        print(f"[eval_recon] !!! {n_err} run(s) errored — they have NO recon.json "
+              f"and will be counted as incomplete in the aggregate.")
+        return 1
+    return 0
 
-        # register pred -> GT frame using the trajectory alignment (critical!)
-        gt_tum = _export_base(dataset, scene, traj) / "poses_gt.tum"
-        pred_tum = cloud.parent / "poses.tum"
-        pred_pts, _sim3 = _align_pred_to_gt(pred_pts, pred_tum, gt_tum, correct_scale)
-        if icp_cfg.get("enabled", True) and len(pred_pts) and len(gt_pts):
-            pred_pts = _icp_refine(pred_pts, gt_pts, icp_cfg.get("max_dist_m", 0.15))
 
-        pin_variants = list((_export_base(dataset, scene, traj) / "pinhole").glob("*"))
-        # Cloud size / compactness (on the saved cloud; voxel-deduped identically for all).
-        out = {"threshold_m": thr,
-               "point_count": int(len(pred_pts)),
-               "map_size_mb": round(cloud.stat().st_size / 1e6, 2),
-               "sor_outlier_pct": _statistical_outlier_pct(pred_pts)}
-        print(f"[eval_recon]   statistical-outlier (fluffiness) = {out['sor_outlier_pct']*100:.1f}%")
-        if pin_variants:
-            keep_pred = build_mask(pred_pts, pin_variants[0], cfg)
-            keep_gt = build_mask(gt_pts, pin_variants[0], cfg)
-            print(f"[eval_recon]   co-vis mask: pred {keep_pred.sum()}/{len(keep_pred)}, "
-                  f"GT {keep_gt.sum()}/{len(keep_gt)} points kept")
-            out["masked"] = _metrics(pred_pts[keep_pred], gt_pts[keep_gt], thr, clean)
-        out["full_360"] = _metrics(pred_pts, gt_pts, thr, clean)
+def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
+    """Evaluate a single cloud. Returns False if there was nothing to score."""
+    import open3d as o3d
+    method, dataset, scene, traj, variant = _run_meta(cloud.parent)
+    pred_pts = np.asarray(o3d.io.read_point_cloud(str(cloud)).points)
+    print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}")
+    print(f"[eval_recon]   pred cloud: {len(pred_pts)} pts "
+          f"bbox={np.round(pred_pts.min(0),2)}..{np.round(pred_pts.max(0),2)}"
+          if len(pred_pts) else "[eval_recon]   pred cloud EMPTY")
+    if len(pred_pts) == 0:
+        return False
+    gt_pts = _gt_cloud(dataset, scene, traj)
+    print(f"[eval_recon]   GT cloud:   {len(gt_pts)} pts "
+          f"bbox={np.round(gt_pts.min(0),2)}..{np.round(gt_pts.max(0),2)}")
 
-        (cloud.parent / "recon.json").write_text(json.dumps(out, indent=2))
-        m = out.get("masked", out["full_360"])
-        print(f"[eval_recon]   -> masked F@{int(thr*100)}cm={m['fscore']:.3f} "
-              f"acc={m['accuracy_m']*100:.1f}cm compl={m['completeness_m']*100:.1f}cm "
-              f"noise={m.get('noise_frac',0)*100:.1f}% pts={out['point_count']} "
-              f"size={out['map_size_mb']}MB")
+    # register pred -> GT frame using the trajectory alignment (critical!)
+    gt_tum = _export_base(dataset, scene, traj) / "poses_gt.tum"
+    pred_tum = cloud.parent / "poses.tum"
+    pred_pts, _sim3 = _align_pred_to_gt(pred_pts, pred_tum, gt_tum, correct_scale)
+    if icp_cfg.get("enabled", True) and len(pred_pts) and len(gt_pts):
+        pred_pts = _icp_refine(pred_pts, gt_pts, icp_cfg.get("max_dist_m", 0.15))
+
+    pin_variants = list((_export_base(dataset, scene, traj) / "pinhole").glob("*"))
+    # Cloud size / compactness (on the saved cloud; voxel-deduped identically for all).
+    out = {"threshold_m": thr,
+           "point_count": int(len(pred_pts)),
+           "map_size_mb": round(cloud.stat().st_size / 1e6, 2),
+           "sor_outlier_pct": _statistical_outlier_pct(pred_pts)}
+    print(f"[eval_recon]   statistical-outlier (fluffiness) = {out['sor_outlier_pct']*100:.1f}%")
+    if pin_variants:
+        keep_pred = build_mask(pred_pts, pin_variants[0], cfg)
+        keep_gt = build_mask(gt_pts, pin_variants[0], cfg)
+        print(f"[eval_recon]   co-vis mask: pred {keep_pred.sum()}/{len(keep_pred)}, "
+              f"GT {keep_gt.sum()}/{len(keep_gt)} points kept")
+        masked = _metrics(pred_pts[keep_pred], gt_pts[keep_gt], thr, clean)
+        if masked is None:
+            # The co-visibility mask kept nothing on one side. That is a real
+            # result about the run (the prediction lies entirely outside the
+            # frustum union), not an error — record it and score full-360 only,
+            # so downstream code can tell "unevaluable" from "scored zero".
+            out["masked_unevaluable"] = True
+            out["masked_kept_pred"] = int(keep_pred.sum())
+            out["masked_kept_gt"] = int(keep_gt.sum())
+            print("[eval_recon]   WARN: co-vis mask kept 0 points on one side — "
+                  "masked metrics UNEVALUABLE for this run (full-360 still scored)")
+        else:
+            out["masked"] = masked
+    full = _metrics(pred_pts, gt_pts, thr, clean)
+    if full is None:
+        print("[eval_recon]   WARN: empty cloud after alignment — nothing scored")
+        return False
+    out["full_360"] = full
+
+    (cloud.parent / "recon.json").write_text(json.dumps(out, indent=2))
+    m = out.get("masked", out["full_360"])
+    print(f"[eval_recon]   -> masked F@{int(thr*100)}cm={m['fscore']:.3f} "
+          f"acc={m['accuracy_m']*100:.1f}cm compl={m['completeness_m']*100:.1f}cm "
+          f"noise={m.get('noise_frac',0)*100:.1f}% pts={out['point_count']} "
+          f"size={out['map_size_mb']}MB")
+    return True
 
 
 if __name__ == "__main__":
-    main()
+    # Non-zero when any run errored, so a caller (or `make eval-recon`) can tell
+    # "everything scored" from "the pass limped". The overnight driver still uses
+    # `|| true` to keep going, but now prints a loud failure banner.
+    sys.exit(main())

@@ -49,32 +49,88 @@ def resample_path(poses: np.ndarray, n_frames: int) -> np.ndarray:
 
 def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
                      speed_mps: float = 0.5, rate_hz: float = 2.0,
-                     max_frames: int = 200, close_loop: bool = False) -> np.ndarray:
+                     max_frames: int = 200, close_loop: bool = False,
+                     target_frames: int | None = None, max_laps: int = 4,
+                     min_speed_mps: float = 0.15,
+                     min_frames: int = 32) -> np.ndarray:
     """Variant B: constant-velocity walkthrough on a Catmull-Rom spline.
 
     Frames are sampled by ARC LENGTH at spacing = speed/rate (so they simulate a
     capture at `rate_hz` while moving at `speed_mps` — the real Theta-X operating
-    point), capped at `max_frames`. This makes the inter-frame baseline physical and
-    identical for every method (they all consume these same frames). Returns
-    (n,4,4) camera-to-world poses.
+    point). This makes the inter-frame baseline physical and identical for every
+    method (they all consume these same frames). Returns (n,4,4) c2w poses.
+
+    REACHING A FRAME TARGET
+    -----------------------
+    Frame count is `path_len * rate / speed`, so `max_frames` could only ever
+    TRUNCATE — it could not lengthen anything. That is why raising `n_frames` from
+    200 to 300 for the 2026-08-09 run changed nothing: real sequences came out at
+    4 to 207 frames, no method ever reached its VRAM ceiling, and the whole
+    capacity/OOM table came back empty (0 OOM, longest completed 207).
+
+    `target_frames` fixes that by extending the PATH until the target is reachable,
+    using three levers in the order agreed with the user — cheapest distortion first:
+
+      1. **A longer circuit.** Handled upstream in `free_space_waypoints`, which now
+         requires the waypoint set to span the room instead of accepting a cluster.
+      2. **Laps.** Repeat the circuit (up to `max_laps`). Keeps speed and therefore
+         the inter-frame baseline exactly at the configured operating point, which is
+         what the rate sweep is measuring. Cost: the path revisits, which genuinely
+         helps loop-closure methods — state it in the paper.
+      3. **A slower walk.** Only if laps run out. Shrinks the baseline, so it changes
+         the difficulty regime; floored at `min_speed_mps` and reported explicitly.
 
     ``close_loop=True`` appends the first waypoints to the end so the path returns to
     (and re-observes) its start — the loop-closure stress test: streaming methods with
     no loop closure (PRISM/LASER) reveal uncorrected drift, while VGGT-SLAM's loop
     closure can fire. The revisit is what makes SL(4) projective drift visible.
     """
-    wp = np.asarray(waypoints, dtype=np.float64)
-    if len(wp) < 4:
+    wp0 = np.asarray(waypoints, dtype=np.float64)
+    if len(wp0) < 4:
         raise ValueError("need >= 4 waypoints for Catmull-Rom")
-    if close_loop:
-        # Return to the start (and one past it) so the tail overlaps the head.
-        wp = np.concatenate([wp, wp[:2]], axis=0)
-    dense = _catmull_rom(wp, 4000)                       # dense polyline
-    seg = np.linalg.norm(np.diff(dense, axis=0), axis=1)
-    cum = np.concatenate([[0.0], np.cumsum(seg)])
-    total_len = float(cum[-1])
+
+    def _polyline(wp):
+        dense = _catmull_rom(wp, 4000)
+        seg = np.linalg.norm(np.diff(dense, axis=0), axis=1)
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        return dense, cum, float(cum[-1])
+
+    wp = np.concatenate([wp0, wp0[:2]], axis=0) if close_loop else wp0
+    dense, cum, total_len = _polyline(wp)
+
+    target = int(target_frames) if target_frames else int(max_frames)
+    target = min(target, int(max_frames))
     spacing = max(speed_mps / max(rate_hz, 1e-6), 1e-3)
-    n = min(int(max_frames), max(4, int(total_len / spacing) + 1))
+    laps, eff_speed = 1, float(speed_mps)
+
+    need_len = (target - 1) * spacing
+    if total_len < need_len and target_frames:
+        # Lever 2 — laps.
+        laps = min(int(max_laps), int(np.ceil(need_len / max(total_len, 1e-6))))
+        if laps > 1:
+            wp = np.concatenate([wp0] * laps + ([wp0[:2]] if close_loop else []), axis=0)
+            dense, cum, total_len = _polyline(wp)
+        # Lever 3 — slow down (only if laps were not enough).
+        if total_len < need_len:
+            eff_speed = max(min_speed_mps, total_len * rate_hz / max(target - 1, 1))
+            spacing = max(eff_speed / max(rate_hz, 1e-6), 1e-3)
+
+    n = min(int(max_frames), int(total_len / spacing) + 1)
+    if target_frames:
+        # Truncate to the target so every scene yields the SAME sequence length.
+        # Without this, laps overshoot by a whole circuit and scenes get 168 vs 300
+        # frames, which makes per-scene numbers non-comparable and quietly reintroduces
+        # the unequal-N problem at the trajectory level.
+        n = min(n, target)
+    if n < min_frames:
+        # Do NOT silently emit a 4-frame "trajectory". On 2026-08-09 the old
+        # `max(4, ...)` floor turned office_0's 0.6 m waypoint cluster into twelve
+        # 4-to-8-frame sequences whose ATEs were degenerate-Umeyama artifacts, and
+        # ~65 runs were spent on them before anyone could tell.
+        raise RuntimeError(
+            f"trajectory too short: path_len={total_len:.1f}m at spacing={spacing:.2f}m "
+            f"gives only {n} frames (minimum {min_frames}). The waypoint circuit does "
+            f"not cover enough of this scene — check the [waypoints] debug above.")
     targets = np.minimum(np.arange(n) * spacing, total_len)
 
     xy = np.empty((n, 2))
@@ -90,8 +146,19 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
         nxt = eyes[min(i + 1, n - 1)]
         tgt = nxt if not np.allclose(nxt, eyes[i]) else eyes[i] + np.array([1.0, 0, 0])
         poses[i] = _look_at(eyes[i], tgt)
+    lever = []
+    if laps > 1:
+        lever.append(f"{laps} laps")
+    if abs(eff_speed - speed_mps) > 1e-6:
+        lever.append(f"speed {speed_mps}->{eff_speed:.2f} m/s")
+    lev = f"  [lengthened: {', '.join(lever)}]" if lever else ""
     print(f"[traj] path_len={total_len:.1f}m spacing={spacing:.2f}m "
-          f"(speed {speed_mps} m/s @ {rate_hz} Hz) -> {n} frames (cap {max_frames})")
+          f"(speed {eff_speed:.2f} m/s @ {rate_hz} Hz) -> {n} frames "
+          f"(target {target}, cap {max_frames}){lev}")
+    if target_frames and n < target:
+        print(f"[traj] WARNING: {n} frames < target {target} even after "
+              f"{laps} lap(s) at {eff_speed:.2f} m/s — this scene cannot support the "
+              f"target length; capacity/OOM claims must not rely on it.")
     return poses
 
 
@@ -111,7 +178,7 @@ def stop_and_go(waypoints: np.ndarray, camera_height: float = 1.7,
     total_dwell = max(0, n_stops) * dwell_frames
     moving_cap = max(4, int(max_frames) - total_dwell)
     poses = synthetic_spline(waypoints, camera_height, speed_mps, rate_hz,
-                             max_frames=moving_cap)
+                             max_frames=moving_cap, target_frames=moving_cap)
     n = len(poses)
     if n < 3 or n_stops < 1:
         return poses
@@ -195,9 +262,64 @@ def clean_floor_patch(scene, x: float, y: float, z_top: float, floor_z: float,
     return float(ok.mean()), med
 
 
+def estimate_floor_z(scene, lo, hi, n_probe: int = 1024, seed: int = 0,
+                     bin_m: float = 0.05, debug: bool = True) -> float | None:
+    """Estimate the floor height by RAY CASTING, not by vertex statistics.
+
+    The previous estimator was `np.percentile(vertex_z, 1)` in render_scene.py. That
+    is only correct when nothing in the mesh sits below the floor, and `room_2`
+    violates it: its mesh extends ~0.8 m under the floor (z-extent 3.59 m vs ~2.8 m
+    for every other Replica room), so p1 landed at -2.85 when the real floor is
+    around -2.0. Every downward ray then missed the `|ground - floor_z| <= tol` test,
+    `floor_frac` was 0.00 for all 6400 candidates, and the scene raised
+    `free-space-over-floor sampling failed` — which `make render`'s `|| true`
+    swallowed, so room_2 silently vanished from the 2026-08-09 matrix.
+
+    What a floor actually is: the height that the most downward rays land on. This
+    casts a grid of rays from above and returns the mode of the hit-height histogram,
+    which is robust to sub-floor geometry, furniture and holes. Returns None when
+    nothing is hit at all.
+    """
+    import open3d as o3d
+    rng = np.random.default_rng(seed)
+    m = int(np.sqrt(n_probe))
+    gx = np.linspace(lo[0], hi[0], m)
+    gy = np.linspace(lo[1], hi[1], m)
+    xx, yy = np.meshgrid(gx, gy)
+    xy = np.column_stack([xx.ravel(), yy.ravel()])
+    # jitter so a grid aligned with a wall doesn't systematically miss the floor
+    xy += rng.uniform(-0.5, 0.5, xy.shape) * [(gx[1] - gx[0]), (gy[1] - gy[0])]
+    z_top = float(hi[2]) + 0.5
+    rays = np.column_stack([xy, np.full(len(xy), z_top),
+                            np.zeros(len(xy)), np.zeros(len(xy)),
+                            -np.ones(len(xy))]).astype(np.float32)
+    t = scene.cast_rays(o3d.core.Tensor(rays))["t_hit"].numpy()
+    hits = z_top - t[np.isfinite(t)]
+    if hits.size == 0:
+        return None
+    edges = np.arange(hits.min(), hits.max() + bin_m, bin_m)
+    if len(edges) < 2:
+        return float(np.median(hits))
+    counts, _ = np.histogram(hits, bins=edges)
+    # The floor is the most-hit height in the LOWER HALF of the hit range: taking the
+    # global mode would pick a large tabletop or a mezzanine in a tall room.
+    mid = float(hits.min() + 0.5 * (hits.max() - hits.min()))
+    lower = edges[:-1] < mid
+    if not lower.any():
+        lower[:] = True
+    idx = int(np.argmax(np.where(lower, counts, -1)))
+    fz = float(edges[idx] + bin_m / 2)
+    if debug:
+        print(f"[floor] raycast floor estimate: {fz:.2f} m "
+              f"({counts[idx]}/{hits.size} down-rays land within {bin_m*100:.0f} cm of it; "
+              f"hit range {hits.min():.2f}..{hits.max():.2f})")
+    return fz
+
+
 def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: int,
                          probe_z: float | None = None, floor_z: float | None = None,
-                         ground_tol_m: float = 0.12, debug: bool = True) -> np.ndarray:
+                         ground_tol_m: float = 0.12, min_span_m: float = 3.0,
+                         debug: bool = True) -> np.ndarray:
     """Sample n collision-free INTERIOR waypoints that sit OVER BARE FLOOR.
 
     A point is kept only if it is (a) >= min_clearance from any surface, (b) interior
@@ -205,46 +327,105 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
     a surface within `ground_tol_m` of the global floor_z (i.e. NOT over furniture).
     (c) matters because PRISM's metric scale comes from a RANSAC floor fit under the
     camera; starting over a sofa gives the wrong camera-to-floor height (scale error).
+
+    TWO GUARDS ADDED AFTER THE 2026-08-09 RUN, both for silent failures that produced
+    a full night of unusable data:
+
+    * **Floor repair.** If almost nothing passes the bare-floor test, the supplied
+      `floor_z` is assumed wrong and is re-estimated by ray casting
+      (`estimate_floor_z`) before giving up. This is what killed `room_2`.
+
+    * **Minimum span.** `office_0` returned a full 8/8 waypoints — all of them inside
+      a 0.6 m patch, because its `interior` score only clears 0.8 in one corner of the
+      room. The result was a 4-frame "trajectory" with the camera essentially
+      stationary, which then produced meaningless ATEs (PRISM and PanoVGGT agreed to
+      six significant figures because Umeyama on 4 near-coincident points is
+      degenerate) across ~65 runs. A waypoint set whose extent is under `min_span_m`
+      is now rejected, the interior threshold is relaxed, and the sampling retried.
     """
     import open3d as o3d  # local import: renderer env only
 
-    rng = np.random.default_rng(seed)
     aabb = mesh.get_axis_aligned_bounding_box()
     lo = aabb.get_min_bound()
     hi = aabb.get_max_bound()
     z = probe_z if probe_z is not None else (lo[2] + hi[2]) / 2
-    fz = floor_z if floor_z is not None else float(lo[2])
+    fz = float(floor_z) if floor_z is not None else float(lo[2])
     scene = o3d.t.geometry.RaycastingScene()
     scene.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
 
+    # A room smaller than the requested span cannot satisfy it; scale the requirement
+    # to the room so a genuinely small office is not rejected for being small.
+    room_diag = float(np.hypot(hi[0] - lo[0], hi[1] - lo[1]))
+    span_req = min(min_span_m, 0.45 * room_diag)
+
     if debug:
         print(f"[waypoints] AABB lo={np.round(lo,2)} hi={np.round(hi,2)} "
-              f"probe_z={z:.2f} floor_z={fz:.2f} ground_tol={ground_tol_m}")
+              f"probe_z={z:.2f} floor_z={fz:.2f} ground_tol={ground_tol_m} "
+              f"room_diag={room_diag:.1f}m span_req={span_req:.1f}m")
 
-    kept, tries, shown = [], 0, 0
-    while len(kept) < n_waypoints and tries < n_waypoints * 800:
-        tries += 1
-        xy = rng.uniform(lo[:2], hi[:2])
-        pt = np.array([xy[0], xy[1], z], dtype=np.float32)
-        dist = scene.compute_distance(o3d.core.Tensor(pt[None])).numpy()[0]
-        score = _interior_score(scene, pt)
-        floor_frac, gz = clean_floor_patch(scene, xy[0], xy[1], z, fz, tol=ground_tol_m)
-        clean_floor = floor_frac >= 0.85            # nearly the whole disk is bare floor
-        ok = dist >= min_clearance_m and score >= 0.8 and clean_floor
-        if debug and shown < 14:
-            gzs = f"{gz:.2f}" if gz is not None else "none"
-            print(f"[waypoints] cand xy={np.round(xy,2)} clearance={dist:.2f} "
-                  f"interior={score:.2f} floor_frac={floor_frac:.2f} ground_z={gzs} "
-                  f"-> {'KEEP' if ok else 'reject'}")
-            shown += 1
-        if ok:
-            kept.append((xy, floor_frac))
+    def _sample(interior_min: float, fz_use: float, rng):
+        kept, tries, shown, n_floor_seen = [], 0, 0, 0
+        budget = n_waypoints * 800
+        while len(kept) < n_waypoints and tries < budget:
+            tries += 1
+            xy = rng.uniform(lo[:2], hi[:2])
+            pt = np.array([xy[0], xy[1], z], dtype=np.float32)
+            dist = scene.compute_distance(o3d.core.Tensor(pt[None])).numpy()[0]
+            score = _interior_score(scene, pt)
+            floor_frac, gz = clean_floor_patch(scene, xy[0], xy[1], z, fz_use,
+                                               tol=ground_tol_m)
+            n_floor_seen += (gz is not None)
+            ok = (dist >= min_clearance_m and score >= interior_min
+                  and floor_frac >= 0.85)
+            if debug and shown < 10:
+                gzs = f"{gz:.2f}" if gz is not None else "none"
+                print(f"[waypoints] cand xy={np.round(xy,2)} clearance={dist:.2f} "
+                      f"interior={score:.2f} floor_frac={floor_frac:.2f} "
+                      f"ground_z={gzs} -> {'KEEP' if ok else 'reject'}")
+                shown += 1
+            if ok:
+                kept.append((xy, floor_frac))
+        return kept, tries, n_floor_seen
+
+    # Pass 1 at the strict thresholds. If it finds no floor at ALL, the floor_z we were
+    # handed is wrong -> re-estimate it and try again before relaxing anything else.
+    rng = np.random.default_rng(seed)
+    kept, tries, n_floor = _sample(0.80, fz, rng)
+    if n_floor == 0:
+        fz_new = estimate_floor_z(scene, lo, hi, seed=seed, debug=debug)
+        if fz_new is not None and abs(fz_new - fz) > ground_tol_m:
+            print(f"[waypoints] NO candidate found bare floor at floor_z={fz:.2f} — "
+                  f"re-estimating by raycast -> {fz_new:.2f} (delta {fz_new - fz:+.2f} m) "
+                  f"and resampling")
+            fz = fz_new
+            rng = np.random.default_rng(seed)
+            kept, tries, n_floor = _sample(0.80, fz, rng)
+
+    # Relax the interior threshold until the waypoints actually SPAN the room. A tight
+    # cluster passes every per-point test and still yields a stationary camera.
+    for interior_min in (0.65, 0.50):
+        if len(kept) >= 4 and _span(kept) >= span_req:
+            break
+        if debug:
+            print(f"[waypoints] kept {len(kept)} span={_span(kept):.2f}m "
+                  f"< required {span_req:.2f}m — relaxing interior>={interior_min:.2f}")
+        rng = np.random.default_rng(seed)
+        kept, tries, n_floor = _sample(interior_min, fz, rng)
+
+    span = _span(kept)
     if debug:
-        print(f"[waypoints] kept {len(kept)}/{n_waypoints} after {tries} tries")
+        print(f"[waypoints] kept {len(kept)}/{n_waypoints} after {tries} tries, "
+              f"span={span:.2f}m (required {span_req:.2f}m)")
     if len(kept) < 4:
         raise RuntimeError(
             f"free-space-over-floor sampling failed (kept {len(kept)} in {tries} tries). "
             f"Loosen ground_tol_m/min_clearance, or check the [mesh] floor_z. Debug above.")
+    if span < span_req:
+        raise RuntimeError(
+            f"waypoints span only {span:.2f} m (need {span_req:.2f} m in a "
+            f"{room_diag:.1f} m room) — every kept point is in one small patch, which "
+            f"yields a near-stationary camera and meaningless pose metrics. This is the "
+            f"office_0 failure from 2026-08-09. Debug above.")
     # Start at the cleanest-floor point (so PRISM locks metric scale over bare floor),
     # then visit the rest as a nearest-neighbour tour -> a SMOOTH walkthrough instead
     # of a spatial zig-zag (a scrambled order inflates drift and wrecks the recon).
@@ -260,3 +441,12 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
         print(f"[waypoints] tour order (NN from cleanest floor): "
               f"{[np.round(p, 2).tolist() for p in order]}")
     return np.array(order)
+
+
+def _span(kept) -> float:
+    """Largest pairwise distance in a kept-waypoint list (0.0 for < 2 points)."""
+    if len(kept) < 2:
+        return 0.0
+    pts = np.array([xy for xy, _ in kept])
+    d = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=-1)
+    return float(d.max())

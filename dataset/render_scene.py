@@ -219,17 +219,28 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     # Floor height so the camera sits camera_height ABOVE the floor (not at abs Z).
     aabb = mesh.get_axis_aligned_bounding_box()
     lo, hi = aabb.get_min_bound(), aabb.get_max_bound()
-    # Robust floor height: 1st-percentile vertex Z, not the raw AABB min (a single
-    # stray low vertex would otherwise drop floor_z and throw off camera height/scale).
+    # Floor height by RAY CASTING (the height most downward rays land on), with the
+    # old 1st-percentile-vertex-Z as the fallback. p1 is only correct when nothing in
+    # the mesh sits below the floor, and room_2 breaks that: its mesh extends ~0.8 m
+    # under the floor, p1 landed 0.85 m too low, no candidate ever passed the
+    # bare-floor test, and the scene was dropped from the 2026-08-09 matrix entirely.
     vz = np.asarray(mesh.vertices)[:, 2]
-    floor_z = float(np.percentile(vz, 1.0))
+    floor_p1 = float(np.percentile(vz, 1.0))
+    floor_ray = traj_mod.estimate_floor_z(raycast, lo, hi, seed=0)
+    floor_z = float(floor_ray) if floor_ray is not None else floor_p1
     centroid = np.asarray(mesh.get_center())
     n = cfg["trajectories"]["n_frames"]
     ch = cfg["camera"]["camera_height_m"]
     cam_z = floor_z + ch
     print(f"[mesh] post-rotate AABB lo={np.round(lo,2)} hi={np.round(hi,2)}")
-    print(f"[mesh] centroid={np.round(centroid,2)} floor_z(p1)={floor_z:.2f} "
-          f"(raw min {lo[2]:.2f}) camera_height={ch} -> cam_z={cam_z:.2f}")
+    print(f"[mesh] centroid={np.round(centroid,2)} floor_z={floor_z:.2f} "
+          f"(raycast {floor_ray if floor_ray is None else round(floor_ray,2)}, "
+          f"p1 {floor_p1:.2f}, raw min {lo[2]:.2f}) "
+          f"camera_height={ch} -> cam_z={cam_z:.2f}")
+    if floor_ray is not None and abs(floor_ray - floor_p1) > 0.15:
+        print(f"[mesh] NOTE: raycast floor and p1-vertex floor disagree by "
+              f"{floor_ray - floor_p1:+.2f} m — this mesh has geometry below the floor. "
+              f"Using the raycast value.")
     print(f"[mesh] room extent XYZ = {np.round(hi-lo,2)} m")
 
     kind = traj_kind(traj)   # synthetic | stopgo | loop | dataset_path (or 'dataset')
@@ -239,10 +250,14 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
         rate = traj_rate_hz(traj, default=2.0)
         seed = traj_seed(cfg, traj)                      # per-run seed (variance study)
         print(f"[traj] kind={kind} rate={rate}Hz seed={seed}")
-        wps = traj_mod.free_space_waypoints(mesh, n_waypoints=8,
-                                            min_clearance_m=sp["min_clearance_m"],
-                                            seed=seed,
-                                            probe_z=cam_z, floor_z=floor_z)
+        # More waypoints = a longer circuit that covers more of the room. This is the
+        # FIRST lever for reaching the frame target (see synthetic_spline) and it costs
+        # nothing in realism, unlike laps (revisits) or a slower walk (shorter baseline).
+        wps = traj_mod.free_space_waypoints(
+            mesh, n_waypoints=int(sp.get("n_waypoints", 12)),
+            min_clearance_m=sp["min_clearance_m"], seed=seed,
+            probe_z=cam_z, floor_z=floor_z,
+            min_span_m=float(sp.get("min_span_m", 3.0)))
         speed = sp.get("speed_mps", 0.5)
         if kind == "stopgo":
             sg = extra.get("stopgo", {})
@@ -251,9 +266,13 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
                                          n_stops=int(sg.get("n_stops", 2)),
                                          dwell_s=float(sg.get("dwell_s", 5.0)))
         else:
-            poses = traj_mod.synthetic_spline(wps, camera_height=cam_z, speed_mps=speed,
-                                              rate_hz=rate, max_frames=n,
-                                              close_loop=(kind == "loop"))
+            poses = traj_mod.synthetic_spline(
+                wps, camera_height=cam_z, speed_mps=speed, rate_hz=rate,
+                max_frames=n, close_loop=(kind == "loop"),
+                target_frames=n,                       # n is a TARGET now, not just a cap
+                max_laps=int(sp.get("max_laps", 4)),
+                min_speed_mps=float(sp.get("min_speed_mps", 0.15)),
+                min_frames=int(sp.get("min_frames", 32)))
     else:  # dataset_path — loaded by the dataset-specific downloader/importer
         src = _load_dataset_poses(cfg, dataset, scene)
         poses = traj_mod.resample_path(src, n)

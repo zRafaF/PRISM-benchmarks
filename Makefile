@@ -21,7 +21,7 @@ PYCHK    ?= python3
 
 .DEFAULT_GOAL := help
 
-.PHONY: help steps \
+.PHONY: help steps check-scenes \
         deps init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
         download split render export \
         run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
@@ -168,6 +168,10 @@ download: setup
 split: setup
 	@echo ">> freezing scene list into config.yaml (fixed seed)"
 	$(ORCH_RUN) dataset/make_split.py --config $(CONFIG)
+
+check-scenes: setup
+	@echo ">> validating every frozen scene can produce every trajectory (no rendering)"
+	$(ORCH_RUN) dataset/check_scenes.py --config $(CONFIG)
 
 render: setup
 	@echo ">> rendering pano + pinhole + GT (SCENES='$(SCENES)' TRAJ=$(TRAJ))"

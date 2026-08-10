@@ -320,6 +320,73 @@ def main():
                             if used else
                             "no arm_config.json written — cannot confirm the override"))
 
+    # (f) PRISM's metric scale must LOCK, and lock from samples that agreed.
+    #     apartment_1 on 2026-08-09 had the best trajectory of any method (ATE 0.84 m
+    #     vs 1.9-2.2 m) and a 31% metric-scale error at the same time, because the
+    #     floor-scale estimator committed the median of samples that disagreed by 56%.
+    #     Nothing in the metrics could have told you that; only the lock provenance can.
+    prism_arms = [m for m in methods if m.startswith("prism")]
+    for method in prism_arms:
+        unlocked, spreads = [], []
+        for d in _runs(method):
+            arm = _load(d / "arm_config.json") or {}
+            if "scale_locked" not in arm:
+                continue
+            if not arm.get("scale_locked"):
+                unlocked.append(d.name)
+            smp = [x for x in (arm.get("floor_scale_samples") or []) if x]
+            if len(smp) > 1:
+                spreads.append(max(smp) / min(smp) - 1.0)
+        r.check(not unlocked, f"{method}: metric scale locked",
+                ok_detail=(f"locked in every run"
+                           + (f", worst sample spread {100*max(spreads):.0f}%"
+                              if spreads else "")),
+                bad_detail=f"{len(unlocked)}/{len(_runs(method))} run(s) never committed "
+                           f"a metric scale [{', '.join(unlocked[:3])}] — every "
+                           f"scale-dependent metric in them (F, accuracy, completeness, "
+                           f"scale error) is unverified")
+
+    # (g) every scene must have rendered every trajectory, at the target length.
+    #     room_2 rendered NOTHING on 2026-08-09 (floor estimate 0.85 m too low) and
+    #     office_0 rendered twelve 4-to-8-frame sequences from a 0.6 m waypoint cluster.
+    #     `make render`'s `|| true` hid both, and 5-scene/65-wasted-run results looked
+    #     normal in every table.
+    exports = REPO_ROOT / "dataset" / "exports"
+    short, empty, seen = [], [], set()
+    for meta in sorted(exports.rglob("meta.json")):
+        j = _load(meta) or {}
+        tag = f"{j.get('scene')}/{j.get('traj')}"
+        if tag in seen:            # one entry per (scene, traj), not per camera model
+            continue
+        seen.add(tag)
+        nf = j.get("n_frames")
+        if not nf:
+            empty.append(tag)
+        elif nf < 32:
+            short.append(f"{tag}:{nf}f")
+    r.check(not empty and not short, "every rendered trajectory has usable length",
+            ok_detail="no trajectory under 32 frames",
+            bad_detail=f"{len(short)} too-short {short[:4]}, {len(empty)} empty "
+                       f"{empty[:2]} — a near-stationary camera makes Umeyama "
+                       f"degenerate and every pose metric on it meaningless")
+
+    # (h) eval_recon must have scored EVERY run that produced a cloud. On 2026-08-09 it
+    #     crashed on one empty co-visibility mask and, because the driver calls it with
+    #     `|| true`, 196 of 590 runs silently lost their reconstruction metrics — which
+    #     left methods with N=57 vs N=30 and quietly reintroduced the exact unequal-N
+    #     bias the clean aggregation exists to prevent.
+    missing_recon = []
+    for method in methods:
+        for d in _runs(method):
+            if (d / "cloud.ply").exists() and not (d / "recon.json").exists():
+                missing_recon.append(f"{method}/{d.name}")
+    r.check(not missing_recon, "eval_recon scored every cloud",
+            ok_detail="no run has a cloud without recon.json",
+            bad_detail=f"{len(missing_recon)} run(s) have cloud.ply but no recon.json "
+                       f"[{', '.join(missing_recon[:3])}] — eval_recon died part-way; "
+                       f"methods will have UNEQUAL N and the per-method means are not "
+                       f"like-for-like")
+
     # ── ETA projection for the real matrix ───────────────────────────────────
     print()
     if durations:

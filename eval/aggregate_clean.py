@@ -151,6 +151,14 @@ def load_live_runs() -> list[dict]:
             "n_submaps": (j.get("arm") or {}).get("n_submaps"),
             "n_loop_closures": (j.get("arm") or {}).get("n_loop_closures"),
             "degenerate": (j.get("arm") or {}).get("degenerate_single_submap"),
+            # PRISM only: did the metric scale ever commit? A run whose floor-scale
+            # estimator never converged still produces a map and an ATE, but every
+            # scale-dependent number in it (F-score, accuracy, completeness, scale
+            # error) is unverified. apartment_1 in the 2026-08-09 run had the best
+            # trajectory of any method and a 31% scale error at the same time, so this
+            # cannot be inferred from the other columns.
+            "scale_locked": (j.get("arm") or {}).get("scale_locked"),
+            "metric_scale": (j.get("arm") or {}).get("metric_scale"),
             "voxel_size": (j.get("arm") or {}).get("voxel_size"),
             "max_depth": (j.get("arm") or {}).get("max_depth"),
             "eff_fps": p.get("eff_fps"),
@@ -378,11 +386,15 @@ def main():
         by_motion = ", ".join(f"{mo}:{sum(1 for r in bad if motion_of(r['traj']) == mo)}"
                               for mo in sorted({motion_of(r["traj"]) for r in bad})) or "—"
         degen = [r for r in tot if r.get("degenerate")]
+        # scale_locked is False only for PRISM arms whose floor estimator never
+        # converged; None for every method that has no such notion.
+        unlocked = [r for r in tot if r.get("scale_locked") is False]
         comp_rows.append([m, len(tot), len(tot) - len(bad), len(othr), len(oomed),
-                          len(degen),
+                          len(degen), len(unlocked),
                           f"{100 * len(bad) / len(tot):.1f}" if tot else "—",
                           by_scene, by_motion])
     comp_h = ["method", "n_total", "n_complete", "n_failed", "n_oom", "n_degenerate",
+              "n_scale_unlocked",
               "incomplete_pct", "incomplete_by_scene", "incomplete_by_motion"]
     write_csv("completion.csv", comp_h, comp_rows)
     blob["completion"] = [dict(zip(comp_h, r)) for r in comp_rows]
@@ -665,11 +677,26 @@ def main():
         b = method_block([r])
         return b[k]
 
+    #  Runs where the comparator's own machinery never engaged are EXCLUDED here, not
+    #  merely footnoted. On 2026-08-09 VGGT-SLAM built a single submap in 21 of 28 runs
+    #  — no SL(4) registration, no loop closure, i.e. plain feed-forward VGGT — and
+    #  "PRISM beats VGGT-SLAM by 27.8 cm, 26/28, p<0.0001" was mostly a win over a
+    #  degenerate configuration. A caveat in the prose does not stop that number being
+    #  quoted; removing the runs does.
+    def _engaged(r):
+        return not r.get("degenerate")
+
     ref = "prism_sim3" if any(r["method"] == "prism_sim3" for r in agg_set) else "prism"
     pair_rows = []
     for other in [m for m in methods_main if m != ref]:
-        idx_a = {(r["scene"], r["traj"]): r for r in agg_set if r["method"] == ref}
-        idx_b = {(r["scene"], r["traj"]): r for r in agg_set if r["method"] == other}
+        idx_a = {(r["scene"], r["traj"]): r for r in agg_set
+                 if r["method"] == ref and _engaged(r)}
+        idx_b = {(r["scene"], r["traj"]): r for r in agg_set
+                 if r["method"] == other and _engaged(r)}
+        n_drop = sum(1 for r in agg_set if r["method"] == other and not _engaged(r))
+        if n_drop:
+            print(f"[aggregate] paired {ref} vs {other}: dropped {n_drop} run(s) where "
+                  f"{other}'s own machinery never engaged (degenerate)")
         shared = sorted(set(idx_a) & set(idx_b))
         if not shared:
             continue
@@ -730,7 +757,13 @@ def main():
         "VGGT. Those runs are NOT a valid head-to-head datapoint; if this column is "
         "non-zero, say so or exclude them before claiming a win over that baseline.\n",
         md_table(["Method", "N total", "N complete", "N failed", "N OOM", "N degenerate",
+                  "N scale-unlocked",
                   "Incomplete %", "By scene", "By motion"], comp_rows), "",
+        "> **`N scale-unlocked`** (PRISM arms only) counts runs whose metric scale never "
+        "committed — the floor-plane estimator did not converge. Those runs still have a "
+        "trajectory and an ATE, but every scale-dependent number in them (F-score, "
+        "accuracy, completeness, scale error) is unverified. Do not average them into a "
+        "reconstruction claim without saying so.\n", "",
         "## Capacity — how long a sequence each method survives\n",
         "*The deployability result. Full-batch methods ingest every view at once, so "
         "their memory grows with sequence length until it doesn't fit; a bounded-memory "

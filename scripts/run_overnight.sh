@@ -96,6 +96,7 @@ with open(sys.argv[1], 'w') as f:
     put('SEEDS',  ' '.join(str(s) for s in seeds))
     put('NFRAMES', c['trajectories']['n_frames'])
     put('NSCENES_TARGET', ds.get('n_scenes_start', 0))
+    put('DS', c['datasets']['active'][0])
 PY
 # shellcheck disable=SC1090
 . "$PLAN_SH"
@@ -193,16 +194,32 @@ run_set() {   # run_set <traj> <methods...>
   done
 }
 
+# Each eval step keeps going on failure (a checkpoint must never abort the night),
+# but a failure is now ANNOUNCED and counted. On 2026-08-09 eval_recon.py died on
+# one degenerate run, `|| true` swallowed it, and 196 of 590 runs silently lost
+# their reconstruction metrics while the log said the checkpoint completed.
+EVAL_FAIL=0
+eval_step() {   # eval_step <phase> <script> [args...]
+  local phase="$1" script="$2"; shift 2
+  if ! $RUN "$script" "$@"; then
+    EVAL_FAIL=$((EVAL_FAIL + 1))
+    log "!!! EVAL STEP FAILED: $script  (phase $phase)"
+    log "!!!   Runs this step did not reach have NO metrics and will be counted"
+    log "!!!   as incomplete. Do not cite this checkpoint's tables."
+    note "EVAL FAIL $script  (phase $phase)"
+  fi
+}
+
 checkpoint() {
   log "=== CHECKPOINT: eval + CLEAN report (phase: $1) — $RUN_N runs dispatched so far ==="
-  $RUN eval/eval_traj.py       --config config.yaml || true
-  $RUN eval/eval_recon.py      --config config.yaml || true
-  $RUN eval/metric_accuracy.py --config config.yaml || true
-  $RUN eval/collect_perf.py    --config config.yaml || true
-  $RUN eval/make_report.py     --config config.yaml || true
-  $RUN eval/aggregate_clean.py     --config config.yaml --source live || true
-  $RUN eval/export_report_tables.py                                   || true
-  $RUN eval/verify_clean.py --skip-published-check                    || true
+  eval_step "$1" eval/eval_traj.py       --config config.yaml
+  eval_step "$1" eval/eval_recon.py      --config config.yaml
+  eval_step "$1" eval/metric_accuracy.py --config config.yaml
+  eval_step "$1" eval/collect_perf.py    --config config.yaml
+  eval_step "$1" eval/make_report.py     --config config.yaml
+  eval_step "$1" eval/aggregate_clean.py --config config.yaml --source live
+  eval_step "$1" eval/export_report_tables.py
+  eval_step "$1" eval/verify_clean.py --skip-published-check
   if [ -f results/report_clean/completion.csv ]; then
     log "--- completion so far (method,total,complete,incomplete,%) ---"
     cut -d, -f1-5 results/report_clean/completion.csv | sed 's/^/    /'
@@ -250,13 +267,56 @@ print(' '.join(ds.get('scenes') or []))" 2>/dev/null)
 N_SCENES_AFTER=$(echo $SCENES_AFTER | wc -w)
 log "### Scene list after split: ${N_SCENES_AFTER} scene(s) -> ${SCENES_AFTER:-<EMPTY>}"
 [ "$N_SCENES_AFTER" -eq 0 ] && die "no scenes frozen — is the dataset downloaded? (make download)"
-log "### TOTAL RUNS THIS SESSION: ~$(( N_SCENES_AFTER * N_TRAJS * N_METHODS )) (upper bound)"
+log "### TOTAL RUNS THIS SESSION: ~$(( N_SCENES_AFTER * N_TRAJS * N_MAIN + N_SWEEP * 4 ))"
+log "###   = ${N_SCENES_AFTER} scenes x ${N_TRAJS} trajs x ${N_MAIN} main methods ($(( N_SCENES_AFTER * N_TRAJS * N_MAIN )))"
+log "###   + ${N_SWEEP} sweep arms on a reduced set (~$(( N_SWEEP * 4 )))   [same split as the RUN PLAN above]"
 note "scenes: $SCENES_AFTER"
 
+# ── Stage 0b: can every scene even produce every trajectory? ─────────────────
+# Seconds, no GPU, no images: builds the waypoints + spline for every (scene, traj)
+# pair and reports what each WOULD render. On 2026-08-09 this check would have caught
+# both scene failures (room_2 rendering nothing, office_0 rendering a 0.6 m circuit)
+# before the run started, instead of after seven hours.
+log "### Stage 0b: pre-flight — every scene x trajectory buildable at target length"
+if ! make check-scenes; then
+  log "!!! PRE-FLIGHT FAILED — at least one scene cannot produce a usable trajectory."
+  [ "${IGNORE_RENDER_FAIL:-0}" != "1" ] && die "fix the scenes above, or IGNORE_RENDER_FAIL=1"
+  log "!!!   IGNORE_RENDER_FAIL=1 set — continuing anyway."
+fi
+
 # ── Stage 1: render + export the WHOLE matrix (this is the GT) ──────────────
+# A render failure is FATAL unless explicitly waived. On 2026-08-09 `make render` died
+# on room_2 (its floor estimate was 0.85 m too low, so no waypoint could pass the
+# bare-floor test), `|| true` swallowed the non-zero exit, and the whole night ran on
+# 5 scenes instead of 6 — with nothing in the summary saying so. Every method then had
+# an unequal, unexplained N. Set IGNORE_RENDER_FAIL=1 to proceed deliberately.
 log "### Stage 1: render + export all trajectories ($N_TRAJS trajs x $N_SCENES_AFTER scenes)"
-make render SCENES="" TRAJ=all || true
-make export SCENES="" TRAJ=all || true
+if ! make render SCENES="" TRAJ=all; then
+  log "!!! RENDER FAILED — at least one scene/trajectory did not render."
+  log "!!!   Running the matrix now would silently benchmark a SUBSET of the scenes."
+  log "!!!   Scroll up for the [waypoints]/[mesh]/[traj] debug of the failing scene."
+  [ "${IGNORE_RENDER_FAIL:-0}" != "1" ] && die "render failed (IGNORE_RENDER_FAIL=1 to override)"
+  log "!!!   IGNORE_RENDER_FAIL=1 set — continuing with an INCOMPLETE scene set."
+fi
+if ! make export SCENES="" TRAJ=all; then
+  log "!!! EXPORT FAILED — see above."
+  [ "${IGNORE_RENDER_FAIL:-0}" != "1" ] && die "export failed (IGNORE_RENDER_FAIL=1 to override)"
+fi
+
+# Confirm every frozen scene actually produced every trajectory before spending GPU on
+# them. A scene that rendered zero trajectories is the room_2 failure; a scene whose
+# trajectories are far shorter than the target is the office_0 failure.
+MISSING=""
+for sc in $SCENES_AFTER; do
+  for tj in $TRAJS; do
+    [ -d "dataset/exports/${DS:-replica}/$sc/$tj" ] || MISSING="$MISSING $sc/$tj"
+  done
+done
+if [ -n "$MISSING" ]; then
+  log "!!! MISSING EXPORTS:$MISSING"
+  [ "${IGNORE_RENDER_FAIL:-0}" != "1" ] && die "some scene/trajectory pairs never rendered"
+fi
+log "### Stage 1 OK — all $N_SCENES_AFTER scenes x $N_TRAJS trajectories exported"
 
 # ── Stage 2: method runs, PRIORITY ORDER, with checkpoints ──────────────────
 log "### Phase 1: headline  (smooth 2 Hz, seed 0)"
@@ -352,8 +412,15 @@ log "############ DONE  stamp=$STAMP ############"
 log "### $RUN_N runs dispatched: $RUN_OK ok, $RUN_FAIL failed"
 note "done $STAMP  ($RUN_N runs: $RUN_OK ok / $RUN_FAIL failed)"
 [ "$RUN_N" -eq 0 ] && log "!!!!!! WARNING: ZERO runs were dispatched. The report below is NOT from this session."
+if [ "${EVAL_FAIL:-0}" -gt 0 ]; then
+  log "!!!!!! WARNING: $EVAL_FAIL eval step(s) FAILED during this session."
+  log "!!!!!!   The tables below are computed over whatever those steps managed to"
+  log "!!!!!!   reach before dying — methods will have UNEQUAL N and the per-method"
+  log "!!!!!!   means are NOT like-for-like. Grep this log for 'EVAL STEP FAILED'."
+fi
 echo
 echo "Runs         : $RUN_N dispatched ($RUN_OK ok / $RUN_FAIL failed)"
+[ "${EVAL_FAIL:-0}" -gt 0 ] && echo "Eval steps   : $EVAL_FAIL FAILED  <- tables are incomplete, see log"
 echo "Clean report : results/report_clean/clean_report.md   <- cite this one"
 echo "Report tables: results/report_tables/                 <- for uofa-2026-report"
 echo "Completion   : results/report_clean/completion.csv    <- read before any mean"

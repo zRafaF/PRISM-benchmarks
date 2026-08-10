@@ -113,14 +113,38 @@ def main():
         pass
     ckpt_mb = ckpt.stat().st_size / 1e6 if ckpt.exists() else 0.0
     import json as _json
+    # ── Metric-scale provenance ───────────────────────────────────────────────
+    # PRISM's map size comes from a floor-plane RANSAC committed once, early. When that
+    # commit is wrong the trajectory can still be excellent while the reconstruction is
+    # unusable — exactly apartment_1 in the 2026-08-09 run: best ATE of any method
+    # (0.84 m vs 1.9-2.2 m) with a 31% scale error and masked F 0.070. A scale-dependent
+    # metric is not interpretable without knowing whether the scale ever locked, so
+    # record it per run and let the aggregate separate the two populations.
+    _scale = {
+        "metric_scale": float(getattr(engine, "current_metric_scale", float("nan"))),
+        "scale_locked": bool(getattr(engine, "_scale_committed", False)),
+        "scale_provisional": (None if getattr(engine, "_provisional_scale", None) is None
+                              else float(engine._provisional_scale)),
+        "floor_scale_samples": [round(float(x), 5)
+                                for x in getattr(engine, "floor_scale_samples", [])],
+        "scale_buffer_enabled": bool(getattr(engine, "scale_buffer_enabled", False)),
+    }
+    if not _scale["scale_locked"]:
+        print(f"[prism_runner] WARNING: metric scale NEVER LOCKED "
+              f"({len(_scale['floor_scale_samples'])} confident floor sample(s)) — "
+              f"scale-dependent metrics for this run are unverified")
     (out / "arm_config.json").write_text(_json.dumps(
         {"voxel_size": _voxel, "max_depth": _maxd,
          "window_size": ws, "overlap": ov,
-         "is_sweep_arm": bool(_voxel != eng["voxel_size"] or _maxd != eng["max_depth"])},
+         "is_sweep_arm": bool(_voxel != eng["voxel_size"] or _maxd != eng["max_depth"]),
+         **_scale},
         indent=2))
+    extra.update(_scale)
     _io.write_runner_perf(out, per_window_latency_s=per_window,
                           latency_end_to_end_s=wall, ckpt_size_mb=ckpt_mb, extra=extra)
-    print(f"[prism_runner] {len(poses)} poses, {len(pts)} pts, {len(per_window)} windows, {wall:.1f}s")
+    print(f"[prism_runner] {len(poses)} poses, {len(pts)} pts, {len(per_window)} windows, "
+          f"{wall:.1f}s, s={_scale['metric_scale']:.4f} "
+          f"(locked={_scale['scale_locked']})")
 
 
 if __name__ == "__main__":
