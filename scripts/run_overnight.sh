@@ -178,9 +178,19 @@ if [ -d results ] && [ "${FORCE:-0}" != "1" ]; then
   EXISTING=$(ls results/*/*/*/*/*/perf.json 2>/dev/null | awk -F/ '{print $4}' | sort -u | tr '\n' ' ')
   if [ -n "$EXISTING" ]; then
     log "NOTE: results/ already contains runs for scene(s): $EXISTING"
-    log "      Completed runs are SKIPPED (resume). If those are stale smoke results,"
-    log "      clear them first with 'make clean-results' — otherwise they will be"
-    log "      aggregated into the report alongside the new ones."
+    log "      Completed runs are SKIPPED (resume) unless FORCE=1."
+  fi
+  # A NOTE was not enough. On 2026-08-10 the tree still held the 2026-08-09 matrix;
+  # Stage 1 re-rendered every export with the new trajectories and Stage 2 then skipped
+  # all 45 overlapping (method, scene, traj) runs, so 45 of the 54 runs the report needs
+  # were stale results scored on 4-to-207-frame sequences, sitting next to 748-frame
+  # exports. completion.csv read n_total=62 for a 54-run matrix and nothing flagged it.
+  # This compares every existing result's frame count against the export it consumed,
+  # and refuses to continue on a mismatch.
+  if ! $RUN eval/check_results_fresh.py --config config.yaml; then
+    die "results/ is inconsistent with the current matrix (see above).
+      'make clean-results' then relaunch, or FORCE=1 to re-run every method
+      (orphaned run dirs still have to be deleted by hand in that case)."
   fi
 fi
 
