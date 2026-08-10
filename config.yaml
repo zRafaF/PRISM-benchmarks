@@ -113,7 +113,18 @@ trajectories:
   # (`make capacity-sweep`) rather than from this matrix: it finds each method's real
   # OOM frame count on one scene instead of only telling you "it OOMed at 300".
   # Natural OOMs here are still recorded (perf.json `oom`, capacity.csv).
+  # n_frames is the frame count AT THE REFERENCE RATE. What is actually held constant
+  # across rates is the PHYSICAL PATH: path_target = (n_frames - 1) * speed / reference
+  # rate = 74.75 m, walked identically at every rate, so 2 Hz yields 300 frames and 5 Hz
+  # yields 748 on the same trajectory. Fixing the frame count instead forces the path to
+  # shrink as the rate rises (299 x 0.10 m = 30 m at 5 Hz vs 75 m at 2 Hz), which
+  # confounds "rate" with path length, room coverage and revisit count all at once —
+  # see dataset/trajectories.py::synthetic_spline.
   n_frames: 300
+  reference_rate_hz: 2.0     # the rate n_frames refers to (the deployed Theta-X rate)
+  max_frames_hard: 1000      # safety ceiling only; 5 Hz needs ~748, so do not set it
+                             #   below that or the 5 Hz path gets truncated relative to
+                             #   2 Hz and the rate comparison breaks again (it warns).
   # RATE SWEEP: one trajectory per capture rate -> traj id "synthetic_<rate>hz".
   # Low rate = sparse, wide-baseline (favours feed-forward); high rate = dense overlap
   # (favours streaming, and pushes full-batch toward the VRAM ceiling).

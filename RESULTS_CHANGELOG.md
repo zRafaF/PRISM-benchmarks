@@ -558,14 +558,43 @@ Real sequences came out at **4 to 207 frames** against a nominal 300. Therefore:
   were inert there and three office_0 runs failed Umeyama with "Degenerate covariance
   rank".
 
-Fixed: `n_frames` is a **target**. The path is lengthened by three levers, cheapest
-distortion first — a longer circuit (`n_waypoints` 8 → 12), then **laps** (up to 4,
-which keeps speed and therefore the inter-frame baseline exactly at the configured
-operating point but adds revisits — this must be stated when reporting loop closure),
-then a **slower walk** (floored at 0.15 m/s, which does change the baseline). The lever
-used is printed per trajectory. Sequences are truncated to the target so every scene
-yields the same length. `max(4, …)` is gone: a path that cannot reach `min_frames` (32)
-now raises instead of emitting a stationary "trajectory".
+Fixed in two steps, because the obvious fix was wrong.
+
+**First attempt — make `n_frames` a target.** The path is lengthened by a longer circuit
+(`n_waypoints` 8 → 12, and waypoints chosen by farthest-point sampling from a larger
+accepted pool so the circuit's extent depends on the room rather than on RNG order), then
+by **laps**, then by a **slower walk**. `max(4, …)` is gone: a path that cannot reach
+`min_frames` (32) raises instead of emitting a stationary "trajectory".
+
+That reached 300 frames everywhere, and the pre-flight then showed why it is not enough.
+Holding the frame count fixed at a fixed baseline **forces** `path_len = 299 × baseline`,
+so 2 Hz walks 75 m while 5 Hz walks 30 m of the same circuit. Measured on apartment_0
+seed 5678: 118 m / 3 laps at 2 Hz against 34 m / 1 lap at 5 Hz, with the trajectory's
+extent falling 12.99 → 11.65 m because the 5 Hz walk never finished the circuit. Three
+things varied with "rate" simultaneously — path length (2.5× more accumulated drift at
+2 Hz), how much of the room was ever observed (so reconstruction completeness was
+penalised at 5 Hz), and how many revisits a loop-closure method got. None of them is the
+rate. A first cut also capped laps at 4, which made small rooms slow down to reach 300
+frames: room_1 seed 9012 came out at a 0.12 m baseline at "2.0 Hz", *denser* than another
+scene's "5.0 Hz" at 0.10 m.
+
+**Second attempt — the PATH is the invariant.** `path_target_m = (n_frames − 1) × speed /
+reference_rate` = 74.75 m is walked identically at every rate, and the frame count
+follows: **300 frames at 2 Hz, 748 at 5 Hz.** That is what capture rate means — one
+motion, sampled more or less often — and it is the only definition under which a rate
+comparison isolates the rate. Verified: the two rates produce byte-identical waypoints,
+laps and walked distance, and the same trajectory extent to 1 cm.
+
+`max_laps` is 12 rather than 4 so the slow-down lever (which changes the baseline) is
+never needed; when it does fire it warns explicitly, and the 1%-shortfall case that used
+to emit meaningless `speed 0.5->0.50 m/s` warnings is suppressed. `max_frames_hard`
+(1000) is a safety ceiling only — below ~748 it would truncate the 5 Hz path relative to
+2 Hz and break the comparison again, so hitting it warns.
+
+Cost: ~4044 frames per scene per method against 2700 under the old scheme, ≈1.5× the
+matrix. The 748-frame 5 Hz sequences are also the first in this benchmark long enough to
+genuinely stress full-batch VRAM, which is the OOM/capacity evidence the previous design
+could not produce.
 
 ### 13c. 0.5 Hz removed
 

@@ -420,15 +420,40 @@ def main():
         # count on top of a fixed model-load cost. Report the honest bracket rather
         # than one falsely precise number.
         smoke_frames = cfg["trajectories"]["n_frames"]
-        full_frames = full["trajectories"]["n_frames"]
+        # Frame count now VARIES BY RATE: the physical path is what is held constant, so
+        # a 5 Hz trajectory has ~2.5x the frames of a 2 Hz one on the same walk. Averaging
+        # over the actual per-rate counts, instead of quoting n_frames, is the difference
+        # between a 10 h and a 15 h estimate.
+        ftj = full["trajectories"]
+        ref_rate = float(ftj.get("reference_rate_hz", 2.0))
+        speed0 = float(ftj["synthetic_spline"].get("speed_mps", 0.5))
+        n_ref = int(ftj["n_frames"])
+        path_m = (n_ref - 1) * speed0 / max(ref_rate, 1e-6)
+        cap = int(ftj.get("max_frames_hard", 1000))
+
+        def _frames_for(traj_id: str) -> int:
+            rate = ref_rate
+            for tok in traj_id.split("_"):
+                if tok.endswith("hz"):
+                    try:
+                        rate = float(tok[:-2])
+                    except ValueError:
+                        pass
+            return min(cap, int(path_m / max(speed0 / max(rate, 1e-6), 1e-6)) + 1)
+
+        per_traj = {t: _frames_for(t) for t in resolve_trajs(full, "all")}
+        full_frames = sum(per_traj.values()) / max(len(per_traj), 1)
         lo = full_runs * mean_s / 3600.0
         hi = full_runs * mean_s * (full_frames / max(smoke_frames, 1)) / 3600.0
         print("PROJECTED COST OF THE FULL RUN")
         print(f"  smoke: {smoke_runs} runs, mean {mean_s:.1f}s/run "
-              f"({smoke_frames} frames cap)")
+              f"({smoke_frames} frames)")
         print(f"  full : {n_scenes} scenes x {n_trajs} trajs x {n_main} main methods "
-              f"+ {n_sweep} sweep arms on a reduced set = {full_runs} runs "
-              f"({full_frames} frames cap)")
+              f"+ {n_sweep} sweep arms on a reduced set = {full_runs} runs")
+        print(f"         path {path_m:.1f} m held constant; frames per rate: "
+              + ", ".join(f"{r} Hz -> {min(cap, int(path_m / (speed0 / r)) + 1)}"
+                          for r in (ftj.get("rates_hz") or []))
+              + f"  (mean {full_frames:.0f}/run)")
         print(f"  ETA  : {lo:.1f} h (if model-load dominates) .. "
               f"{hi:.1f} h (if frame count dominates)")
         print("  The truth is usually nearer the low end — model load is a fixed cost "

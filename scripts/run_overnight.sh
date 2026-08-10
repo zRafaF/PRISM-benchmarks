@@ -95,6 +95,19 @@ with open(sys.argv[1], 'w') as f:
     put('NSEEDS', len(seeds))
     put('SEEDS',  ' '.join(str(s) for s in seeds))
     put('NFRAMES', c['trajectories']['n_frames'])
+    # Frame count varies by rate now (the PATH is the invariant), so print the per-rate
+    # counts in the plan: "300 frames" alone would understate 5 Hz by 2.5x.
+    _tj = c['trajectories']; _sp = _tj['synthetic_spline']
+    _ref = float(_tj.get('reference_rate_hz', 2.0)); _v = float(_sp.get('speed_mps', 0.5))
+    _cap = int(_tj.get('max_frames_hard', 1000))
+    _path = (int(_tj['n_frames']) - 1) * _v / max(_ref, 1e-6)
+    _per = {r: min(_cap, int(_path / (_v / r)) + 1) for r in (_tj.get('rates_hz') or [])}
+    put('PATH_M', f"{_path:.1f}")
+    put('FRAMES_PER_RATE', ', '.join(f"{r} Hz -> {n}" for r, n in _per.items()))
+    put('TOTAL_FRAMES', sum(_per.get(_ref, int(_tj['n_frames'])) if 'hz' not in t
+                            else next((_per[r] for r in _per if f"{r}hz" in t),
+                                      int(_tj['n_frames']))
+                            for t in trajs))
     put('NSCENES_TARGET', ds.get('n_scenes_start', 0))
     put('DS', c['datasets']['active'][0])
 PY
@@ -123,7 +136,10 @@ cat <<PLAN
   scenes frozen    : ${N_SCENES} -> ${SCENES_FROZEN:-<none: 'make split' will freeze them>}
   target scenes    : ${NSCENES_TARGET}   (datasets.<ds>.n_scenes_start)
   seeds            : ${NSEEDS}  [${SEEDS}]
-  frames/traj      : ${NFRAMES}
+  frames           : ${NFRAMES} at the reference rate; the PHYSICAL PATH (${PATH_M} m)
+                     is what is held constant across rates, so the frame count follows:
+                     ${FRAMES_PER_RATE}
+                     total ${TOTAL_FRAMES} frames per scene per method
   trajectories     : ${N_TRAJS}
       ${TRAJS}
   methods          : ${N_METHODS}

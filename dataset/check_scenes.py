@@ -92,10 +92,14 @@ def _check_one(cfg, mesh, raycast, lo, hi, floor_z, cam_z, traj) -> dict:
                 rate_hz=rate, max_frames=n_target,
                 n_stops=int(sg.get("n_stops", 2)), dwell_s=float(sg.get("dwell_s", 5.0)))
         else:
+            speed = sp.get("speed_mps", 0.5)
+            ref_rate = float(cfg["trajectories"].get("reference_rate_hz", 2.0))
+            hard_cap = int(cfg["trajectories"].get("max_frames_hard", 1000))
             poses = traj_mod.synthetic_spline(
-                wps, camera_height=cam_z, speed_mps=sp.get("speed_mps", 0.5),
-                rate_hz=rate, max_frames=n_target, close_loop=(kind == "loop"),
-                target_frames=n_target, max_laps=int(sp.get("max_laps", 4)),
+                wps, camera_height=cam_z, speed_mps=speed,
+                rate_hz=rate, max_frames=hard_cap, close_loop=(kind == "loop"),
+                path_target_m=(n_target - 1) * speed / max(ref_rate, 1e-6),
+                max_laps=int(sp.get("max_laps", 12)),
                 min_speed_mps=float(sp.get("min_speed_mps", 0.15)),
                 min_frames=int(sp.get("min_frames", 32)))
         pos = np.asarray(poses)[:, :3, 3]
@@ -123,7 +127,12 @@ def main() -> int:
     # a config.local.yaml overlay) is otherwise invisible, and it is what silently kept
     # the 0.5 Hz rate alive after it had been removed.
     print("[check_scenes] effective config:")
-    print(f"    n_frames (target) : {n_target}")
+    ref_rate = float(cfg['trajectories'].get('reference_rate_hz', 2.0))
+    speed0 = sp.get('speed_mps', 0.5)
+    print(f"    n_frames          : {n_target} at the reference rate {ref_rate} Hz")
+    print(f"    path target       : {(n_target - 1) * speed0 / max(ref_rate, 1e-6):.2f} m "
+          f"(held CONSTANT across rates; frame count follows the rate)")
+    print(f"    max_frames_hard   : {cfg['trajectories'].get('max_frames_hard', 1000)}")
     print(f"    rates_hz          : {cfg['trajectories'].get('rates_hz')}")
     print(f"    extra_kinds       : {list((cfg['trajectories'].get('extra_kinds') or {}))}")
     print(f"    seeds             : {cfg['datasets'].get('seeds')}")
@@ -133,6 +142,9 @@ def main() -> int:
           f"min_speed_mps: {sp.get('min_speed_mps', 0.15)}   min_frames: {min_frames}")
     print(f"    scenes            : {[s for d in cfg['datasets']['active'] for s in resolve_scenes(cfg, d, '')]}")
     print(f"    trajectories      : {len(trajs)} -> {' '.join(trajs)}")
+    _pt = (n_target - 1) * speed0 / max(ref_rate, 1e-6)
+    _exp = {r: int(_pt / (speed0 / r)) + 1 for r in (cfg['trajectories'].get('rates_hz') or [])}
+    print(f"    frames per rate   : " + ", ".join(f"{r} Hz -> {v}" for r, v in _exp.items()))
     if any("0.5hz" in t for t in trajs):
         print("    !! 0.5 Hz is STILL in the trajectory list. It was removed from "
               "config.yaml on 2026-08-10 (6-21 frame sequences, degenerate Umeyama). "

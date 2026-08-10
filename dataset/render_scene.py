@@ -267,11 +267,15 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
                                          n_stops=int(sg.get("n_stops", 2)),
                                          dwell_s=float(sg.get("dwell_s", 5.0)))
         else:
+            # The PATH is what is held constant across rates, not the frame count.
+            ref_rate = float(cfg["trajectories"].get("reference_rate_hz", 2.0))
+            hard_cap = int(cfg["trajectories"].get("max_frames_hard", 1000))
+            path_target = (n - 1) * speed / max(ref_rate, 1e-6)
             poses = traj_mod.synthetic_spline(
                 wps, camera_height=cam_z, speed_mps=speed, rate_hz=rate,
-                max_frames=n, close_loop=(kind == "loop"),
-                target_frames=n,                       # n is a TARGET now, not just a cap
-                max_laps=int(sp.get("max_laps", 4)),
+                max_frames=hard_cap, close_loop=(kind == "loop"),
+                path_target_m=path_target,
+                max_laps=int(sp.get("max_laps", 12)),
                 min_speed_mps=float(sp.get("min_speed_mps", 0.15)),
                 min_frames=int(sp.get("min_frames", 32)))
     else:  # dataset_path — loaded by the dataset-specific downloader/importer

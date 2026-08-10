@@ -49,45 +49,39 @@ def resample_path(poses: np.ndarray, n_frames: int) -> np.ndarray:
 
 def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
                      speed_mps: float = 0.5, rate_hz: float = 2.0,
-                     max_frames: int = 200, close_loop: bool = False,
+                     max_frames: int = 1000, close_loop: bool = False,
+                     path_target_m: float | None = None,
                      target_frames: int | None = None, max_laps: int = 12,
                      min_speed_mps: float = 0.15,
                      min_frames: int = 32) -> np.ndarray:
     """Variant B: constant-velocity walkthrough on a Catmull-Rom spline.
 
-    Frames are sampled by ARC LENGTH at spacing = speed/rate (so they simulate a
-    capture at `rate_hz` while moving at `speed_mps` — the real Theta-X operating
-    point). This makes the inter-frame baseline physical and identical for every
-    method (they all consume these same frames). Returns (n,4,4) c2w poses.
+    Frames are sampled by ARC LENGTH at spacing = speed/rate, so they simulate a capture
+    at `rate_hz` while moving at `speed_mps` — the real Theta-X operating point. The
+    inter-frame baseline is therefore physical and identical for every method (they all
+    consume these same frames). Returns (n,4,4) c2w poses.
 
-    REACHING A FRAME TARGET
-    -----------------------
-    Frame count is `path_len * rate / speed`, so `max_frames` could only ever
-    TRUNCATE — it could not lengthen anything. That is why raising `n_frames` from
-    200 to 300 for the 2026-08-09 run changed nothing: real sequences came out at
-    4 to 207 frames, no method ever reached its VRAM ceiling, and the whole
-    capacity/OOM table came back empty (0 OOM, longest completed 207).
+    THE PATH IS THE INVARIANT, NOT THE FRAME COUNT
+    ----------------------------------------------
+    ``path_target_m`` fixes the physical distance walked, and the frame count follows
+    from the rate: 74.75 m gives 300 frames at 2 Hz and 748 at 5 Hz. That is what
+    "capture rate" actually means — one motion, sampled more or less often — and it is
+    the only definition under which a rate comparison isolates the rate.
 
-    `target_frames` fixes that by extending the PATH until the target is reachable,
-    using three levers in the order agreed with the user — cheapest distortion first:
+    The alternative (fix the frame count, let the path follow) was tried first and is
+    unusable. Holding 300 frames at a fixed baseline forces path_len = 299 x baseline,
+    so 2 Hz walks 75 m while 5 Hz walks 30 m of the same circuit. In the 2026-08-10
+    pre-flight apartment_0 seed 5678 came out as 118 m / 3 laps at 2 Hz against 34 m /
+    1 lap at 5 Hz, and its extent fell from 12.99 m to 11.65 m because the 5 Hz walk
+    never finished the circuit. Three things then varied with "rate" at once: path length
+    (2.5x more accumulated drift at 2 Hz), how much of the room was ever observed (so
+    reconstruction completeness was penalised at 5 Hz), and how many revisits a
+    loop-closure method got. None of those is the rate.
 
-      1. **A longer circuit.** Handled upstream in `free_space_waypoints`, which now
-         requires the waypoint set to span the room instead of accepting a cluster.
-      2. **Laps.** Repeat the circuit (up to `max_laps`). Keeps speed and therefore
-         the inter-frame baseline exactly at the configured operating point, which is
-         what the rate sweep is measuring. Cost: the path revisits, which genuinely
-         helps loop-closure methods — state it in the paper.
-      3. **A slower walk.** Only if laps run out. Shrinks the baseline, so it changes
-         the difficulty regime; floored at `min_speed_mps` and reported explicitly.
-
-    `max_laps` defaults to 12, not 4, and the reason is that lever 3 CONFOUNDS THE RATE
-    SWEEP. With a cap of 4, the first check-scenes run produced 2.0 Hz at spacings from
-    0.12 m (room_1 seed 9012) to 0.25 m (apartment_0) because small rooms had to slow
-    down to reach 300 frames — so "2.0 Hz" in one scene was a DENSER capture than
-    "5.0 Hz" in another, and the rate axis stopped being a rate axis. Laps cost realism
-    (more revisiting) but preserve the baseline exactly, so they are strongly preferred:
-    a confined path at the right baseline is a valid measurement, whereas the same path
-    at a scene-dependent baseline is not. When lever 3 does fire, it says so loudly.
+    ``target_frames`` keeps the older frame-count-driven behaviour for callers that want
+    it (the stop-and-go family, whose dwell budget is defined in frames). When it is used
+    instead of ``path_target_m``, the path is lengthened by laps first and only then by
+    slowing the walk, because slowing changes the baseline — see the warning below.
 
     ``close_loop=True`` appends the first waypoints to the end so the path returns to
     (and re-observes) its start — the loop-closure stress test: streaming methods with
@@ -107,40 +101,50 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
     wp = np.concatenate([wp0, wp0[:2]], axis=0) if close_loop else wp0
     dense, cum, total_len = _polyline(wp)
 
-    target = int(target_frames) if target_frames else int(max_frames)
-    target = min(target, int(max_frames))
     spacing = max(speed_mps / max(rate_hz, 1e-6), 1e-3)
     laps, eff_speed = 1, float(speed_mps)
+    path_mode = path_target_m is not None
 
-    need_len = (target - 1) * spacing
-    if total_len < need_len and target_frames:
-        # Lever 2 — laps.
+    if path_mode:
+        need_len = float(path_target_m)
+        target = None
+    else:
+        target = min(int(target_frames or max_frames), int(max_frames))
+        need_len = (target - 1) * spacing
+
+    # Lever 1 (a longer circuit) lives in free_space_waypoints. Lever 2: laps.
+    if total_len < need_len:
         laps = min(int(max_laps), int(np.ceil(need_len / max(total_len, 1e-6))))
         if laps > 1:
             wp = np.concatenate([wp0] * laps + ([wp0[:2]] if close_loop else []), axis=0)
             dense, cum, total_len = _polyline(wp)
-        # Lever 3 — slow down (only if laps were not enough).
-        if total_len < need_len:
+        # Lever 3 — slow down. ONLY in frame-count mode: in path mode the walking speed
+        # is part of what is being held constant, so a scene that cannot reach the target
+        # path simply walks a shorter one (equally, at every rate) and says so. Also
+        # skipped for a shortfall under 1%, which used to emit "speed 0.5->0.50 m/s"
+        # warnings whose baseline was unchanged — noise that trains you to ignore the one
+        # warning that matters.
+        if not path_mode and total_len < need_len * 0.99:
             eff_speed = max(min_speed_mps, total_len * rate_hz / max(target - 1, 1))
             spacing = max(eff_speed / max(rate_hz, 1e-6), 1e-3)
 
-    n = min(int(max_frames), int(total_len / spacing) + 1)
-    if target_frames:
-        # Truncate to the target so every scene yields the SAME sequence length.
-        # Without this, laps overshoot by a whole circuit and scenes get 168 vs 300
-        # frames, which makes per-scene numbers non-comparable and quietly reintroduces
-        # the unequal-N problem at the trajectory level.
+    # Walk exactly need_len when the path affords it, so EVERY rate traverses the same
+    # distance over the same geometry.
+    walk_len = min(total_len, need_len)
+    n = int(walk_len / spacing) + 1
+    if target is not None:
         n = min(n, target)
+    n = min(n, int(max_frames))
     if n < min_frames:
         # Do NOT silently emit a 4-frame "trajectory". On 2026-08-09 the old
         # `max(4, ...)` floor turned office_0's 0.6 m waypoint cluster into twelve
         # 4-to-8-frame sequences whose ATEs were degenerate-Umeyama artifacts, and
         # ~65 runs were spent on them before anyone could tell.
         raise RuntimeError(
-            f"trajectory too short: path_len={total_len:.1f}m at spacing={spacing:.2f}m "
+            f"trajectory too short: walk_len={walk_len:.1f}m at spacing={spacing:.2f}m "
             f"gives only {n} frames (minimum {min_frames}). The waypoint circuit does "
             f"not cover enough of this scene — check the [waypoints] debug above.")
-    targets = np.minimum(np.arange(n) * spacing, total_len)
+    targets = np.minimum(np.arange(n) * spacing, walk_len)
 
     xy = np.empty((n, 2))
     for k, tt in enumerate(targets):
@@ -155,26 +159,35 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
         nxt = eyes[min(i + 1, n - 1)]
         tgt = nxt if not np.allclose(nxt, eyes[i]) else eyes[i] + np.array([1.0, 0, 0])
         poses[i] = _look_at(eyes[i], tgt)
+
     lever = []
     if laps > 1:
         lever.append(f"{laps} laps")
-    if abs(eff_speed - speed_mps) > 1e-6:
+    if abs(eff_speed - speed_mps) > 0.01 * max(speed_mps, 1e-6):
         lever.append(f"speed {speed_mps}->{eff_speed:.2f} m/s")
     lev = f"  [lengthened: {', '.join(lever)}]" if lever else ""
-    print(f"[traj] path_len={total_len:.1f}m spacing={spacing:.2f}m "
+    goal = (f"path target {need_len:.1f}m" if path_mode
+            else f"target {target} frames")
+    print(f"[traj] walked {walk_len:.1f}m of {total_len:.1f}m at spacing={spacing:.2f}m "
           f"(speed {eff_speed:.2f} m/s @ {rate_hz} Hz) -> {n} frames "
-          f"(target {target}, cap {max_frames}){lev}")
-    if abs(eff_speed - speed_mps) > 1e-6:
+          f"({goal}, cap {max_frames}){lev}")
+    if abs(eff_speed - speed_mps) > 0.01 * max(speed_mps, 1e-6):
         print(f"[traj] WARNING: walking speed reduced {speed_mps} -> {eff_speed:.2f} m/s "
               f"to reach {target} frames, so this sequence's inter-frame baseline is "
               f"{spacing:.2f} m instead of the nominal "
-              f"{speed_mps / max(rate_hz, 1e-6):.2f} m. The rate sweep assumes a FIXED "
+              f"{speed_mps / max(rate_hz, 1e-6):.2f} m. A rate comparison assumes a FIXED "
               f"baseline per rate — a scene that lands here is not comparable across "
               f"rates. Raise max_laps (currently {max_laps}) to avoid it.")
-    if target_frames and n < target:
-        print(f"[traj] WARNING: {n} frames < target {target} even after "
-              f"{laps} lap(s) at {eff_speed:.2f} m/s — this scene cannot support the "
-              f"target length; capacity/OOM claims must not rely on it.")
+    if path_mode and walk_len < need_len * 0.99:
+        print(f"[traj] WARNING: walked only {walk_len:.1f}m of the {need_len:.1f}m target "
+              f"even after {laps} lap(s) — this scene's circuit is too short. The path is "
+              f"still identical across rates, so the rate comparison stays valid, but "
+              f"this sequence is shorter than the others.")
+    if n >= int(max_frames):
+        print(f"[traj] NOTE: hit the hard frame cap ({max_frames}). At {rate_hz} Hz this "
+              f"path wanted {int(walk_len / spacing) + 1} frames, so this rate's path is "
+              f"TRUNCATED relative to the others and the rate comparison is compromised. "
+              f"Raise max_frames_hard.")
     return poses
 
 
