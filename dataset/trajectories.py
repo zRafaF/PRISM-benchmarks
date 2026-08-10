@@ -50,7 +50,7 @@ def resample_path(poses: np.ndarray, n_frames: int) -> np.ndarray:
 def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
                      speed_mps: float = 0.5, rate_hz: float = 2.0,
                      max_frames: int = 200, close_loop: bool = False,
-                     target_frames: int | None = None, max_laps: int = 4,
+                     target_frames: int | None = None, max_laps: int = 12,
                      min_speed_mps: float = 0.15,
                      min_frames: int = 32) -> np.ndarray:
     """Variant B: constant-velocity walkthrough on a Catmull-Rom spline.
@@ -79,6 +79,15 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
          helps loop-closure methods — state it in the paper.
       3. **A slower walk.** Only if laps run out. Shrinks the baseline, so it changes
          the difficulty regime; floored at `min_speed_mps` and reported explicitly.
+
+    `max_laps` defaults to 12, not 4, and the reason is that lever 3 CONFOUNDS THE RATE
+    SWEEP. With a cap of 4, the first check-scenes run produced 2.0 Hz at spacings from
+    0.12 m (room_1 seed 9012) to 0.25 m (apartment_0) because small rooms had to slow
+    down to reach 300 frames — so "2.0 Hz" in one scene was a DENSER capture than
+    "5.0 Hz" in another, and the rate axis stopped being a rate axis. Laps cost realism
+    (more revisiting) but preserve the baseline exactly, so they are strongly preferred:
+    a confined path at the right baseline is a valid measurement, whereas the same path
+    at a scene-dependent baseline is not. When lever 3 does fire, it says so loudly.
 
     ``close_loop=True`` appends the first waypoints to the end so the path returns to
     (and re-observes) its start — the loop-closure stress test: streaming methods with
@@ -155,6 +164,13 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
     print(f"[traj] path_len={total_len:.1f}m spacing={spacing:.2f}m "
           f"(speed {eff_speed:.2f} m/s @ {rate_hz} Hz) -> {n} frames "
           f"(target {target}, cap {max_frames}){lev}")
+    if abs(eff_speed - speed_mps) > 1e-6:
+        print(f"[traj] WARNING: walking speed reduced {speed_mps} -> {eff_speed:.2f} m/s "
+              f"to reach {target} frames, so this sequence's inter-frame baseline is "
+              f"{spacing:.2f} m instead of the nominal "
+              f"{speed_mps / max(rate_hz, 1e-6):.2f} m. The rate sweep assumes a FIXED "
+              f"baseline per rate — a scene that lands here is not comparable across "
+              f"rates. Raise max_laps (currently {max_laps}) to avoid it.")
     if target_frames and n < target:
         print(f"[traj] WARNING: {n} frames < target {target} even after "
               f"{laps} lap(s) at {eff_speed:.2f} m/s — this scene cannot support the "
@@ -445,18 +461,35 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
 
     # A room smaller than the requested span cannot satisfy it; scale the requirement
     # to the room so a genuinely small office is not rejected for being small.
+    #
+    # The bar is 2.0 m, not the 3.0 m first tried. What this guard exists to catch is a
+    # NEAR-STATIONARY camera: office_0's original failure was a 0.6 m circuit yielding
+    # 4-frame sequences on which Umeyama is degenerate. A 2.4 m extent walked over 300
+    # frames is not that — it is 240 cm of parallax against metrics quoted in cm and an
+    # F-score at 5 cm, and it is well conditioned. At 3.0 m the guard was rejecting
+    # room_2 entirely and one seed of office_0, which would have cost a scene and left
+    # office_0 with uneven seeds — a worse problem than a confined trajectory.
     room_diag = float(np.hypot(hi[0] - lo[0], hi[1] - lo[1]))
-    span_req = min(min_span_m, 0.45 * room_diag)
+    span_req = min(min_span_m, 0.35 * room_diag)
 
     if debug:
         print(f"[waypoints] AABB lo={np.round(lo,2)} hi={np.round(hi,2)} "
               f"probe_z={z:.2f} floor_z={fz:.2f} ground_tol={ground_tol_m} "
               f"room_diag={room_diag:.1f}m span_req={span_req:.1f}m")
 
+    # Collect a POOL of acceptable points, then choose the spread-maximising subset.
+    # Taking the first n_waypoints that pass (the old behaviour) makes the circuit's
+    # extent a lottery: office_0 seed 9012 spanned 2.24 m while seeds 1234/5678 spanned
+    # 3.5-3.9 m in the same room, purely from sampling order. Farthest-point selection
+    # makes the span depend on the room's accessible free space rather than on the seed,
+    # which is what a benchmark trajectory should be — and it makes the span check below
+    # meaningful, because a failure then really means "this scene cannot do better".
+    pool_target = max(int(n_waypoints) * 6, 48)
+
     def _sample(interior_min: float, fz_use: float, rng):
         kept, tries, shown, n_floor_seen = [], 0, 0, 0
-        budget = n_waypoints * 800
-        while len(kept) < n_waypoints and tries < budget:
+        budget = n_waypoints * 1200
+        while len(kept) < pool_target and tries < budget:
             tries += 1
             xy = rng.uniform(lo[:2], hi[:2])
             pt = np.array([xy[0], xy[1], z], dtype=np.float32)
@@ -475,7 +508,7 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
                 shown += 1
             if ok:
                 kept.append((xy, floor_frac))
-        return kept, tries, n_floor_seen
+        return _farthest_point_subset(kept, int(n_waypoints)), tries, n_floor_seen
 
     # Pass 1 at the strict thresholds. If it finds no floor at ALL, the floor_z we were
     # handed is wrong -> re-estimate it and try again before relaxing anything else.
@@ -531,6 +564,32 @@ def free_space_waypoints(mesh, n_waypoints: int, min_clearance_m: float, seed: i
         print(f"[waypoints] tour order (NN from cleanest floor): "
               f"{[np.round(p, 2).tolist() for p in order]}")
     return np.array(order)
+
+
+def _farthest_point_subset(kept, k: int):
+    """Pick k of the accepted waypoints to maximise spatial spread.
+
+    Greedy farthest-point sampling, seeded from the point with the CLEANEST floor patch
+    (the tour starts there, and PRISM locks its metric scale from the floor under the
+    first frames — so the start should be the most reliable floor in the room). Each
+    subsequent pick is the candidate furthest from everything chosen so far.
+
+    Returns the same ``[(xy, floor_frac), ...]`` shape it was given, so callers are
+    unaffected. If fewer than k candidates were found, returns all of them.
+    """
+    if len(kept) <= k:
+        return list(kept)
+    pts = np.array([xy for xy, _ in kept], dtype=float)
+    start = int(np.argmax([ff for _, ff in kept]))
+    chosen = [start]
+    dmin = np.linalg.norm(pts - pts[start], axis=1)
+    while len(chosen) < k:
+        nxt = int(np.argmax(dmin))
+        if dmin[nxt] <= 0:
+            break
+        chosen.append(nxt)
+        dmin = np.minimum(dmin, np.linalg.norm(pts - pts[nxt], axis=1))
+    return [kept[i] for i in chosen]
 
 
 def _span(kept) -> float:

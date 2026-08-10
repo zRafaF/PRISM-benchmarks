@@ -135,10 +135,23 @@ trajectories:
     # ── Reaching n_frames (see dataset/trajectories.py::synthetic_spline) ──
     # Sequence length is path_len * rate / speed, so n_frames used to only TRUNCATE.
     # These are the levers that lengthen the path, cheapest distortion first.
-    n_waypoints: 12          # lever 1: a longer circuit (was 8) — costs nothing
-    min_span_m: 3.0          # waypoints must SPAN the room, not cluster (office_0 guard)
-    max_laps: 4              # lever 2: repeat the circuit; keeps the baseline exact,
-                             #   but adds revisits — say so when reporting loop closure
+    n_waypoints: 12          # lever 1: a longer circuit (was 8) — costs nothing.
+                             #   Waypoints are chosen by farthest-point sampling from a
+                             #   larger accepted pool, so the circuit's extent depends on
+                             #   the room rather than on the RNG order.
+    min_span_m: 2.0          # waypoints must SPAN the room, not cluster (office_0 guard).
+                             #   2.0 m, not 3.0: this catches a NEAR-STATIONARY camera
+                             #   (the original failure was 0.6 m / 4 frames), and 2.4 m
+                             #   walked over 300 frames is well-conditioned parallax
+                             #   against metrics quoted in cm. At 3.0 m it rejected
+                             #   room_2 outright and one seed of office_0.
+    max_laps: 12             # lever 2: repeat the circuit; keeps the baseline EXACT.
+                             #   12, not 4, because lever 3 confounds the rate sweep:
+                             #   at a cap of 4, small rooms slowed to 0.24 m/s and their
+                             #   "2.0 Hz" baseline (0.12 m) came out denser than another
+                             #   scene's "5.0 Hz" (0.10 m). Laps cost realism (more
+                             #   revisiting — state it when reporting loop closure) but
+                             #   keep the rate axis meaning what it says.
     min_speed_mps: 0.15      # lever 3: slow the walk; changes the baseline, last resort
     min_frames: 32           # hard floor — refuse to emit a stationary "trajectory"
 
