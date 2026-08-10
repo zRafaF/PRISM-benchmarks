@@ -119,6 +119,25 @@ def main() -> int:
     min_frames = args.min_frames or int(sp.get("min_frames", 32))
     trajs = resolve_trajs(cfg, "all")
 
+    # Echo the config that is actually in force. A stale config.yaml on the GPU box (or
+    # a config.local.yaml overlay) is otherwise invisible, and it is what silently kept
+    # the 0.5 Hz rate alive after it had been removed.
+    print("[check_scenes] effective config:")
+    print(f"    n_frames (target) : {n_target}")
+    print(f"    rates_hz          : {cfg['trajectories'].get('rates_hz')}")
+    print(f"    extra_kinds       : {list((cfg['trajectories'].get('extra_kinds') or {}))}")
+    print(f"    seeds             : {cfg['datasets'].get('seeds')}")
+    print(f"    n_waypoints       : {sp.get('n_waypoints', 12)}   "
+          f"min_span_m: {sp.get('min_span_m', 3.0)}")
+    print(f"    max_laps          : {sp.get('max_laps', 4)}   "
+          f"min_speed_mps: {sp.get('min_speed_mps', 0.15)}   min_frames: {min_frames}")
+    print(f"    scenes            : {[s for d in cfg['datasets']['active'] for s in resolve_scenes(cfg, d, '')]}")
+    print(f"    trajectories      : {len(trajs)} -> {' '.join(trajs)}")
+    if any("0.5hz" in t for t in trajs):
+        print("    !! 0.5 Hz is STILL in the trajectory list. It was removed from "
+              "config.yaml on 2026-08-10 (6-21 frame sequences, degenerate Umeyama). "
+              "The config in force here is stale, or config.local.yaml overrides it.")
+
     report, n_bad, n_short = [], 0, 0
     for dataset in cfg["datasets"]["active"]:
         for scene in resolve_scenes(cfg, dataset, ""):
@@ -137,7 +156,8 @@ def main() -> int:
             raycast.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
 
             floor_p1 = float(np.percentile(np.asarray(mesh.vertices)[:, 2], 1.0))
-            floor_ray = traj_mod.estimate_floor_z(raycast, lo, hi, seed=0, debug=False)
+            floor_ray = traj_mod.estimate_floor_z(raycast, lo, hi, seed=0,
+                                                  candidates=[floor_p1], debug=True)
             floor_z = float(floor_ray) if floor_ray is not None else floor_p1
             cam_z = floor_z + cfg["camera"]["camera_height_m"]
             print(f"  up_axis={up_axis}")

@@ -262,57 +262,147 @@ def clean_floor_patch(scene, x: float, y: float, z_top: float, floor_z: float,
     return float(ok.mean()), med
 
 
-def estimate_floor_z(scene, lo, hi, n_probe: int = 1024, seed: int = 0,
-                     bin_m: float = 0.05, debug: bool = True) -> float | None:
-    """Estimate the floor height by RAY CASTING, not by vertex statistics.
+def _column_surfaces(scene, xy, z_top, max_hits: int = 12, eps: float = 2e-3):
+    """Every surface under each (x,y) column, top to bottom, with its facing.
 
-    The previous estimator was `np.percentile(vertex_z, 1)` in render_scene.py. That
-    is only correct when nothing in the mesh sits below the floor, and `room_2`
-    violates it: its mesh extends ~0.8 m under the floor (z-extent 3.59 m vs ~2.8 m
-    for every other Replica room), so p1 landed at -2.85 when the real floor is
-    around -2.0. Every downward ray then missed the `|ground - floor_z| <= tol` test,
-    `floor_frac` was 0.00 for all 6400 candidates, and the scene raised
-    `free-space-over-floor sampling failed` — which `make render`'s `|| true`
-    swallowed, so room_2 silently vanished from the 2026-08-09 matrix.
+    ``RaycastingScene.cast_rays`` returns only the FIRST intersection, so one downward
+    ray from above a closed room reports the CEILING and never sees the floor. This
+    re-casts from just past each hit to walk the whole stack of surfaces in a column,
+    and keeps each hit's normal so a floor (faces up) can be told from a ceiling
+    (faces down).
 
-    What a floor actually is: the height that the most downward rays land on. This
-    casts a grid of rays from above and returns the mode of the hit-height histogram,
-    which is robust to sub-floor geometry, furniture and holes. Returns None when
-    nothing is hit at all.
+    Returns a list per column of (z, normal_z) ordered from high to low.
     """
     import open3d as o3d
+    xy = np.asarray(xy, dtype=np.float32)
+    n = len(xy)
+    cur = np.full(n, float(z_top), dtype=np.float32)
+    alive = np.ones(n, dtype=bool)
+    cols = [[] for _ in range(n)]
+    for _ in range(int(max_hits)):
+        idx = np.flatnonzero(alive)
+        if idx.size == 0:
+            break
+        rays = np.concatenate([
+            xy[idx], cur[idx, None],
+            np.zeros((idx.size, 2), np.float32), -np.ones((idx.size, 1), np.float32),
+        ], axis=1).astype(np.float32)
+        res = scene.cast_rays(o3d.core.Tensor(rays))
+        t = res["t_hit"].numpy()
+        nrm = res["primitive_normals"].numpy()
+        for k, j in enumerate(idx):
+            if not np.isfinite(t[k]):
+                alive[j] = False
+                continue
+            z = float(cur[j] - t[k])
+            cols[j].append((z, float(nrm[k][2])))
+            cur[j] = z - eps
+    return cols
+
+
+def estimate_floor_z(scene, lo, hi, n_probe: int = 1024, seed: int = 0,
+                     bin_m: float = 0.05, min_headroom_m: float = 1.5,
+                     up_dot: float = 0.7, max_hits: int = 12,
+                     candidates=None, tol_m: float = 0.10,
+                     debug: bool = True) -> float | None:
+    """Estimate the floor height by ray casting, and SCORE it against alternatives.
+
+    Three estimators have now been tried on these six Replica scenes and the first two
+    were each wrong on a different subset, which is why this one ends in a scored
+    comparison rather than a single formula:
+
+    * ``np.percentile(vertex_z, 1)`` — right for apartment_0/1, room_0/1. Wrong for
+      room_2, whose mesh extends ~0.8 m BELOW its floor: p1 landed under the floor, no
+      downward ray came within tolerance, and the scene was silently dropped from the
+      2026-08-09 matrix.
+    * "the height most downward rays land on" — wrong for closed rooms, because
+      ``cast_rays`` returns the FIRST intersection and a ray from above hits the
+      CEILING. It reported +1.05 m for apartment_0 (floor -1.53 m), which put the camera
+      above the roof and left office_0, room_0 and room_1 unable to find any floor.
+
+    What actually defines a floor is physical: **an upward-facing surface with standing
+    room above it.** This walks the whole stack of surfaces per column
+    (``_column_surfaces``), keeps hits whose normal points up and which have at least
+    ``min_headroom_m`` of clear space before the next surface above, and takes the
+    histogram peak — preferring the LOWEST well-supported height, since a floor always
+    sits below the tables that also pass the standable test.
+
+    Then it scores that answer, and any ``candidates`` the caller supplies (pass the p1
+    value), by the only thing that matters downstream: **what fraction of columns have a
+    standable surface within ``tol_m`` of this height** — i.e. how much bare floor the
+    waypoint sampler would actually find. The best-scoring height wins, and every
+    candidate's score is printed, so a bad estimate is visible in one log line instead of
+    six scenes' worth of confusing failures.
+
+    Returns None if no standable surface exists anywhere.
+    """
     rng = np.random.default_rng(seed)
-    m = int(np.sqrt(n_probe))
+    m = max(4, int(np.sqrt(n_probe)))
     gx = np.linspace(lo[0], hi[0], m)
     gy = np.linspace(lo[1], hi[1], m)
     xx, yy = np.meshgrid(gx, gy)
     xy = np.column_stack([xx.ravel(), yy.ravel()])
-    # jitter so a grid aligned with a wall doesn't systematically miss the floor
-    xy += rng.uniform(-0.5, 0.5, xy.shape) * [(gx[1] - gx[0]), (gy[1] - gy[0])]
+    # Jitter so a grid aligned with a wall does not systematically sample the same edge.
+    step = np.array([gx[1] - gx[0] if m > 1 else 0.0,
+                     gy[1] - gy[0] if m > 1 else 0.0])
+    xy = xy + rng.uniform(-0.5, 0.5, xy.shape) * step
     z_top = float(hi[2]) + 0.5
-    rays = np.column_stack([xy, np.full(len(xy), z_top),
-                            np.zeros(len(xy)), np.zeros(len(xy)),
-                            -np.ones(len(xy))]).astype(np.float32)
-    t = scene.cast_rays(o3d.core.Tensor(rays))["t_hit"].numpy()
-    hits = z_top - t[np.isfinite(t)]
-    if hits.size == 0:
+
+    cols = _column_surfaces(scene, xy, z_top, max_hits=max_hits)
+
+    # Standable surfaces per column: upward-facing, with headroom to the next one up.
+    per_col, flat = [], []
+    for col in cols:
+        zs = [z for z, _ in col]                    # already ordered high -> low
+        keep = []
+        for k, (z, nz) in enumerate(col):
+            if nz < up_dot:
+                continue                            # ceiling / wall / downward face
+            above = zs[k - 1] if k > 0 else z_top   # nearest surface above this one
+            if (above - z) >= min_headroom_m:
+                keep.append(z)
+        per_col.append(keep)
+        flat.extend(keep)
+    if not flat:
+        if debug:
+            print(f"[floor] no upward-facing surface with {min_headroom_m:.1f} m "
+                  f"headroom in any of {len(cols)} columns")
         return None
-    edges = np.arange(hits.min(), hits.max() + bin_m, bin_m)
+
+    def _coverage(zf: float) -> float:
+        """Fraction of columns with a standable surface within tol_m of zf."""
+        if zf is None:
+            return -1.0
+        return sum(1 for keep in per_col
+                   if any(abs(z - zf) <= tol_m for z in keep)) / max(len(per_col), 1)
+
+    arr = np.asarray(flat, dtype=float)
+    edges = np.arange(arr.min(), arr.max() + bin_m, bin_m)
     if len(edges) < 2:
-        return float(np.median(hits))
-    counts, _ = np.histogram(hits, bins=edges)
-    # The floor is the most-hit height in the LOWER HALF of the hit range: taking the
-    # global mode would pick a large tabletop or a mezzanine in a tall room.
-    mid = float(hits.min() + 0.5 * (hits.max() - hits.min()))
-    lower = edges[:-1] < mid
-    if not lower.any():
-        lower[:] = True
-    idx = int(np.argmax(np.where(lower, counts, -1)))
-    fz = float(edges[idx] + bin_m / 2)
+        peak = float(np.median(arr))
+    else:
+        counts, _ = np.histogram(arr, bins=edges)
+        best = int(counts.max())
+        # Among heights nearly as well supported as the best, take the LOWEST.
+        near = np.flatnonzero(counts >= 0.60 * best)
+        peak = float(edges[int(near[0])] + bin_m / 2)
+
+    cand = [("raycast", peak)]
+    for i, c in enumerate(candidates or []):
+        if c is not None:
+            cand.append((f"candidate{i}", float(c)))
+    scored = [(name, z, _coverage(z)) for name, z in cand]
+    scored.sort(key=lambda t: (-t[2], t[1]))         # best coverage, then lowest
+    name, fz, cov = scored[0]
+
     if debug:
-        print(f"[floor] raycast floor estimate: {fz:.2f} m "
-              f"({counts[idx]}/{hits.size} down-rays land within {bin_m*100:.0f} cm of it; "
-              f"hit range {hits.min():.2f}..{hits.max():.2f})")
+        detail = ", ".join(f"{n}={z:+.2f} (cov {100*c:.0f}%)" for n, z, c in scored)
+        print(f"[floor] floor_z={fz:+.2f} via {name} — {detail} "
+              f"[{len(flat)} standable hits / {len(cols)} columns]")
+        if cov < 0.10:
+            print(f"[floor] WARNING: the winning height covers only {100*cov:.0f}% of "
+                  f"columns. The waypoint sampler will struggle; this scene may have a "
+                  f"split-level floor or a broken mesh.")
     return fz
 
 

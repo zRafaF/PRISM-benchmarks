@@ -226,7 +226,8 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     # bare-floor test, and the scene was dropped from the 2026-08-09 matrix entirely.
     vz = np.asarray(mesh.vertices)[:, 2]
     floor_p1 = float(np.percentile(vz, 1.0))
-    floor_ray = traj_mod.estimate_floor_z(raycast, lo, hi, seed=0)
+    floor_ray = traj_mod.estimate_floor_z(raycast, lo, hi, seed=0,
+                                          candidates=[floor_p1])
     floor_z = float(floor_ray) if floor_ray is not None else floor_p1
     centroid = np.asarray(mesh.get_center())
     n = cfg["trajectories"]["n_frames"]
