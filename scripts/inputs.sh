@@ -5,6 +5,7 @@
 #   bash scripts/inputs.sh pack     # dataset/exports -> dataset/inputs/<tag>/<scene>.tar
 #   bash scripts/inputs.sh push     # upload dataset/inputs/<tag>/ to a HF dataset repo
 #   bash scripts/inputs.sh fetch    # on a pod: download + unpack (only this SHARD's scenes)
+#   bash scripts/inputs.sh unpack   # on a pod: unpack tars you copied into dataset/inputs/<tag>/
 #   bash scripts/inputs.sh verify   # every frozen (scene, traj) has its method inputs
 #
 # A pack holds exactly what the METHODS read: rgb/ + mask/ + meta.json +
@@ -89,6 +90,7 @@ fetch)
   fi
   cp "dataset/_hf/inputs/$TAG/config.local.yaml" config.local.yaml
   cp "dataset/_hf/inputs/$TAG/MANIFEST.json" "$DIR/MANIFEST.json"
+  "$0" check-hash
   SC="$(shard_of "$(frozen_scenes)")"
   echo ">> fetching inputs/$TAG for: $SC"
   for sc in $SC; do
@@ -99,6 +101,37 @@ fetch)
     echo "   $sc unpacked"
   done
   "$0" verify ;;
+unpack)
+  [ -f "$DIR/MANIFEST.json" ] && [ -f "$DIR/config.local.yaml" ] || {
+    echo "!! copy MANIFEST.json, config.local.yaml and <scene>.tar into $DIR first"; exit 1; }
+  if [ -f config.local.yaml ] && ! cmp -s config.local.yaml "$DIR/config.local.yaml"; then
+    cp config.local.yaml "config.local.yaml.bak.$(date +%s)"
+  fi
+  cp "$DIR/config.local.yaml" config.local.yaml
+  "$0" check-hash
+  for t in "$DIR"/*.tar; do echo ">> unpacking $(basename "$t")"; tar -xf "$t" -C .; done
+  "$0" verify ;;
+check-hash)
+  # The pod must run the SAME trajectory/render code that produced the inputs.
+  M="$DIR/MANIFEST.json"
+  [ -f "$M" ] || { echo "!! no $M"; exit 1; }
+  $RUN - "$M" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+m = json.loads(Path(sys.argv[1]).read_text())
+h = hashlib.sha256()
+for f in ("config.yaml", "config.local.yaml", "dataset/trajectories.py", "dataset/render_scene.py"):
+    h.update(Path(f).read_bytes())
+ok = h.hexdigest() == m.get("render_config_sha256")
+print(f">> inputs rendered at commit {m.get('git_commit', '?')[:8]}"
+      f"{' (DIRTY)' if m.get('git_dirty') else ''}: config/trajectory code "
+      f"{'MATCHES' if ok else 'DIFFERS FROM'} this checkout")
+if not ok:
+    print("!! config.yaml / trajectories.py / render_scene.py changed since the inputs were "
+          "rendered. Re-render + re-pack on the PC, or check out the commit above.")
+sys.exit(0 if ok else 1)
+PY
+  ;;
 verify)
   $RUN - <<'PY'
 import os, sys

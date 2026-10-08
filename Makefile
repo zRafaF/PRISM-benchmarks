@@ -34,7 +34,8 @@ PYCHK    ?= python3
         fig-fusion fig-fusion-results figures \
         studio preview snapshots docs docs-serve clean clean-results publication \
         pod pod-status pod-stop env-check replica inputs-pack inputs-push inputs-fetch \
-        inputs-verify results-pack results-push results-fetch results-merge eval-all
+        inputs-verify results-pack results-push results-fetch results-merge eval-all \
+        inputs precheck progress watch
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -103,6 +104,9 @@ help:
 	@echo "Pods (rerun-v2: render once, run on N GPU pods, score offline on CPU):"
 	@echo "  make pod [SHARD=k/N]  fresh pod -> envs -> inputs -> env-check -> methods -> pack -> Studio"
 	@echo "                        (detached in tmux 'pod'; make pod-status / pod-stop)"
+	@echo "  make inputs           ON YOUR PC: Replica -> split -> check -> render -> export -> pack"
+	@echo "  make precheck         every method on ONE real sequence + validation table + ETA"
+	@echo "  make progress / watch progress bar + ETA of the running benchmark (watch = live)"
 	@echo "  make env-check        GPU + CUDA envs + prism-v2 engine + VGGT-SLAM reference sample"
 	@echo "  make replica          download Replica (no approval) into dataset/raw/replica"
 	@echo "  make inputs-pack      exports -> dataset/inputs/<tag>/<scene>.tar (no depth/meshes)"
@@ -533,9 +537,10 @@ pod:
 	  bash scripts/pod.sh all; \
 	fi
 pod-status:
-	@echo "stage : $$(cat logs/pod_stage 2>/dev/null || echo '(not started)')"
-	@tail -n 8 logs/overnight_latest.progress 2>/dev/null || true
-	@echo "--- last pod log lines ---"; tail -n 15 logs/pod_latest.log 2>/dev/null || true
+	@echo "pod stage : $$(cat logs/pod_stage 2>/dev/null || echo '(not started)')"
+	@echo ""
+	@$(ORCH_RUN) scripts/progress.py 2>/dev/null || true
+	@echo ""; echo "--- last pod log lines ---"; tail -n 8 logs/pod_latest.log 2>/dev/null || true
 pod-stop:
 	-@tmux kill-session -t $(POD_SESSION) 2>/dev/null && echo ">> stopped tmux session '$(POD_SESSION)'"
 	@$(MAKE) --no-print-directory bench-stop
@@ -578,3 +583,18 @@ eval-all: setup
 	$(ORCH_RUN) eval/make_report.py     --config $(CONFIG)
 	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source live
 	@echo ">> scored. Next: make publication   (and make snapshots for the figures)"
+
+# ── Render on your PC, pre-check, progress (rerun-v2) ─────────────────────────────
+# The whole dataset build on the machine that has CPU time to spare; then
+# `make inputs-push` (HF) or copy dataset/inputs/<tag>/ to the pod by hand.
+inputs: setup replica split check-scenes render export inputs-pack
+	@echo ">> inputs ready in dataset/inputs/$(INPUTS_TAG)/ — next: make inputs-push INPUTS_HF_REPO=<you>/<repo>"
+
+precheck: setup
+	$(ORCH_RUN) scripts/precheck.py
+
+progress: setup
+	@$(ORCH_RUN) scripts/progress.py
+
+watch: setup
+	@$(ORCH_RUN) scripts/progress.py --watch 15

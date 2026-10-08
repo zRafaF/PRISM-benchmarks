@@ -12,14 +12,18 @@
 #   check     env-check: GPU, CUDA in every env, prism-v2 engine, nvblox FUSES a frame,
 #             VGGT-SLAM reproduces its own office_loop loop closure. If ONLY nvblox
 #             fails, PRISM's env is rebuilt with nvblox from source and re-checked.
-#   data      THE DATASET: download Replica -> freeze the 6-scene split -> check every
-#             scene x trajectory -> render pano + pinhole + GT -> export
+#   data      THE DATASET. Rendered on your PC and uploaded (recommended):
+#               INPUTS_HF_REPO set          -> download + unpack the pre-rendered frames
+#               tars in dataset/inputs/<tag> -> unpack them (you copied them by hand)
+#             otherwise renders here: Replica -> split -> check -> render -> export
+#   precheck  every method on ONE real sequence + validation table + full-run ETA.
+#             The benchmark does not start unless every method PASSES.
 #   bench     the method matrix (no scoring on the GPU box)
 #   capacity  OPTIONAL (POD_CAPACITY=1): VRAM-vs-length prefix sweep for Fig. vram
 #   eval      OPTIONAL (POD_EVAL=1): score on this pod's CPU (else score locally)
 #   pack      raw results + scoring inputs + logs -> results/bundles/pod_*.tar
 #   studio    Gradio Studio with a public link; Download tab lists the pack
-#   all       prep check data bench [capacity] [eval] pack studio
+#   all       prep check data precheck bench [capacity] [eval] pack studio
 #
 # Env: POD_CAPACITY=1, POD_EVAL=1, POD_STUDIO=0, RESULTS_HF_REPO + HF_TOKEN (auto-upload),
 #      SHARD=k/N (only if you ever split across pods).
@@ -71,7 +75,18 @@ stage_check() {
 }
 
 stage_data() {
-  say "data: download Replica (no approval needed)"
+  local tag="${INPUTS_TAG:-rerun-v2}"
+  if [ -n "${INPUTS_HF_REPO:-}" ]; then
+    say "data: download the frames rendered on your PC ($INPUTS_HF_REPO, $tag)"
+    bash scripts/inputs.sh fetch
+    touch logs/.data_ready; return
+  fi
+  if ls "dataset/inputs/$tag"/*.tar >/dev/null 2>&1; then
+    say "data: unpack the frames you copied into dataset/inputs/$tag"
+    bash scripts/inputs.sh unpack
+    touch logs/.data_ready; return
+  fi
+  say "data: no pre-rendered inputs -> rendering on this pod. Download Replica (no approval)"
   make replica
   say "data: freeze the scene split (6 scenes, fixed seed) -> config.local.yaml"
   make split
@@ -82,6 +97,12 @@ stage_data() {
   make export SCENES="${BENCH_SCENES:-}" TRAJ=all
   bash scripts/inputs.sh verify
   touch logs/.data_ready
+}
+
+stage_precheck() {
+  [ -f logs/.data_ready ] || { echo "!! run the data stage first"; exit 1; }
+  say "precheck: every method on one real sequence (results are kept and reused)"
+  make precheck
 }
 
 stage_bench() {
@@ -118,13 +139,14 @@ case "${1:-all}" in
   prep)     stage_prep ;;
   check)    stage_check ;;
   data)     stage_data ;;
+  precheck) stage_precheck ;;
   bench)    stage_bench ;;
   capacity) stage_capacity ;;
   eval)     stage_eval ;;
   pack)     stage_pack ;;
   studio)   stage_studio ;;
   all)
-    stage_prep; stage_check; stage_data; stage_bench
+    stage_prep; stage_check; stage_data; stage_precheck; stage_bench
     [ "${POD_CAPACITY:-0}" = "1" ] && stage_capacity
     [ "${POD_EVAL:-0}" = "1" ] && stage_eval
     stage_pack; say "DONE"; stage_studio ;;
