@@ -39,6 +39,10 @@ datasets:
     # smallest Replica rooms; pinning them makes the difficulty spread a property of
     # the config rather than of the RNG.
     must_include: [room_0, office_0]
+    # What `make replica` downloads (meshes only). It is exactly the split make_split
+    # draws from all 18 Replica scenes (must_include + seed 1234), so fetching only these
+    # freezes the same 6. Change both together if you change the split.
+    download_scenes: [apartment_0, apartment_1, office_0, room_0, room_1, room_2]
     mesh_glob: "*/mesh.ply"
 
   scannetpp:

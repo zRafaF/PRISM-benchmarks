@@ -11,10 +11,14 @@ venv/
 # Datasets, weights, and run outputs — NEVER commit (brief §9)
 dataset/raw/
 dataset/exports/
-dataset/inputs/          # packed pod inputs (scripts/inputs.sh)
-dataset/_hf/             # HF downloads (inputs / pod result packs)
-dataset/_replica_src/    # Replica-Dataset downloader checkout (make replica)
-logs/                    # overnight / pod / env-check logs (packed into pod tars)
+# packed pod inputs (scripts/inputs.sh)
+dataset/inputs/
+# HF downloads (inputs / pod result packs)
+dataset/_hf/
+# Replica-Dataset downloader checkout (make replica)
+dataset/_replica_src/
+# overnight / pod / env-check logs (packed into pod tars)
+logs/
 config.local.yaml.bak.*
 results/
 checkpoints/

@@ -7,12 +7,19 @@ clean), score on your PC (CPU).
 
 ```bash
 sudo apt update && sudo apt install -y git make wget pigz unzip curl
-git clone -b rerun-v2 https://github.com/zRafaF/PRISM-benchmarks.git ~/PRISM-benchmarks
-cd ~/PRISM-benchmarks
-make inputs                 # Replica (~34 GB download) -> split -> check -> render -> export -> pack
+curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
+cd /mnt/c/Dev/ualberta/PRISM-benchmarks      # your Windows checkout works (or clone into ~ for speed)
+git config core.fileMode false              # hide exec-bit noise from the Windows filesystem
+make inputs                 # Replica meshes (streamed) -> split -> check -> render -> export -> pack
 export HF_TOKEN=hf_...      # a WRITE token
 make inputs-push INPUTS_HF_REPO=<hf-user>/prism-bench-inputs
 ```
+
+`make replica` streams the official archive (one ~34 GB tar.gz in 17 parts, which can
+only be decoded from the start) and keeps just `<scene>/mesh.ply` for the 6 scenes in
+`datasets.replica.download_scenes` — about 3 GB on disk, no parts left behind.
+`make replica-full` still runs the official script if you ever need textures.
+
 Keep this checkout: it has the depth maps and GT meshes the scoring needs.
 
 ## 2. The pod

@@ -33,7 +33,7 @@ PYCHK    ?= python3
         fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine \
         fig-fusion fig-fusion-results figures \
         studio preview snapshots docs docs-serve clean clean-results publication \
-        pod pod-status pod-stop env-check replica inputs-pack inputs-push inputs-fetch \
+        pod pod-status pod-stop env-check replica replica-full inputs-pack inputs-push inputs-fetch \
         inputs-verify results-pack results-push results-fetch results-merge eval-all \
         inputs precheck progress watch
 
@@ -108,7 +108,7 @@ help:
 	@echo "  make precheck         every method on ONE real sequence + validation table + ETA"
 	@echo "  make progress / watch progress bar + ETA of the running benchmark (watch = live)"
 	@echo "  make env-check        GPU + CUDA envs + prism-v2 engine + VGGT-SLAM reference sample"
-	@echo "  make replica          download Replica (no approval) into dataset/raw/replica"
+	@echo "  make replica          stream Replica, keep only the benchmark scenes' meshes"
 	@echo "  make inputs-pack      exports -> dataset/inputs/<tag>/<scene>.tar (no depth/meshes)"
 	@echo "  make inputs-push      upload them to INPUTS_HF_REPO       | inputs-fetch on the pod"
 	@echo "  make results-fetch    download every pod pack (RESULTS_HF_REPO) | results-merge"
@@ -548,7 +548,13 @@ env-check:
 	bash scripts/env_check.sh
 
 REPLICA_SRC ?= dataset/_replica_src
-replica:
+# Streams the archive and keeps only <scene>/mesh.ply of config.yaml's
+# datasets.replica.download_scenes (~3 GB on disk instead of ~100 GB).
+replica: setup
+	$(ORCH_RUN) dataset/fetch_replica.py --out dataset/raw/replica
+
+# The whole dataset (textures, semantics, habitat configs) via the official script.
+replica-full:
 	@if [ -n "$$(ls -A dataset/raw/replica 2>/dev/null)" ]; then echo ">> Replica already present"; else \
 	  command -v pigz >/dev/null || $(MAKE) --no-print-directory deps; \
 	  [ -d $(REPLICA_SRC) ] || git clone --depth 1 https://github.com/facebookresearch/Replica-Dataset $(REPLICA_SRC); \
