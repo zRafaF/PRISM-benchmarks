@@ -480,13 +480,13 @@ def gen_cubemap_engine(scene, traj):
 
 def gen_fusion_dataset(scene, traj):
     args = ["--mode", "dataset"] + (["--scene", scene] if scene and scene != "auto" else [])
-    args += ["--traj", traj or "synthetic_5.0hz_s0"]
+    args += ["--traj", traj or "synthetic_2.0hz_s0"]
     yield from _stream_fig_script("eval/fig_fusion.py", args)
 
 
 def gen_fusion_results(scene, traj):
     args = ["--mode", "results"] + (["--scene", scene] if scene and scene != "auto" else [])
-    args += ["--traj", traj or "synthetic_5.0hz_s0"]
+    args += ["--traj", traj or "synthetic_2.0hz_s0"]
     yield from _stream_fig_script("eval/fig_fusion.py", args)
 
 
@@ -636,7 +636,9 @@ def bundle_build(categories, compress):
 
 def existing_bundles():
     d = RESULTS / "bundles"
-    return [str(p) for p in sorted(d.glob("*.zip"), reverse=True)] if d.exists() else []
+    # *.tar = raw pod packs from `make pod` (scripts/results.sh pack), incl. clouds.
+    return ([str(p) for p in sorted(list(d.glob("*.zip")) + list(d.glob("*.tar")), reverse=True)]
+            if d.exists() else [])
 
 
 def build_app():
@@ -806,7 +808,7 @@ def build_app():
             with gr.Row():
                 fig_scene = gr.Textbox(value="auto", label="Scene ('auto' = best-covered)", scale=2)
                 fig_traj = gr.Textbox(value="synthetic_2.0hz_s0", label="Traj (sweep/cubemap)", scale=2)
-                fig_ftraj = gr.Textbox(value="synthetic_5.0hz_s0", label="Fusion traj (dense)", scale=2)
+                fig_ftraj = gr.Textbox(value="synthetic_2.0hz_s0", label="Fusion traj (dense)", scale=2)
             with gr.Row():
                 fig_frames = gr.Textbox(value="1,2,4,8,16,32,64,128,256",
                                         label="Sweep frame grid (comma-separated)", scale=3)

@@ -123,16 +123,42 @@ def main():
     _scale = {
         "metric_scale": float(getattr(engine, "current_metric_scale", float("nan"))),
         "scale_locked": bool(getattr(engine, "_scale_committed", False)),
+        # True when the lock happened because the pre-lock buffer filled up, NOT because
+        # the floor estimates agreed. The map is then at ONE scale (good) but that scale
+        # was never verified (bad) — a distinct population from a properly locked run.
+        "scale_locked_forced": bool(getattr(engine, "_scale_lock_forced", False)),
         "scale_provisional": (None if getattr(engine, "_provisional_scale", None) is None
                               else float(engine._provisional_scale)),
         "floor_scale_samples": [round(float(x), 5)
                                 for x in getattr(engine, "floor_scale_samples", [])],
         "scale_buffer_enabled": bool(getattr(engine, "scale_buffer_enabled", False)),
     }
+    if _scale["scale_locked_forced"]:
+        print(f"[prism_runner] WARNING: metric scale committed by FORCE at the buffer "
+              f"limit from {len(_scale['floor_scale_samples'])} sample(s) — the map is "
+              f"internally consistent but its scale is unverified")
     if not _scale["scale_locked"]:
         print(f"[prism_runner] WARNING: metric scale NEVER LOCKED "
               f"({len(_scale['floor_scale_samples'])} confident floor sample(s)) — "
               f"scale-dependent metrics for this run are unverified")
+    # prism-v2: how every window was aligned and which guards fired. Old engines lack
+    # get_alignment_report(); the run still records everything else.
+    if hasattr(engine, "get_alignment_report"):
+        try:
+            _rep = engine.get_alignment_report()
+            (out / "alignment.json").write_text(_json.dumps(_rep, indent=2, default=float))
+            _scale.update({
+                "align_mode": _rep.get("align_mode"),
+                "level_source": _rep.get("level_source"),
+                "align_fit_sources": _rep.get("fit_sources"),
+                "align_guards": _rep.get("guards"),
+                "dense_rmse_median_m": _rep.get("dense_rmse_median_m"),
+                "sl4_nonsim_pct_median": _rep.get("sl4_nonsim_pct_median"),
+            })
+            if _rep.get("level_source") is None:
+                print("[prism_runner] WARNING: the world was NEVER LEVELLED in this run")
+        except Exception as _e:   # never lose a run to a diagnostic
+            print(f"[prism_runner] alignment report failed: {_e}")
     (out / "arm_config.json").write_text(_json.dumps(
         {"voxel_size": _voxel, "max_depth": _maxd,
          "window_size": ws, "overlap": ov,

@@ -29,6 +29,69 @@ def _look_at(eye: np.ndarray, target: np.ndarray, up=(0, 0, 1)) -> np.ndarray:
     return T
 
 
+def rate_limited_yaw(eyes: np.ndarray, rate_hz: float,
+                     max_yaw_rate_dps: float | None) -> np.ndarray:
+    """Per-frame camera yaw (radians, world Z-up) that follows the direction of travel
+    but never turns faster than ``max_yaw_rate_dps``.
+
+    WHY. The original trajectories pointed each camera at the NEXT position, so the
+    yaw followed the spline tangent instantly. On the 2026-08 renders 3-7% of the
+    2 Hz steps turned more than 45 deg in a single frame, some close to 180 deg (cusps
+    of the Catmull-Rom spline and lap junctions). A 360 deg panorama is unaffected — a
+    yaw is a column shift of the equirect — but a 90 deg pinhole camera loses ALL
+    overlap with the previous frame, so the benchmark was biased against every
+    pinhole baseline (VGGT-SLAM, LASER, Pi3, MapAnything). A real robot or person
+    turns at a finite rate.
+
+    HOW. Desired yaw = direction to the next position (the last frame keeps the
+    previous heading instead of snapping to +X, the old fallback). The yaw is then
+    rate-limited with a forward and a backward pass, so the camera starts turning
+    BEFORE a sharp corner and finishes after it, and no frame-to-frame step exceeds
+    ``max_yaw_rate_dps / rate_hz``. The limit is in deg/s, so the same physical turn
+    is produced at every capture rate. ``None``/<=0 disables limiting (old headings,
+    minus the last-frame snap).
+    """
+    n = len(eyes)
+    if n == 0:
+        return np.zeros(0)
+    d = np.zeros((n, 2))
+    if n > 1:
+        d[:-1] = eyes[1:, :2] - eyes[:-1, :2]
+        d[-1] = d[-2]
+    yaw = np.full(n, np.nan)
+    for i in range(n):
+        if np.linalg.norm(d[i]) > 1e-9:
+            yaw[i] = np.arctan2(d[i, 1], d[i, 0])
+    # Stationary frames (clamped tail, dwell) inherit the last valid heading.
+    valid = np.where(np.isfinite(yaw))[0]
+    if len(valid) == 0:
+        return np.zeros(n)
+    yaw[:valid[0]] = yaw[valid[0]]
+    for i in range(1, n):
+        if not np.isfinite(yaw[i]):
+            yaw[i] = yaw[i - 1]
+    yaw = np.unwrap(yaw)
+    if not max_yaw_rate_dps or max_yaw_rate_dps <= 0:
+        return yaw
+    m = np.radians(float(max_yaw_rate_dps)) / max(float(rate_hz), 1e-6)
+    fwd = yaw.copy()
+    for i in range(1, n):
+        fwd[i] = fwd[i - 1] + np.clip(yaw[i] - fwd[i - 1], -m, m)
+    out = fwd.copy()
+    for i in range(n - 2, -1, -1):
+        out[i] = out[i + 1] + np.clip(fwd[i] - out[i + 1], -m, m)
+    return out
+
+
+def poses_from_yaw(eyes: np.ndarray, yaw: np.ndarray) -> np.ndarray:
+    """Level camera-to-world poses (OpenCV camera, world Z-up) looking along ``yaw``."""
+    poses = np.empty((len(eyes), 4, 4))
+    for i in range(len(eyes)):
+        tgt = eyes[i] + np.array([np.cos(yaw[i]), np.sin(yaw[i]), 0.0])
+        poses[i] = _look_at(eyes[i], tgt)
+    return poses
+
+
 def resample_path(poses: np.ndarray, n_frames: int) -> np.ndarray:
     """Variant A: uniformly resample an existing (M,4,4) pose array to n_frames."""
     m = len(poses)
@@ -53,7 +116,8 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
                      path_target_m: float | None = None,
                      target_frames: int | None = None, max_laps: int = 12,
                      min_speed_mps: float = 0.15,
-                     min_frames: int = 32) -> np.ndarray:
+                     min_frames: int = 32,
+                     max_yaw_rate_dps: float | None = 45.0) -> np.ndarray:
     """Variant B: constant-velocity walkthrough on a Catmull-Rom spline.
 
     Frames are sampled by ARC LENGTH at spacing = speed/rate, so they simulate a capture
@@ -154,11 +218,10 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
         xy[k] = dense[j - 1] * (1 - frac) + dense[j] * frac
 
     eyes = np.column_stack([xy, np.full(n, camera_height)])
-    poses = np.empty((n, 4, 4))
-    for i in range(n):
-        nxt = eyes[min(i + 1, n - 1)]
-        tgt = nxt if not np.allclose(nxt, eyes[i]) else eyes[i] + np.array([1.0, 0, 0])
-        poses[i] = _look_at(eyes[i], tgt)
+    # Heading: follows the path, turning at most max_yaw_rate_dps (see rate_limited_yaw).
+    yaw = rate_limited_yaw(eyes, rate_hz, max_yaw_rate_dps)
+    poses = poses_from_yaw(eyes, yaw)
+    _steps = np.degrees(np.abs(np.diff(yaw))) if n > 1 else np.zeros(0)
 
     lever = []
     if laps > 1:
@@ -166,6 +229,8 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
     if abs(eff_speed - speed_mps) > 0.01 * max(speed_mps, 1e-6):
         lever.append(f"speed {speed_mps}->{eff_speed:.2f} m/s")
     lev = f"  [lengthened: {', '.join(lever)}]" if lever else ""
+    lev += (f"  [yaw <= {max_yaw_rate_dps:g} deg/s; max step {_steps.max():.1f} deg]"
+            if (max_yaw_rate_dps and len(_steps)) else "")
     goal = (f"path target {need_len:.1f}m" if path_mode
             else f"target {target} frames")
     print(f"[traj] walked {walk_len:.1f}m of {total_len:.1f}m at spacing={spacing:.2f}m "
@@ -193,7 +258,8 @@ def synthetic_spline(waypoints: np.ndarray, camera_height: float = 1.7,
 
 def stop_and_go(waypoints: np.ndarray, camera_height: float = 1.7,
                 speed_mps: float = 0.5, rate_hz: float = 2.0, max_frames: int = 200,
-                n_stops: int = 2, dwell_s: float = 5.0) -> np.ndarray:
+                n_stops: int = 2, dwell_s: float = 5.0,
+                max_yaw_rate_dps: float | None = 45.0) -> np.ndarray:
     """Walk → stand still (dwell) → walk again, repeated ``n_stops`` times.
 
     Built from the smooth spline, then each stop DUPLICATES the current pose for
@@ -207,7 +273,8 @@ def stop_and_go(waypoints: np.ndarray, camera_height: float = 1.7,
     total_dwell = max(0, n_stops) * dwell_frames
     moving_cap = max(4, int(max_frames) - total_dwell)
     poses = synthetic_spline(waypoints, camera_height, speed_mps, rate_hz,
-                             max_frames=moving_cap, target_frames=moving_cap)
+                             max_frames=moving_cap, target_frames=moving_cap,
+                             max_yaw_rate_dps=max_yaw_rate_dps)
     n = len(poses)
     if n < 3 or n_stops < 1:
         return poses

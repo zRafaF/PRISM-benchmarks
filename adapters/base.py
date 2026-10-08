@@ -111,8 +111,17 @@ def run_method(name: str):
                     result.oom = (result.failure_kind == "oom")
                     result.completed = bool(proc.returncode == 0 and result.n_frames_done)
                     smp.summarize(result)
+                    # A COMPLETED keyframe method (VGGT-SLAM) consumed every input frame
+                    # even though it emits fewer poses; counting only its poses
+                    # understated its throughput ~2.5x. Partial runs keep the
+                    # done-count (the 2026-07 guard above).
+                    if result.completed and result.n_frames_input and result.wall_s > 0:
+                        result.eff_fps = result.n_frames_input / result.wall_s
                     _merge_runner_perf(rp, result, window=int(cfg["engine"]["window_size"]),
                                        overlap=int(cfg["engine"]["overlap"]))
+                    if (result.completed and result.latency_source == "runner"
+                            and result.latency_end_to_end_s > 0 and result.n_frames_input):
+                        result.proc_fps = result.n_frames_input / result.latency_end_to_end_s
                     result.write(rp.perf_json)
                     if result.oom:
                         print(f"[{name}]   -> OUT OF MEMORY at {result.n_frames_input} "

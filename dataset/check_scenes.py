@@ -90,7 +90,8 @@ def _check_one(cfg, mesh, raycast, lo, hi, floor_z, cam_z, traj) -> dict:
             poses = traj_mod.stop_and_go(
                 wps, camera_height=cam_z, speed_mps=sp.get("speed_mps", 0.5),
                 rate_hz=rate, max_frames=n_target,
-                n_stops=int(sg.get("n_stops", 2)), dwell_s=float(sg.get("dwell_s", 5.0)))
+                n_stops=int(sg.get("n_stops", 2)), dwell_s=float(sg.get("dwell_s", 5.0)),
+                max_yaw_rate_dps=float(sp.get("max_yaw_rate_dps", 45.0)))
         else:
             speed = sp.get("speed_mps", 0.5)
             ref_rate = float(cfg["trajectories"].get("reference_rate_hz", 2.0))
@@ -101,7 +102,8 @@ def _check_one(cfg, mesh, raycast, lo, hi, floor_z, cam_z, traj) -> dict:
                 path_target_m=(n_target - 1) * speed / max(ref_rate, 1e-6),
                 max_laps=int(sp.get("max_laps", 12)),
                 min_speed_mps=float(sp.get("min_speed_mps", 0.15)),
-                min_frames=int(sp.get("min_frames", 32)))
+                min_frames=int(sp.get("min_frames", 32)),
+                max_yaw_rate_dps=float(sp.get("max_yaw_rate_dps", 45.0)))
         pos = np.asarray(poses)[:, :3, 3]
         span = float(np.linalg.norm(pos.max(0) - pos.min(0)))
         out.update(ok=True, n_frames=len(poses), path_span_m=round(span, 2))

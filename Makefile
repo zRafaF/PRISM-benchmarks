@@ -32,7 +32,9 @@ PYCHK    ?= python3
         run-vggtslam-arms ablations-vggtslam \
         fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine \
         fig-fusion fig-fusion-results figures \
-        studio preview snapshots docs docs-serve clean clean-results publication
+        studio preview snapshots docs docs-serve clean clean-results publication \
+        pod pod-status pod-stop env-check replica inputs-pack inputs-push inputs-fetch \
+        inputs-verify results-pack results-push results-fetch results-merge eval-all
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -97,6 +99,16 @@ help:
 	@echo "  make fig-cubemap-engine  cubemap figure from the engine's own reprojection (needs PRISM env)"
 	@echo "  make fig-fusion       per-view vs fused panels from the dataset export (no GPU)"
 	@echo "  make fig-fusion-results  per-view (panovggt) vs fused (prism) from result clouds"
+	@echo ""
+	@echo "Pods (rerun-v2: render once, run on N GPU pods, score offline on CPU):"
+	@echo "  make pod [SHARD=k/N]  fresh pod -> envs -> inputs -> env-check -> methods -> pack -> Studio"
+	@echo "                        (detached in tmux 'pod'; make pod-status / pod-stop)"
+	@echo "  make env-check        GPU + CUDA envs + prism-v2 engine + VGGT-SLAM reference sample"
+	@echo "  make replica          download Replica (no approval) into dataset/raw/replica"
+	@echo "  make inputs-pack      exports -> dataset/inputs/<tag>/<scene>.tar (no depth/meshes)"
+	@echo "  make inputs-push      upload them to INPUTS_HF_REPO       | inputs-fetch on the pod"
+	@echo "  make results-fetch    download every pod pack (RESULTS_HF_REPO) | results-merge"
+	@echo "  make eval-all         score everything offline (CPU): traj/recon/metric/perf/clean report"
 	@echo ""
 	@echo "  make all              init -> setup-all -> download -> render -> export ->"
 	@echo "                        run-all -> eval-* -> perf -> report"
@@ -206,8 +218,10 @@ run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
 # are the OTHER two groups. This list previously said `prism_sim3`, which stopped
 # existing when the default flipped to Sim(3) — `make ablations` would have failed on
 # every alignment arm. Keep it in sync with config.yaml `ablations`.
-ABL_GUARDS ?= prism_nolock prism_nostill prism_noguards
-ABL_ALIGN  ?= prism_sl4 prism_se3
+# Guard arms are commented out in config.yaml (2026-08-09), so the default is empty —
+# naming them here made `make ablations` fail on the first arm.
+ABL_GUARDS ?=
+ABL_ALIGN  ?= prism_sl4 prism_se3 prism_sim3lock
 ablations: setup
 	@echo ">> running PRISM ablations (config.ablations)"
 	@for a in $(ABL_GUARDS) $(ABL_ALIGN); do \
@@ -284,7 +298,7 @@ ablation-voxel: setup
 	  print(' '.join(m['name'] for m in load_config('$(CONFIG)').get('ablations',[]) \
 	  if m.get('role')=='sweep'))"); \
 	 scene="$(SWEEP_SCENE)"; trajs="$(SWEEP_TRAJS)"; \
-	 [ -z "$$trajs" ] && trajs="synthetic_2.0hz_s0 synthetic_2.0hz_s1 synthetic_5.0hz_s0 loop_2.0hz_s0"; \
+	 [ -z "$$trajs" ] && trajs="synthetic_2.0hz_s0 synthetic_2.0hz_s1 loop_2.0hz_s0"; \
 	 echo "   arms : $$arms"; echo "   scene: $${scene:-<all frozen>}"; echo "   trajs: $$trajs"; \
 	 for t in $$trajs; do for m in $$arms; do \
 	   $(ORCH_RUN) adapters/run.py --method $$m --config $(CONFIG) --scenes "$$scene" --traj $$t || true; \
@@ -306,7 +320,7 @@ ablation-voxel: setup
 #
 # --tile loops the sequence past its rendered length, so the grid can exceed n_frames.
 CAP_SCENE  ?= auto
-CAP_TRAJ   ?= synthetic_5.0hz_s0
+CAP_TRAJ   ?= synthetic_2.0hz_s0
 CAP_FRAMES ?= 16,32,64,96,128,192,256,384,512,768,1024
 capacity-sweep: setup
 	@echo ">> capacity sweep: growing prefixes until each method OOMs -> results/figures/"
@@ -359,7 +373,7 @@ publication: report-clean report-tables verify-clean
 # The 2026-07 head-to-head used loop closure OFF (max_loops=0) — VGGT-SLAM's headline
 # feature disabled. Both arms are run so the paper reports the baseline in its native
 # mode as well. Needs the VGGT-SLAM env + exports; GPU required.
-ABL_VGGTSLAM ?= vggtslam_noloop vggtslam_loop
+ABL_VGGTSLAM ?= vggtslam vggtslam_noloop
 run-vggtslam-arms: setup
 	@echo ">> VGGT-SLAM fairness arms: loop closure OFF and ON"
 	@for a in $(ABL_VGGTSLAM); do \
@@ -377,7 +391,7 @@ FIG_FRAME  ?= 0                     # which pano frame the cubemap figure uses
 FIG_FRAMES ?= 1,2,4,8,16,32,64,128,256
 FIG_TILE   ?=                       # set FIG_TILE=1 to loop the sequence past its render length
 # fig-fusion: window of overlapping frames (a dense traj gives the strongest per-view story)
-FUSION_TRAJ  ?= synthetic_5.0hz_s0
+FUSION_TRAJ  ?= synthetic_2.0hz_s0
 FUSION_START ?= 0
 FUSION_WINDOW ?= 0                  # 0 = config engine.window_size (16)
 fig-vram: setup
@@ -502,3 +516,65 @@ clean:
 # that is `make report-clean`. Kept destructive on purpose (see RESULTS_CHANGELOG.md).
 clean-results:
 	@rm -rf results/* && echo "cleared results/  (for the CLEAN AGGREGATE use: make report-clean)"
+
+# ── Pods (rerun-v2) ───────────────────────────────────────────────────────────────
+# One command per GPU pod. Render ONCE elsewhere (make replica split render export
+# inputs-pack inputs-push), then on every pod:   make pod SHARD=k/N
+# Scoring is CPU-only and happens once, offline, on the merged packs:
+#   make results-fetch results-merge eval-all publication
+POD_SESSION ?= pod
+pod:
+	@if command -v tmux >/dev/null 2>&1; then \
+	  tmux new -d -s $(POD_SESSION) 'bash scripts/pod.sh all; exec bash'; \
+	  echo ">> pod pipeline running in tmux session '$(POD_SESSION)' (SHARD=$(SHARD))"; \
+	  echo "   attach: tmux attach -t $(POD_SESSION)   |   make pod-status"; \
+	else \
+	  echo ">> no tmux yet — running in the foreground (installs tmux in 'prep')"; \
+	  bash scripts/pod.sh all; \
+	fi
+pod-status:
+	@echo "stage : $$(cat logs/pod_stage 2>/dev/null || echo '(not started)')"
+	@tail -n 8 logs/overnight_latest.progress 2>/dev/null || true
+	@echo "--- last pod log lines ---"; tail -n 15 logs/pod_latest.log 2>/dev/null || true
+pod-stop:
+	-@tmux kill-session -t $(POD_SESSION) 2>/dev/null && echo ">> stopped tmux session '$(POD_SESSION)'"
+	@$(MAKE) --no-print-directory bench-stop
+env-check:
+	bash scripts/env_check.sh
+
+REPLICA_SRC ?= dataset/_replica_src
+replica:
+	@if [ -n "$$(ls -A dataset/raw/replica 2>/dev/null)" ]; then echo ">> Replica already present"; else \
+	  command -v pigz >/dev/null || $(MAKE) --no-print-directory deps; \
+	  [ -d $(REPLICA_SRC) ] || git clone --depth 1 https://github.com/facebookresearch/Replica-Dataset $(REPLICA_SRC); \
+	  mkdir -p dataset/raw/replica; \
+	  (cd $(REPLICA_SRC) && ./download.sh "$(CURDIR)/dataset/raw/replica"); fi
+
+inputs-pack: setup
+	bash scripts/inputs.sh pack
+inputs-push:
+	bash scripts/inputs.sh push
+inputs-fetch: setup
+	bash scripts/inputs.sh fetch
+inputs-verify: setup
+	bash scripts/inputs.sh verify
+
+results-pack:
+	bash scripts/results.sh pack
+results-push:
+	bash scripts/results.sh push
+results-fetch:
+	bash scripts/results.sh fetch
+results-merge:
+	bash scripts/results.sh merge $(PACKS)
+
+# Offline scoring of everything in results/ (CPU only; needs the FULL exports incl.
+# depth + gt_mesh.ply, i.e. the box that rendered the inputs).
+eval-all: setup
+	$(ORCH_RUN) eval/eval_traj.py       --config $(CONFIG)
+	$(ORCH_RUN) eval/eval_recon.py      --config $(CONFIG)
+	$(ORCH_RUN) eval/metric_accuracy.py --config $(CONFIG)
+	$(ORCH_RUN) eval/collect_perf.py    --config $(CONFIG)
+	$(ORCH_RUN) eval/make_report.py     --config $(CONFIG)
+	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source live
+	@echo ">> scored. Next: make publication   (and make snapshots for the figures)"

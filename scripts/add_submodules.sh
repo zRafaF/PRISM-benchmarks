@@ -26,7 +26,13 @@ add_pin () {
     fi
     git -C "$path" fetch --all --tags --quiet || true
     if [ "$ref" != "HEAD" ]; then
-        git -C "$path" checkout --quiet "$ref"
+        # A branch name (e.g. PRISM_REF=prism-v2) must track the REMOTE branch, not a
+        # stale local one left by an earlier checkout.
+        if git -C "$path" show-ref --verify --quiet "refs/remotes/origin/$ref"; then
+            git -C "$path" checkout --quiet -B "$ref" "origin/$ref"
+        else
+            git -C "$path" checkout --quiet "$ref"
+        fi
     fi
     # methods pull their OWN third-party submodules (e.g. PRISM -> PanoVGGT)
     git -C "$path" submodule update --init --recursive --quiet || true

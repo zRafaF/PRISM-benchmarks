@@ -73,8 +73,8 @@ EXCLUSIONS = [
 MOTION = [("smooth", "synthetic_"), ("stop-and-go", "stopgo_"), ("loop", "loop_")]
 
 # Method taxonomy — native mode is never mixed (streaming vs full-batch).
-STREAMING = ["prism", "prism_sim3", "prism_sl4", "prism_se3", "laser", "vggtslam",
-             "vggtslam_noloop", "vggtslam_loop"]
+STREAMING = ["prism", "prism_sim3", "prism_sl4", "prism_se3", "prism_sim3lock",
+             "prism_sim3cam", "laser", "vggtslam", "vggtslam_noloop", "vggtslam_loop"]
 OFFLINE = ["panovggt", "pi3", "mapanything"]
 GUARD_ARMS = ["prism_nolock", "prism_nostill", "prism_noguards"]
 
@@ -103,7 +103,11 @@ ALIGN_ERAS = {
     "archive:bigrun_2026-07": [("prism_sim3", "Sim(3)", 7), ("prism", "SL(4)", 15),
                                ("prism_se3", "SE(3)", 6)],
     "default": [("prism", "Sim(3)", 7), ("prism_sl4", "SL(4)", 15),
-                ("prism_se3", "SE(3)", 6)],
+                ("prism_se3", "SE(3)", 6),
+                # rerun-v2: Sim(3) with its scale frozen after warm-up, and (optional)
+                # the pre-v2 camera-centre fit. Absent arms simply produce empty rows.
+                ("prism_sim3lock", "Sim(3), scale locked", 7),
+                ("prism_sim3cam", "Sim(3), 4 camera centres (pre-v2)", 7)],
 }
 
 

@@ -15,7 +15,8 @@ produced it. Where the current data cannot support a result, the item is listed 
 | **2026-07 big run** (`documentation/docs/data/bigrun_2026-07/`) | 4 scenes × 2 seeds × 200 frames, 8 methods → 434 records / 368 seeded | Archived. Carries the two engine bugs in §3. Re-aggregated cleanly in §5–§7. |
 | **2026-08-08 overnight** | — | **Void: zero method runs dispatched.** Driver bug, §4. |
 | **2026-08-09 overnight** | 5 of 6 scenes × 3 seeds × 4–207 frames, 590 runs | **Void: not citable.** Six independent defects, §13. |
-| **2026-08-10 rebuild** | fixes for all six landed; awaiting smoke + re-run | see §13 |
+| **2026-08-10 rebuild** | fixes for all six landed; never re-run cleanly | superseded by rerun-v2 |
+| **rerun-v2** (branch `rerun-v2` + PRISM-VGGT `prism-v2`) | 6 scenes × 3 seeds × {2 Hz, 5 Hz, loop}, new trajectories (yaw-rate limited) | **Prepared, not run.** Everything before it is superseded: GT, VGGT-SLAM config and the PRISM engine all changed. See §14. |
 
 ---
 
@@ -711,3 +712,62 @@ The smoke now fails on: a PRISM run whose metric scale never locked (and reports
 worst sample spread), any rendered trajectory under 32 frames or with no frames, any run
 with a `cloud.ply` but no `recon.json`, and the pre-existing degeneracy checks. Plus the
 `make check-scenes` pre-flight over the full scene list.
+
+
+---
+
+## 14. rerun-v2 (2026-10) — what changed and why every number must be regenerated
+
+Audit of the 2026-08-10 bundle (the voided 08-09 matrix) found three problems that
+invalidate the VGGT-SLAM head-to-head and the alignment study, plus one GT bias.
+
+### 14a. VGGT-SLAM was fed a sub-sampled stream (harness bug)
+* `min_disparity: 50` (VGGT-SLAM's 30 fps video default) on inputs already sampled at
+  2-5 Hz kept **~35% of frames at 2 Hz and ~17% at 5 Hz** (e.g. room_0 21/63,
+  apartment_0 23/70). VGGT-SLAM effectively ran at ~0.7 Hz with a median 16-29 deg
+  between keyframes, while every other method received every frame.
+* With w=32 that left **one submap in 21 of 28 runs**, so loop closure could never
+  fire: `vggtslam_loop` and `vggtslam_noloop` were identical in every run.
+* Fix: `vggtslam.min_disparity: 0` (every frame), `keyframe_ratio` recorded per run,
+  smoke gate on >=80% of frames kept and on >=1 loop closure on loop trajectories.
+* `vggtslam_loop` removed (same config as `vggtslam`); `vggtslam_w16` disabled.
+* Timing: latency is now VGGT-SLAM's own processing span (it included loading
+  VGGT-1B + DINO-SALAD); `eff_fps` counts INPUT frames for completed runs (it counted
+  keyframe poses); new `proc_fps` column = input frames / runner-reported latency.
+* Duplicate pose per submap boundary dropped; raw ~5M-point cloud deduplicated.
+* Environment: `gtsam-develop` (an unpinned nightly; PyPI keeps ~5 weeks, so the 2026-08
+  build no longer exists) replaced by **gtsam 4.3.0** (stable, SL4 verified);
+  VGGT_SPARK and SALAD pinned to commits. `make env-check` reproduces VGGT-SLAM's own
+  `office_loop` reference (1 loop closure) before any benchmark run.
+
+### 14b. Trajectories turned the camera instantly (GT bias against pinhole methods)
+Headings followed the spline tangent with no rate limit: **3-7% of 2 Hz steps turned
+>45 deg in one frame (some ~180 deg)** and the last frame snapped to +X. A panorama is
+unaffected; a 90 deg pinhole loses all overlap. Now limited to
+`trajectories.synthetic_spline.max_yaw_rate_dps: 45` (<=22.5 deg/step at 2 Hz,
+<=9 deg at 5 Hz; forward-backward limited so turns start before corners).
+
+### 14c. PRISM engine (PRISM-VGGT `prism-v2`, see its docs/PRISM_V2_CHANGES.md)
+* **30 of 60 PRISM runs were never levelled** (camera tilt 90 deg in poses.tum): the
+  world was levelled only from the first window's middle frame. The Z-relevel and
+  upside-down guards then acted on a horizontal axis (the upside-down guard flipped
+  frames at random). Fixed (best-floor + gravity prior + deferred refinement).
+* **The alignment study compared data, not groups**: Sim(3)/SE(3) were fit from the 4
+  overlap camera centres with the scale frozen after warm-up, SL(4) from dense points
+  with a free local scale. All groups now use the same dense correspondences;
+  `prism` = Sim(3) with free per-window scale; new arm `prism_sim3lock`.
+* The 2026-07/08 alignment numbers (SL(4) 31% vs Sim(3) 20% scale error on loops) are
+  void.
+
+### 14d. Running it (pods)
+Render once on any CPU box, run on N GPU pods, score offline:
+```
+# render box (CPU)
+make replica split render export inputs-pack inputs-push      # INPUTS_HF_REPO=<you>/<repo>
+# each GPU pod (fresh clone of rerun-v2)
+make pod SHARD=k/N                                            # tmux 'pod'; make pod-status
+# scoring box (the render box: it has depth + GT meshes)
+make results-fetch results-merge eval-all publication
+```
+Pods skip all scoring (`SKIP_EVAL=1`; the 08-09 checkpoints were 3.5 of its 7 hours)
+and every pod writes disjoint results trees. See documentation/docs/pods.md.

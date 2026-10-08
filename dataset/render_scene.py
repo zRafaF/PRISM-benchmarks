@@ -265,7 +265,8 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
             poses = traj_mod.stop_and_go(wps, camera_height=cam_z, speed_mps=speed,
                                          rate_hz=rate, max_frames=n,
                                          n_stops=int(sg.get("n_stops", 2)),
-                                         dwell_s=float(sg.get("dwell_s", 5.0)))
+                                         dwell_s=float(sg.get("dwell_s", 5.0)),
+                                         max_yaw_rate_dps=float(sp.get("max_yaw_rate_dps", 45.0)))
         else:
             # The PATH is what is held constant across rates, not the frame count.
             ref_rate = float(cfg["trajectories"].get("reference_rate_hz", 2.0))
@@ -277,7 +278,8 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
                 path_target_m=path_target,
                 max_laps=int(sp.get("max_laps", 12)),
                 min_speed_mps=float(sp.get("min_speed_mps", 0.15)),
-                min_frames=int(sp.get("min_frames", 32)))
+                min_frames=int(sp.get("min_frames", 32)),
+                max_yaw_rate_dps=float(sp.get("max_yaw_rate_dps", 45.0)))
     else:  # dataset_path — loaded by the dataset-specific downloader/importer
         src = _load_dataset_poses(cfg, dataset, scene)
         poses = traj_mod.resample_path(src, n)

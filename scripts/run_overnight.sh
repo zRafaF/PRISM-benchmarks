@@ -18,6 +18,17 @@
 #   make bench-stop               # stop it
 #   DRY_RUN=1 bash scripts/run_overnight.sh    # print the plan and exit
 #
+# POD / SHARD MODE (rerun-v2; `make pod` sets these):
+#   SHARD=k/N        run only frozen scenes k, k+N, k+2N, ... (0-based) — one pod per
+#                    shard; result paths never overlap, so shards merge by plain copy.
+#   BENCH_SCENES="a b"  explicit scene list (overrides SHARD).
+#   SKIP_RENDER=1    inputs were fetched pre-rendered (`make inputs-fetch`): skip
+#                    download/split/check-scenes/render/export, but still verify that
+#                    every (scene, traj) export exists.
+#   SKIP_EVAL=1      no eval checkpoints and no snapshots: the pod only runs methods;
+#                    scoring happens once, offline, on CPU (`make eval-all`). In the
+#                    2026-08-09 run the checkpoints were 3.5 of the 7 hours.
+#
 # ---------------------------------------------------------------------------
 # POST-MORTEM (2026-08-08 run, fixed here). That run executed ZERO method runs
 # and still exited "successfully", then its checkpoints aggregated leftover
@@ -51,6 +62,10 @@ exec > >(tee -a "$LOG") 2>&1
 # Overridable so the plan logic can be exercised without the uv bootstrap (tests/CI).
 RUN="${RUN:-uv run python}"
 DRY_RUN="${DRY_RUN:-0}"
+SKIP_EVAL="${SKIP_EVAL:-0}"
+SKIP_RENDER="${SKIP_RENDER:-0}"
+SHARD="${SHARD:-}"
+BENCH_SCENES="${BENCH_SCENES:-}"
 [ "${FORCE:-0}" = "1" ] && export PRISM_FORCE=1
 
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
@@ -76,6 +91,9 @@ core  = [m['name'] for m in ms]
 align = [m['name'] for m in ab if m.get('align_group')]
 vslam = [m['name'] for m in ab if m.get('runner') == 'vggtslam']
 sweep = [m['name'] for m in ab if m.get('role') == 'sweep']
+# Offline (full-batch) reference methods may be limited to some seed indices.
+offline = [m['name'] for m in ms + ab if m.get('mode') == 'batch']
+off_seeds = (c.get('baselines') or {}).get('seeds')
 guard = [m['name'] for m in ab
          if not m.get('align_group') and m.get('runner') != 'vggtslam'
          and m.get('role') != 'sweep']
@@ -90,6 +108,8 @@ with open(sys.argv[1], 'w') as f:
     put('VSLAM',  ' '.join(vslam))
     put('GUARD',  ' '.join(guard))
     put('SWEEP',  ' '.join(sweep))
+    put('OFFLINE', ' '.join(offline))
+    put('OFFLINE_SEEDS', '' if off_seeds is None else ' '.join(f's{int(i)}' for i in off_seeds))
     put('SCENES_FROZEN', ' '.join(scenes))
     put('TRAJS',  ' '.join(trajs))
     put('NSEEDS', len(seeds))
@@ -120,7 +140,27 @@ PY
 [ -z "${ALIGN:-}" ] && log "WARNING: no alignment-group ablation arms found in config.ablations"
 [ -z "${VSLAM:-}" ] && log "WARNING: no VGGT-SLAM fairness arms found in config.ablations"
 
+# ── Shard selection (pod mode) ───────────────────────────────────────────────
+# SCENE_ARG is passed as --scenes to every render/export/run; "" means every frozen
+# scene (the single-box behaviour).
+select_shard() {   # select_shard "<frozen scenes>"
+  local all="$1"
+  if [ -n "$BENCH_SCENES" ]; then echo "$BENCH_SCENES"; return; fi
+  if [ -z "$SHARD" ]; then echo ""; return; fi
+  local k="${SHARD%/*}" n="${SHARD#*/}" i=0 out=""
+  for sc in $all; do
+    [ $((i % n)) -eq "$k" ] && out="$out $sc"
+    i=$((i + 1))
+  done
+  echo "$out" | sed 's/^ *//'
+}
+SCENE_ARG="$(select_shard "${SCENES_FROZEN:-}")"
+if [ -n "$SHARD$BENCH_SCENES" ] && [ -z "$SCENE_ARG" ] && [ -n "${SCENES_FROZEN:-}" ]; then
+  die "SHARD=$SHARD / BENCH_SCENES selects no scene out of: $SCENES_FROZEN"
+fi
+
 ALL_METHODS="$CORE $ALIGN $VSLAM $GUARD $SWEEP"
+N_RUN_SCENES=$(echo ${SCENE_ARG:-${SCENES_FROZEN:-}} | wc -w)
 N_METHODS=$(echo $ALL_METHODS | wc -w)
 N_MAIN=$(echo $CORE $ALIGN $VSLAM $GUARD | wc -w)
 N_SWEEP=$(echo ${SWEEP:-} | wc -w)
@@ -134,6 +174,8 @@ cat <<PLAN
 #  PRISM overnight benchmark — RUN PLAN                      stamp=$STAMP
 ################################################################################
   scenes frozen    : ${N_SCENES} -> ${SCENES_FROZEN:-<none: 'make split' will freeze them>}
+  THIS RUN's scenes: ${SCENE_ARG:-<all frozen>}   (SHARD=${SHARD:-none} BENCH_SCENES=${BENCH_SCENES:-none})
+  pod flags        : SKIP_RENDER=${SKIP_RENDER} SKIP_EVAL=${SKIP_EVAL}
   target scenes    : ${NSCENES_TARGET}   (datasets.<ds>.n_scenes_start)
   seeds            : ${NSEEDS}  [${SEEDS}]
   frames           : ${NFRAMES} at the reference rate; the PHYSICAL PATH (${PATH_M} m)
@@ -148,9 +190,10 @@ cat <<PLAN
       vggt   : ${VSLAM:-<none>}
       guards : ${GUARD:-<none>}
       sweep  : ${SWEEP:-<none>}  (voxel/max_depth curve; reduced scene+traj set, see Phase 5)
+      offline: ${OFFLINE:-<none>}  only on seeds: ${OFFLINE_SEEDS:-all}
 
-  TOTAL PLANNED RUNS : ~$(( ${N_SCENES:-0} * N_TRAJS * N_MAIN + N_SWEEP * 4 ))
-      = ${N_SCENES:-0} scenes x $N_TRAJS trajs x $N_MAIN main methods  ($(( ${N_SCENES:-0} * N_TRAJS * N_MAIN )))
+  TOTAL PLANNED RUNS : ~$(( N_RUN_SCENES * N_TRAJS * N_MAIN + N_SWEEP * 4 ))
+      = ${N_RUN_SCENES} scenes x $N_TRAJS trajs x $N_MAIN main methods  ($(( N_RUN_SCENES * N_TRAJS * N_MAIN )))
       + $N_SWEEP sweep arms on ONE scene x ~4 trajs             (~$(( N_SWEEP * 4 )))
       Sweep arms deliberately do NOT run the full grid (Phase 5). Guard arms, if any,
       only run the stress trajectories. The exact count is printed as [n] per run.
@@ -209,9 +252,17 @@ run_set() {   # run_set <traj> <methods...>
   local traj="$1"; shift
   for m in "$@"; do
     [ -z "$m" ] && continue
+    # Offline reference methods only on baselines.seeds (e.g. _s0).
+    if [ -n "${OFFLINE_SEEDS:-}" ] && echo " $OFFLINE " | grep -q " $m "; then
+      _sfx="${traj##*_}"
+      if [[ "$_sfx" == s[0-9]* ]] && ! echo " $OFFLINE_SEEDS " | grep -q " $_sfx "; then
+        log "--- skip $m on $traj (offline methods run on seeds: $OFFLINE_SEEDS)"
+        continue
+      fi
+    fi
     RUN_N=$((RUN_N + 1))
     log ">>> RUN [$RUN_N]  method=$m  traj=$traj  (ok=$RUN_OK fail=$RUN_FAIL)"
-    if $RUN adapters/run.py --method "$m" --config config.yaml --scenes "" --traj "$traj"; then
+    if $RUN adapters/run.py --method "$m" --config config.yaml --scenes "$SCENE_ARG" --traj "$traj"; then
       RUN_OK=$((RUN_OK + 1)); note "ok   $traj  $m"
     else
       RUN_FAIL=$((RUN_FAIL + 1)); note "FAIL $traj  $m   (continuing)"
@@ -237,6 +288,11 @@ eval_step() {   # eval_step <phase> <script> [args...]
 }
 
 checkpoint() {
+  if [ "$SKIP_EVAL" = "1" ]; then
+    log "=== CHECKPOINT skipped (SKIP_EVAL=1; score offline with 'make eval-all') — phase $1, $RUN_N runs ==="
+    note "checkpoint skipped after phase $1 ($RUN_N runs: $RUN_OK ok / $RUN_FAIL failed)"
+    return 0
+  fi
   log "=== CHECKPOINT: eval + CLEAN report (phase: $1) — $RUN_N runs dispatched so far ==="
   eval_step "$1" eval/eval_traj.py       --config config.yaml
   eval_step "$1" eval/eval_recon.py      --config config.yaml
@@ -281,8 +337,12 @@ log "preflight OK — $N_METHODS methods have envs"
 # ── Stage 0: env + dataset freeze ───────────────────────────────────────────
 log "### Stage 0: setup / download / split (freeze scene list)"
 make setup
-$RUN dataset/download.py   --config config.yaml || true
-$RUN dataset/make_split.py --config config.yaml || true
+if [ "$SKIP_RENDER" = "1" ]; then
+  log "SKIP_RENDER=1 — using fetched inputs; no download/split (scene list from config.local.yaml)"
+else
+  $RUN dataset/download.py   --config config.yaml || true
+  $RUN dataset/make_split.py --config config.yaml || true
+fi
 
 # Re-read the frozen scene list AFTER split and re-print, so the scene count that
 # will actually be benchmarked is visible before any GPU time is spent.
@@ -290,6 +350,9 @@ SCENES_AFTER=$($RUN -c "
 from bench.config import load_config
 c=load_config('config.yaml'); ds=c['datasets'][c['datasets']['active'][0]]
 print(' '.join(ds.get('scenes') or []))" 2>/dev/null)
+# Shard AFTER the split, from the frozen list every pod shares.
+SCENE_ARG="$(select_shard "$SCENES_AFTER")"
+[ -n "$SCENE_ARG" ] && SCENES_AFTER="$SCENE_ARG"
 N_SCENES_AFTER=$(echo $SCENES_AFTER | wc -w)
 log "### Scene list after split: ${N_SCENES_AFTER} scene(s) -> ${SCENES_AFTER:-<EMPTY>}"
 [ "$N_SCENES_AFTER" -eq 0 ] && die "no scenes frozen — is the dataset downloaded? (make download)"
@@ -304,7 +367,9 @@ note "scenes: $SCENES_AFTER"
 # both scene failures (room_2 rendering nothing, office_0 rendering a 0.6 m circuit)
 # before the run started, instead of after seven hours.
 log "### Stage 0b: pre-flight — every scene x trajectory buildable at target length"
-if ! make check-scenes; then
+if [ "$SKIP_RENDER" = "1" ]; then
+  log "(skipped: SKIP_RENDER=1 — inputs were rendered and checked before upload)"
+elif ! make check-scenes; then
   log "!!! PRE-FLIGHT FAILED — at least one scene cannot produce a usable trajectory."
   [ "${IGNORE_RENDER_FAIL:-0}" != "1" ] && die "fix the scenes above, or IGNORE_RENDER_FAIL=1"
   log "!!!   IGNORE_RENDER_FAIL=1 set — continuing anyway."
@@ -317,14 +382,16 @@ fi
 # 5 scenes instead of 6 — with nothing in the summary saying so. Every method then had
 # an unequal, unexplained N. Set IGNORE_RENDER_FAIL=1 to proceed deliberately.
 log "### Stage 1: render + export all trajectories ($N_TRAJS trajs x $N_SCENES_AFTER scenes)"
-if ! make render SCENES="" TRAJ=all; then
+if [ "$SKIP_RENDER" = "1" ]; then
+  log "(render/export skipped: SKIP_RENDER=1 — verifying the fetched exports below)"
+elif ! make render SCENES="$SCENE_ARG" TRAJ=all; then
   log "!!! RENDER FAILED — at least one scene/trajectory did not render."
   log "!!!   Running the matrix now would silently benchmark a SUBSET of the scenes."
   log "!!!   Scroll up for the [waypoints]/[mesh]/[traj] debug of the failing scene."
   [ "${IGNORE_RENDER_FAIL:-0}" != "1" ] && die "render failed (IGNORE_RENDER_FAIL=1 to override)"
   log "!!!   IGNORE_RENDER_FAIL=1 set — continuing with an INCOMPLETE scene set."
 fi
-if ! make export SCENES="" TRAJ=all; then
+if [ "$SKIP_RENDER" != "1" ] && ! make export SCENES="$SCENE_ARG" TRAJ=all; then
   log "!!! EXPORT FAILED — see above."
   [ "${IGNORE_RENDER_FAIL:-0}" != "1" ] && die "export failed (IGNORE_RENDER_FAIL=1 to override)"
 fi
@@ -393,8 +460,14 @@ checkpoint P4
 SWEEP_SCENE="${SWEEP_SCENE:-}"
 if [ -z "$SWEEP_SCENE" ]; then
   # a mid-size scene: skip the two pinned small rooms if there is anything else
-  SWEEP_SCENE=$(echo "$SCENES_AFTER" | tr ' ' '\n' | grep -vE '^(room_0|office_0)$' | head -1)
-  [ -z "$SWEEP_SCENE" ] && SWEEP_SCENE=$(echo "$SCENES_AFTER" | awk '{print $1}')
+  # Chosen from the FULL frozen list (identical on every pod), so exactly one shard
+  # runs the sweep.
+  _ALL_FROZEN=$($RUN -c "
+from bench.config import load_config
+c=load_config('config.yaml'); ds=c['datasets'][c['datasets']['active'][0]]
+print(' '.join(ds.get('scenes') or []))" 2>/dev/null)
+  SWEEP_SCENE=$(echo "$_ALL_FROZEN" | tr ' ' '\n' | grep -vE '^(room_0|office_0)$' | head -1)
+  [ -z "$SWEEP_SCENE" ] && SWEEP_SCENE=$(echo "$_ALL_FROZEN" | awk '{print $1}')
 fi
 SWEEP_TRAJS="${SWEEP_TRAJS:-}"
 if [ -z "$SWEEP_TRAJS" ]; then
@@ -403,6 +476,12 @@ if [ -z "$SWEEP_TRAJS" ]; then
   else
     SWEEP_TRAJS="synthetic_2.0hz_s0 synthetic_2.0hz_s1 synthetic_5.0hz_s0 loop_2.0hz_s0"
   fi
+  # Keep only trajectories that are actually rendered (5 Hz is off in rerun-v2).
+  SWEEP_TRAJS=$(for t in $SWEEP_TRAJS; do echo " $TRAJS " | grep -q " $t " && echo "$t"; done | tr '\n' ' ')
+fi
+if [ -n "$SCENE_ARG" ] && ! echo " $SCENE_ARG " | grep -q " $SWEEP_SCENE "; then
+  log "### Phase 5: sweep scene $SWEEP_SCENE is not in this shard ($SCENE_ARG) — skipping"
+  SWEEP=""
 fi
 if [ -n "${SWEEP:-}" ]; then
   log "### Phase 5: fidelity/memory sweep — scene=$SWEEP_SCENE  trajs=$SWEEP_TRAJS"
@@ -426,12 +505,16 @@ else
 fi
 
 # ── Stage 3: standardized snapshots, all co-visibility mask variants ────────
+if [ "$SKIP_EVAL" = "1" ]; then
+  log "### Stage 3: snapshots skipped (SKIP_EVAL=1 — render them offline after 'make eval-all')"
+else
 log "### Stage 3: snapshots (primary trajectories; full/covis/masked variants)"
 SNAP_M="$(echo $CORE $ALIGN | tr ' ' '\n' | grep -v '^$' | tr '\n' ' ')"
 SNAP_T=$([ "$NSEEDS" -le 1 ] \
   && echo "synthetic_2.0hz loop_2.0hz stopgo_2.0hz" \
   || echo "synthetic_2.0hz_s0 loop_2.0hz_s0 stopgo_2.0hz_s0")
-make snapshots SNAP_METHODS="$SNAP_M" SNAP_SCENES="" SNAP_TRAJ="$SNAP_T" || true
+make snapshots SNAP_METHODS="$SNAP_M" SNAP_SCENES="$SCENE_ARG" SNAP_TRAJ="$SNAP_T" || true
+fi
 
 rm -f "$PLAN_SH"
 log "############ DONE  stamp=$STAMP ############"

@@ -84,6 +84,10 @@ def build_mask(points_w: np.ndarray, pinhole_export_dir: Path, cfg: dict) -> np.
     keep = np.zeros(len(points_w), dtype=bool)
     depth_dir = pinhole_export_dir / "depth"
     names = sorted(p.stem for p in (pinhole_export_dir / "rgb").glob("*.png"))
+    if not names:
+        # Scoring-only exports (pod packs, scripts/results.sh) carry depth but no rgb.
+        names = sorted(p.stem for p in depth_dir.glob("*.png")) or \
+                sorted(p.stem for p in depth_dir.glob("*.npy"))
 
     for i, T in enumerate(poses):
         uv, z = _project(points_w, T, K, W, H)
