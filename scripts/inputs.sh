@@ -20,6 +20,11 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Defaults from bench.env when not in the environment (e.g. run outside make/tmux).
+_benv() { sed -n "s/^$1[[:space:]]*[?:]*=[[:space:]]*//p" bench.env 2>/dev/null | head -1; }
+export INPUTS_TAG="${INPUTS_TAG:-$(_benv INPUTS_TAG)}"
+export INPUTS_HF_REPO="${INPUTS_HF_REPO:-$(_benv INPUTS_HF_REPO)}"
+export RESULTS_HF_REPO="${RESULTS_HF_REPO:-$(_benv RESULTS_HF_REPO)}"
 TAG="${INPUTS_TAG:-rerun-v2}"
 REPO_ID="${INPUTS_HF_REPO:-}"
 DIR="dataset/inputs/$TAG"

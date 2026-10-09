@@ -99,26 +99,37 @@ def _render_rays(scene, mesh_t, origins, directions, width, height, max_depth):
 _TEXTURE_IMG: dict = {"img": None}
 
 
+def _ply_header(mesh_path: Path) -> dict:
+    """{'vertex': n, 'face': n, 'face_list': bool} from a PLY header (cheap)."""
+    out = {"face_list": False}
+    with open(mesh_path, "rb") as f:
+        cur = None
+        for _ in range(200):
+            ln = f.readline().decode("ascii", "replace").strip()
+            if ln.startswith("element "):
+                _, cur, n = ln.split()
+                out[cur] = int(n)
+            elif ln.startswith("property list") and cur == "face":
+                out["face_list"] = True
+            elif ln == "end_header":
+                break
+    return out
+
+
 def _load_mesh_legacy(mesh_path: Path):
     """Load into an Open3D legacy TriangleMesh, robust to quad/polygon PLYs.
 
-    Open3D's reader aborts on Replica's quad-face meshes, and trimesh mis-reads the
-    face list (yields only a few triangles). So when Open3D fails we parse the PLY
-    with `plyfile` and fan-triangulate the polygon faces ourselves — reliable and
-    keeps per-vertex colours.
+    Polygon PLYs (Replica: every face is a quad) are parsed with `plyfile` and
+    triangulated here. Open3D must NOT be trusted for them: on Replica it hits a polygon
+    it "could not decompose", aborts, and silently returns the faces read so far — e.g.
+    office_0 gave 574,842 of the 1,177,518 triangles (49%), i.e. half the room missing
+    from the renders (pano valid ~80%) and from the GT mesh. The old guard
+    (tris >= 0.5 x verts) let that through because a quad mesh has ~2 tris per vertex.
     """
     import open3d as o3d
-    mesh = o3d.io.read_triangle_mesh(str(mesh_path), enable_post_processing=True)
-    nv, nt = len(mesh.vertices), len(mesh.triangles)
-    # Open3D can return a PARTIAL mesh on quad/polygon PLYs: it keeps the vertices
-    # but silently drops the faces it can't triangulate (e.g. Replica -> only 5116
-    # tris for ~1M verts). A real mesh has ~2 triangles per vertex, so treat a very
-    # low tri:vert ratio as a failed read and parse the PLY ourselves.
-    if nt >= max(1, 0.5 * nv):
-        return mesh
-    if mesh_path.suffix.lower() == ".ply":
-        print(f"[render] Open3D read looks partial (verts={nv} tris={nt}) — parsing with plyfile")
+    if mesh_path.suffix.lower() == ".ply" and _ply_header(mesh_path).get("face_list"):
         return _load_mesh_plyfile(mesh_path)
+    mesh = o3d.io.read_triangle_mesh(str(mesh_path), enable_post_processing=True)
     return mesh
 
 
@@ -127,37 +138,56 @@ def _load_mesh_plyfile(mesh_path: Path):
     import open3d as o3d
     from plyfile import PlyData
 
-    ply = PlyData.read(str(mesh_path))
+    hdr = _ply_header(mesh_path)
+    ply = None
+    try:                                     # fast path: every face has 4 (or 3) corners
+        for k in (4, 3):
+            try:
+                ply = PlyData.read(str(mesh_path), known_list_len={"face": {"vertex_indices": k}})
+                P = np.asarray(ply["face"].data["vertex_indices"], np.int64).reshape(-1, k)
+                break
+            except Exception:
+                ply = None
+    except TypeError:                        # plyfile < 1.0: no known_list_len
+        ply = None
+    if ply is not None:
+        tris = P if P.shape[1] == 3 else np.concatenate([P[:, [0, 1, 2]], P[:, [0, 2, 3]]], 0)
+        lo = hi = P.shape[1]
+    else:
+        ply = PlyData.read(str(mesh_path))
+        face_el = ply["face"]
+        prop = next(p.name for p in face_el.properties)  # 'vertex_indices' / 'vertex_index'
+        polys = face_el.data[prop]
+        lengths = np.fromiter((len(p) for p in polys), dtype=np.int64, count=len(polys))
+        lo, hi = int(lengths.min()), int(lengths.max())
+        if lo == hi and lo in (3, 4):
+            P = np.vstack([np.asarray(p, np.int64) for p in polys])
+            tris = P if lo == 3 else np.concatenate([P[:, [0, 1, 2]], P[:, [0, 2, 3]]], 0)
+        else:                                            # mixed polygons -> fan triangulate
+            acc = []
+            for p in polys:
+                p = np.asarray(p, np.int64)
+                for k in range(1, len(p) - 1):
+                    acc.append((p[0], p[k], p[k + 1]))
+            tris = np.asarray(acc, dtype=np.int64)
+
     v = ply["vertex"]
     verts = np.column_stack([v["x"], v["y"], v["z"]]).astype(np.float64)
     names = v.data.dtype.names
     colors = None
     if all(c in names for c in ("red", "green", "blue")):
         colors = np.column_stack([v["red"], v["green"], v["blue"]]).astype(np.float64) / 255.0
-
-    face_el = ply["face"]
-    prop = next(p.name for p in face_el.properties)      # 'vertex_indices' / 'vertex_index'
-    polys = face_el.data[prop]                           # object array of index lists
-    lengths = np.fromiter((len(p) for p in polys), dtype=np.int64, count=len(polys))
-
-    if lengths.min() == lengths.max() and lengths[0] in (3, 4):
-        P = np.vstack([np.asarray(p, np.int64) for p in polys])   # (F, k) — vectorised
-        tris = P if lengths[0] == 3 else np.concatenate([P[:, [0, 1, 2]], P[:, [0, 2, 3]]], 0)
-    else:                                                # mixed polygons -> fan triangulate
-        acc = []
-        for p in polys:
-            p = np.asarray(p, np.int64)
-            for k in range(1, len(p) - 1):
-                acc.append((p[0], p[k], p[k + 1]))
-        tris = np.asarray(acc, dtype=np.int64)
+    n_faces = len(ply["face"].data)
+    if hdr.get("face") and n_faces != hdr["face"]:
+        raise RuntimeError(f"{mesh_path}: read {n_faces} faces, header says {hdr['face']}")
 
     m = o3d.geometry.TriangleMesh()
     m.vertices = o3d.utility.Vector3dVector(verts)
     m.triangles = o3d.utility.Vector3iVector(tris.astype(np.int32))
     if colors is not None:
         m.vertex_colors = o3d.utility.Vector3dVector(colors)
-    print(f"[render] plyfile: {len(verts)} verts, {len(tris)} tris "
-          f"(faces {lengths.min()}-{lengths.max()}-gon), colours={colors is not None}")
+    print(f"[render] plyfile: {len(verts)} verts, {n_faces} faces ({lo}-{hi}-gon) -> "
+          f"{len(tris)} tris, colours={colors is not None}")
     return m
 
 
@@ -291,6 +321,11 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
 
     # GT lives in the trajectory dir (eval reads .../<dataset>/<scene>/<traj>/).
     out_root = REPO_ROOT / "dataset" / "exports" / dataset / scene / traj
+    if out_root.exists():
+        # Start clean: a re-render can produce fewer frames than the last one, and
+        # export_inputs counts the PNGs on disk — stale frames would leak into n_frames.
+        import shutil
+        shutil.rmtree(out_root)
     out_root.mkdir(parents=True, exist_ok=True)
 
     # Measure the TRUE camera height at the first pose by casting a ray straight

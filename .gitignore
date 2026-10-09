@@ -49,3 +49,5 @@ site/
 Thumbs.db
 .idea/
 .vscode/
+# uv lockfile written by `uv sync` on each machine (not pinned in this repo)
+uv.lock
