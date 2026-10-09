@@ -74,24 +74,36 @@ def main() -> int:
     if not gt.exists():
         print(f"!! no ground truth at {gt} — inputs missing"); return 1
 
-    print(f"=== PRE-CHECK: {len(methods)} methods on {ds}/{scene}/{traj} ===")
+    # VGGT-SLAM's loop closure is only exercised on a path that revisits places, so
+    # its loop-closure arm ALSO runs on the seed-0 loop path and must close >= 1 loop
+    # there (PRECHECK_ALLOW_NO_LOOPS=1 downgrades that to a warning).
+    loop_traj = os.environ.get("PRECHECK_LOOP_TRAJ") or next(
+        (t for t in trajs if t.startswith("loop_") and t.endswith("_s0")), None)
+    jobs = [(m, traj) for m in methods]
+    if loop_traj and "vggtslam" in methods:
+        jobs.append(("vggtslam", loop_traj))
+    print(f"=== PRE-CHECK: {len(jobs)} runs on {ds}/{scene} ({traj}"
+          f"{' + vggtslam on ' + loop_traj if len(jobs) > len(methods) else ''}) ===")
     env = dict(os.environ)
     if force:
         env["PRISM_FORCE"] = "1"
-    for i, m in enumerate(methods, 1):
-        print(f"\n--- [{i}/{len(methods)}] {m} ---", flush=True)
+    for i, (m, tj) in enumerate(jobs, 1):
+        print(f"\n--- [{i}/{len(jobs)}] {m} on {tj} ---", flush=True)
         t0 = time.time()
         rc = subprocess.call(RUN + ["adapters/run.py", "--method", m, "--config", "config.yaml",
-                                    "--scenes", scene, "--traj", traj], cwd=REPO_ROOT, env=env)
+                                    "--scenes", scene, "--traj", tj], cwd=REPO_ROOT, env=env)
         print(f"    adapter exit {rc} after {time.time() - t0:.0f}s")
 
     from eval.eval_traj import eval_one
     rows, fails = [], 0
-    for m in methods:
-        base = REPO_ROOT / "results" / m / ds / scene / traj
+    for m, tj in jobs:
+        is_loop = tj != traj
+        gt = REPO_ROOT / "dataset" / "exports" / ds / scene / tj / "poses_gt.tum"
+        base = REPO_ROOT / "results" / m / ds / scene / tj
         vdirs = sorted(p for p in base.glob("*") if p.is_dir()) if base.exists() else []
         if not vdirs:
-            rows.append({"method": m, "status": "FAIL", "why": "no result dir (method did not run)"})
+            rows.append({"method": m + ("@loop" if is_loop else ""), "status": "FAIL",
+                         "why": "no result dir (method did not run)"})
             fails += 1
             continue
         d = vdirs[0]
@@ -101,6 +113,9 @@ def main() -> int:
         if not perf.get("completed"):
             why.append(f"not completed ({perf.get('failure_kind') or 'no perf.json'}) — see {d / 'run.log'}")
         ni, nd = perf.get("n_frames_input") or 0, perf.get("n_frames_done") or 0
+        if is_loop and (arm.get("n_loop_closures") or 0) < 1:
+            (warn if os.environ.get("PRECHECK_ALLOW_NO_LOOPS") == "1" else why).append(
+                "0 loop closures on the loop path (loop detection threshold too strict?)")
         if m.startswith("vggtslam"):
             kr = arm.get("keyframe_ratio")
             if kr is None or kr < 0.8:
@@ -130,7 +145,7 @@ def main() -> int:
             why.append(f"ATE {ate:.2f} m > {max_ate} m")
         status = "FAIL" if why else ("WARN" if warn else "PASS")
         fails += status == "FAIL"
-        rows.append({"method": m, "status": status, "why": "; ".join(why + warn),
+        rows.append({"method": m + ("@loop" if is_loop else ""), "status": status, "why": "; ".join(why + warn),
                      "wall_s": perf.get("wall_s"), "proc_s": perf.get("latency_end_to_end_s"),
                      "vram_peak_gb": perf.get("vram_peak_gb"), "ate_m": ate,
                      "frames": f"{nd}/{ni}", "extra": {k: arm.get(k) for k in
@@ -144,7 +159,7 @@ def main() -> int:
         per_m[u.method] = per_m.get(u.method, 0) + 1
     total_s = 0.0
     for r in rows:
-        if r.get("wall_s"):
+        if r.get("wall_s") and "@" not in r["method"]:
             total_s += per_m.get(r["method"], 0) * float(r["wall_s"])
 
     print("\n" + "=" * 100)

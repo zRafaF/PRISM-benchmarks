@@ -6,6 +6,10 @@
 #   bash scripts/results.sh push            # upload that tar to RESULTS_HF_REPO (optional)
 #   bash scripts/results.sh fetch           # (offline box) download every pod tar for RESULTS_TAG
 #   bash scripts/results.sh merge F.tar...  # unpack pod tars into results/, refusing collisions
+#   bash scripts/results.sh sync-up         # checkpoint: upload finished run dirs + logs to HF
+#                                           #   (results/<tag>/live/), only new/changed files
+#   bash scripts/results.sh sync-down       # resume: pull that checkpoint into results/
+#                                           #   (never overwrites) so finished runs are skipped
 #
 # Unlike `make bundle` (a report-oriented zip WITHOUT point clouds), a pod pack is the
 # raw material for scoring: every run dir incl. cloud.ply, the run logs, the overnight
@@ -43,6 +47,29 @@ provenance() {
 }
 
 case "${1:-}" in
+sync-up)
+  [ -n "$REPO_ID" ] || { echo "!! set INPUTS_HF_REPO or RESULTS_HF_REPO"; exit 1; }
+  provenance
+  $HF upload "$REPO_ID" results "results/$TAG/live/results" --repo-type dataset \
+      --exclude "bundles/*" --exclude "report*/*" --exclude "figures/*" --exclude "_*/*" \
+      --exclude "prism-benchmarks_*/*" --commit-message "checkpoint $(hostname) $(date +%H:%M)" >/dev/null
+  $HF upload "$REPO_ID" logs "results/$TAG/live/logs/$(hostname)" --repo-type dataset \
+      --exclude ".done_*" --commit-message "checkpoint logs $(hostname)" >/dev/null
+  echo ">> checkpoint uploaded: $(ls -d results/*/*/*/*/*/ 2>/dev/null | grep -vcE '^results/(report|bundles|figures|_|prism-benchmarks_)') run dirs -> $REPO_ID results/$TAG/live/" ;;
+sync-down)
+  [ -n "$REPO_ID" ] || { echo ">> no HF repo set — nothing to resume from"; exit 0; }
+  rm -rf dataset/_hf_live
+  $HF download "$REPO_ID" --repo-type dataset --include "results/$TAG/live/results/*" \
+      --local-dir dataset/_hf_live >/dev/null 2>&1 || true
+  src="dataset/_hf_live/results/$TAG/live/results"
+  if [ -d "$src" ]; then
+    n=$(find "$src" -name perf.json | wc -l)
+    cp -rn "$src/." results/
+    echo ">> resumed $n finished run(s) from the HF checkpoint (existing local runs kept)"
+  else
+    echo ">> no HF checkpoint for $TAG yet — starting fresh"
+  fi
+  rm -rf dataset/_hf_live ;;
 pack)
   provenance
   mkdir -p "$OUTD"

@@ -111,10 +111,21 @@ stage_precheck() {
   [ -f logs/.data_ready ] || { echo "!! run the data stage first"; exit 1; }
   say "precheck: every method on one real sequence (results are kept and reused)"
   make precheck
+  # Exercise the END of the pipeline now, so it cannot fail for the first time after
+  # hours of GPU time: pack the pre-check results (then delete the test tar) and push a
+  # first checkpoint to HF (proves the token can write).
+  say "precheck: testing the end of the pipeline (pack + HF checkpoint upload)"
+  bash scripts/results.sh pack
+  rm -f results/bundles/pod_*.tar
+  if [ -n "${INPUTS_HF_REPO:-}${RESULTS_HF_REPO:-}" ]; then
+    bash scripts/results.sh sync-up || { echo "!! HF upload failed: check HF_TOKEN can WRITE to ${RESULTS_HF_REPO:-$INPUTS_HF_REPO}"; exit 1; }
+  fi
 }
 
 stage_bench() {
   [ -f logs/.data_ready ] || { echo "!! run the data stage first"; exit 1; }
+  say "bench: resume from the HF checkpoint, if any (finished runs are skipped)"
+  bash scripts/results.sh sync-down || true
   say "bench: method matrix, sequential on one GPU (SKIP_EVAL=1, SKIP_RENDER=1)"
   SKIP_EVAL=1 SKIP_RENDER=1 bash scripts/run_overnight.sh
 }

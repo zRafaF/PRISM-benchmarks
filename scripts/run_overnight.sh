@@ -251,6 +251,20 @@ RUN_N=0
 RUN_OK=0
 RUN_FAIL=0
 
+# Checkpoint to HF every CKPT_EVERY_S seconds (default 15 min), always BETWEEN runs so it
+# never overlaps a timed run. A new pod resumes from it (pod.sh bench -> sync-down).
+CKPT_EVERY_S="${CKPT_EVERY_S:-900}"
+LAST_CKPT=$(date +%s)
+checkpoint() {
+  [ -n "${INPUTS_HF_REPO:-}${RESULTS_HF_REPO:-}" ] || return 0
+  local now; now=$(date +%s)
+  if [ "${1:-}" = "force" ] || [ $((now - LAST_CKPT)) -ge "$CKPT_EVERY_S" ]; then
+    log "--- checkpoint: uploading results to HF (between runs)"
+    bash scripts/results.sh sync-up || log "!!! checkpoint upload FAILED — continuing (results stay on disk)"
+    LAST_CKPT=$(date +%s)
+  fi
+}
+
 run_set() {   # run_set <traj> <methods...>
   local traj="$1"; shift
   for m in "$@"; do
@@ -271,6 +285,7 @@ run_set() {   # run_set <traj> <methods...>
       RUN_FAIL=$((RUN_FAIL + 1)); note "FAIL $traj  $m   (continuing)"
       log  "!!! FAILED method=$m traj=$traj — continuing"
     fi
+    checkpoint
   done
 }
 
@@ -520,6 +535,7 @@ make snapshots SNAP_METHODS="$SNAP_M" SNAP_SCENES="$SCENE_ARG" SNAP_TRAJ="$SNAP_
 fi
 
 rm -f "$PLAN_SH"
+checkpoint force
 log "############ DONE  stamp=$STAMP ############"
 log "### $RUN_N runs dispatched: $RUN_OK ok, $RUN_FAIL failed"
 note "done $STAMP  ($RUN_N runs: $RUN_OK ok / $RUN_FAIL failed)"
