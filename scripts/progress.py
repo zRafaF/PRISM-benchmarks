@@ -27,6 +27,30 @@ from bench.matrix import plan
 
 LOG = REPO_ROOT / "logs" / "overnight_latest.log"
 PRECHECK = REPO_ROOT / "logs" / "precheck.json"
+STAGE = REPO_ROOT / "logs" / "pod_stage"
+PODLOG = REPO_ROOT / "logs" / "pod_latest.log"
+
+
+def _pod_lines() -> list[str]:
+    """Pod stage + the last log lines, so setup/download/pre-check are visible too."""
+    out = []
+    if STAGE.exists():
+        st = STAGE.read_text().strip()
+        age = time.time() - STAGE.stat().st_mtime
+        out.append(f"pod stage: {st}   ({_fmt_dur(age)} in this stage)")
+    if PODLOG.exists():
+        try:
+            with open(PODLOG, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 20_000))
+                tail = f.read().decode("utf-8", "replace").replace("\r", "\n").splitlines()
+            tail = [re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", x).rstrip() for x in tail if x.strip()][-4:]
+            age = time.time() - PODLOG.stat().st_mtime
+            out.append(f"pod log  (updated {int(age)} s ago):")
+            out += ["   " + x[:150] for x in tail]
+        except Exception:
+            pass
+    return out
 
 
 def _fmt_dur(s: float) -> str:
@@ -71,8 +95,9 @@ def _current():
 
 def render(cfg) -> str:
     units = plan(cfg)
+    pod = _pod_lines()
     if not units:
-        return "No frozen scenes yet (the data stage freezes them)."
+        return "\n".join(pod + ["", "No frozen scenes yet (the data stage freezes them)."])
     per = defaultdict(lambda: {"total": 0, "done": 0, "fail": 0, "secs": []})
     for u in units:
         d = per[u.method]
@@ -114,7 +139,8 @@ def render(cfg) -> str:
            + (f" + {unknown} runs with no timing yet" if unknown else ""))
     lines = [f"PRISM-benchmarks  [{_bar(frac, width)}] {100 * frac:5.1f}%  {done}/{total} runs"
              + (f"  {fail} FAILED" if fail else "") + f"   {eta}"]
-    cur = _current()
+    lines += pod
+    cur = _current() if done or "bench" in (pod[0] if pod else "") else None
     if cur:
         m, seq, mt, last = cur
         age = time.time() - mt
