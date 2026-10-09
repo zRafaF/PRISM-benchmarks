@@ -5,7 +5,7 @@
 # ============================================================================
 
 hardware:
-  hw_id: "RTX PRO 6000"      # stamped into perf tables; we benchmark on the 6000 only
+  hw_id: "RTX 5090"          # label in the perf tables (rerun-v2 runs on one RTX 5090; each run also records the real gpu_name)
   device: cuda
 
 # ── Datasets ────────────────────────────────────────────────────────────────

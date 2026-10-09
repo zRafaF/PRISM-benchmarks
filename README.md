@@ -1,166 +1,185 @@
 # PRISM-benchmarks
 
-Neutral cross-method benchmark **orchestrator** for PRISM-VGGT vs. streaming
-baselines. It owns the shared dataset rendering, the fair-comparison co-visibility
-masking, the eval + perf/resource collection, and the final aggregated report. Each
-method runs **in its own isolated env** as a subprocess; the eval layer imports no
-method. The **Makefile is the orchestrator** — run everything through `make`.
+Benchmark harness for **PRISM-VGGT** against streaming baselines (VGGT-SLAM, LASER).
+Every method runs in its own environment; everything is driven through `make`.
 
-```
-make help      # targets + pipeline
-make steps     # full run-book
-```
+| What | Where |
+|---|---|
+| This repo (branch `rerun-v2`) | https://github.com/zRafaF/PRISM-benchmarks |
+| PRISM-VGGT (branch `prism-v2`, pinned in `bench.env`) | https://github.com/zRafaF/PRISM-VGGT |
+| Rendered inputs + results (private HF dataset) | https://huggingface.co/datasets/DoninhaD/prism-bench-inputs |
+| PanoVGGT weights (private HF bucket) | https://huggingface.co/buckets/DoninhaD/PanoVGGT-bucket |
 
-## Prerequisites
+Inside the HF dataset: `inputs/rerun-v2/` = rendered frames (one tar per scene),
+`results/rerun-v2/live/` = checkpoints written during a run, `results/rerun-v2/*.tar` = final results.
 
-- **uv** (installs itself if missing) — the only Python you need; every step runs
-  inside a uv-managed venv. **Do not call `python` directly** (there is no system
-  interpreter on the box — use the `make` targets, which run `uv run python`).
-- **System packages:** `make deps` (installs `wget pigz unzip` for the Replica
-  downloader + `tmux` for the overnight run). Add `APT_SUDO=sudo` if you are not root.
-- An NVIDIA GPU + CUDA 12.8 for the PRISM env.
+## The flow
 
-## Quick start (Replica, one room, ours end-to-end)
+1. **PC** renders the dataset once and uploads the frames to HF (CPU work, no GPU).
+2. **One GPU pod** downloads the frames, runs every method one after another, uploads results.
+3. **PC** downloads the results and scores them (CPU work, no GPU).
 
-Run everything through `make` — never raw `python`.
+## What runs
 
-```bash
-# 1. envs
-make init            # clone + pin every method submodule (bench.env)
-make setup           # orchestrator env (light: open3d/evo/pynvml — NO torch)
-make setup-prism     # PRISM env (CUDA 12.8/torch2.8 + nvblox wheel + PanoVGGT weights)
+- **6 Replica scenes:** `apartment_0 apartment_1 office_0 room_0 room_1 room_2`
+- **2 camera paths** at 2 Hz, 300 frames (150 s of video) each: `synthetic` (smooth) and `loop` (revisits places)
+- **3 seeds** per path → 36 sequences
 
-# 2. dataset — Replica (no approval).  make download prints these exact steps.
-make deps            # wget pigz unzip tmux  (APT_SUDO=sudo if not root)
-git clone https://github.com/facebookresearch/Replica-Dataset
-cd Replica-Dataset && ./download.sh "$(pwd)/../dataset/raw/replica" && cd ..
+| Method | Runs | Note |
+|---|---|---|
+| `prism` | 36 | ours, Sim(3) alignment |
+| `vggtslam` | 36 | VGGT-SLAM as published: 32-frame submaps, loop closure on |
+| `laser` | 36 | |
+| `prism_sl4`, `prism_se3`, `prism_sim3lock` | 12 each | alignment ablation, seed 0 only |
+| `vggtslam_noloop` | 12 | VGGT-SLAM with loop closure off, seed 0 only |
 
-# 3. freeze one room + render + export   (all via uv, through make)
-make split                          # freezes 1 scene (fixed seed) into config.yaml
-make render TRAJ=synthetic_spline   # pano + pinhole + GT  (spline needs NO dataset poses)
-make export
+**156 runs, ~3 h on one RTX 5090.** Runs are strictly sequential, so timings are clean.
 
-# 4. run OURS + evaluate + report
-make run-prism
-make eval-traj eval-recon eval-metric perf
-make report                         # -> results/report/report.md (+ fps.png)
-make figures                        # -> results/figures/ (vram_vs_frames.png + csv, cubemap_projection.png)
-```
+Offline methods (`panovggt`, `pi3`, `mapanything`) are **off by default**: they need
+50–93 GB of VRAM at only 200 frames. Turn them on only on a 96 GB card (see Hardware).
 
-Report figures (VRAM-vs-frames, cubemap projection, per-view-vs-fused) regenerate with
-`make figures` / `fig-cubemap-export` / `fig-fusion` and download from the Studio's
-"Report figures" tab — see `documentation/docs/figures.md`.
+## Hardware
 
-Add baselines once you've confirmed their runner API seams (see roadmap):
+| | |
+|---|---|
+| GPU | **RTX 5090 (32 GB)** — the default. For the offline methods use an **RTX PRO 6000 (96 GB)** and run `make pod BENCH_OFFLINE=1`. Both are Blackwell (`sm_120`); the prebuilt nvblox wheel works on both, no compiling. |
+| Disk | **100 GB container disk.** 60 GB runs out. |
+| Image | Ubuntu with root and `apt` (RunPod's PyTorch template works). NVIDIA driver for CUDA 12.8 (tested on 580). |
+| GPU label | `hardware.hw_id` in `config.yaml` (`RTX 5090`) names the GPU in the tables; change it if you use another card. Each run also records the real GPU name. |
 
-```bash
-make setup-pi3      && make run-pi3
-make setup-vggtslam && make run-vggtslam
-```
+## Hugging Face token
 
-## What is / isn't benchmarked
+https://huggingface.co/settings/tokens → **Fine-grained**, tick only:
 
-- **Streaming vs. full-batch.** Streaming methods (PRISM, VGGT-SLAM, LASER) are driven
-  incrementally and timed identically. Permutation-equivariant feed-forward nets (Pi3,
-  MapAnything) and raw PanoVGGT run **full-batch** (all frames at once — windowing
-  misaligns them); PanoVGGT is the raw-backbone reference that isolates what the PRISM
-  engine adds.
-- **Methods:** PRISM-VGGT (ours, pano) · PanoVGGT (raw-backbone ref, pano) · Pi3 ·
-  MapAnything · VGGT-SLAM · LASER (pinhole baselines). Pins in `bench.env`.
-- **Datasets:** Replica (active) → ScanNet++ → KITTI-360 → Matterport3D & Stanford2D3D.
-  Config in `config.yaml`.
-- **Metrics:** trajectory (ATE + **drift %/m**, evo, Sim(3)-aligned) · reconstruction
-  (acc/compl/Chamfer/F-score, masked + full-360) · **cloud cleanliness & size**
-  (SOR-outlier %, acc-p95, precision@2cm, map MB) · performance (FPS, latency, **avg &
-  peak VRAM**, GPU util) · **absolute metric-scale accuracy** (ours vs. rendered GT —
-  scale-free baselines → N/A).
+- Read contents of your repos
+- Create repos and write to repos created by this token
+- Read contents of public gated repos you can access
 
-## Ablations, trajectories & the big benchmark
+If the dataset repo already exists and was created by another token, also tick
+*Write contents/settings of your repos*. Revoke the token after the run.
 
-**Alignment-group ablation (core study).** PRISM's submap registration group is switchable
-via `PRISM_ALIGN` — `sim3` (7-DoF similarity), `se3` (6-DoF rigid), `sl4` (15-DoF
-projective, VGGT-SLAM's group). **The default is `sim3`**, set explicitly in `config.yaml`
-rather than inherited from the engine. The big run showed the choice is *motion-dependent*:
-SL(4) wins on open paths but loses decisively on loops (ATE 110.5 vs 101.9 cm, F 0.26 vs
-0.34, metric scale 31.4% vs 20.3%), and real deployments loop. The ablation arms
-`prism_sl4` / `prism_se3` measure the other two with everything else held fixed. Key
-finding: running VGGT-SLAM's *own* SL(4) group inside PRISM still beats VGGT-SLAM by a
-wide, paired-test-significant margin — so PRISM's advantage is the panoramic metric
-engine, not the pose-graph math. Guard ablations (`prism_nolock/nostill/noguards`) toggle
-the drift-control guards; they show **no** measurable accuracy benefit.
+---
 
-> **Heads-up when reading old results:** in the 2026-07 archive the arm named `prism` was
-> SL(4). From the current config forward `prism` is Sim(3) and SL(4) lives in `prism_sl4`.
-> `eval/aggregate_clean.py` carries an era map so both are labelled correctly.
+## 1. PC: render and upload the inputs (once)
+
+Windows: run in **WSL Ubuntu**, from the Windows checkout (or a clone in `~`, which is faster).
 
 ```bash
-make ablations          # guard arms + alignment arms (sim3, se3) as their own "methods"
-make ablations-align    # just the alignment-group study
+sudo apt update && sudo apt install -y git make wget pigz unzip curl
+curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
+cd /mnt/c/Dev/ualberta/PRISM-benchmarks
+git config core.fileMode false
+
+make inputs                 # Replica meshes -> scene split -> check -> render -> export -> pack (a few hours)
+export HF_TOKEN=hf_xxx
+make inputs-push            # uploads dataset/inputs/rerun-v2/ (~7.5 GB)
 ```
 
-**Trajectory families** (`config.trajectories`), rendered from the same poses for every
-method — id scheme `<kind>_<rate>hz[_sN]`:
+- `make replica` streams the 34 GB Replica archive and keeps only the 6 meshes (~3 GB on disk).
+- Keep this checkout: scoring needs its depth maps and GT meshes.
+- Inputs only need re-rendering if `config.yaml` render settings, `dataset/trajectories.py`
+  or `dataset/render_scene.py` change — the pod refuses mismatched inputs. After changing
+  only run settings: `bash scripts/inputs.sh rehash && make inputs-push`.
 
-- `synthetic_<rate>hz` — smooth constant-velocity spline, full rate sweep (0.5/2/5 Hz).
-- `stopgo_2.0hz` — walk / **dwell** / walk: noise accumulation + still-guard stress.
-- `loop_2.0hz` — returns to & re-observes the start: drift / loop-closure stress.
+Optional, to start with no old results on HF (inputs are kept): `make results-hf-reset`.
 
-**Big benchmark (overnight).** 6 scenes × 2 seeds × the trajectory families × all methods
-+ ablations, on a **dedicated GPU** (clean VRAM). Resumable, priority-ordered (headline
-first), report checkpoint after each phase:
+## 2. Pod: run the benchmark
 
 ```bash
-make bench-overnight               # detached tmux; survives SSH disconnect
-tmux attach -t bench               # reattach   |   tail -f logs/overnight_latest.log
-# no tmux? setsid bash scripts/run_overnight.sh >/dev/null 2>&1 </dev/null &
+apt-get update && apt-get install -y git make tmux
+git clone -b rerun-v2 https://github.com/zRafaF/PRISM-benchmarks.git && cd PRISM-benchmarks
+export HF_TOKEN=hf_xxx
+make pod
+make watch
 ```
 
-The report gains a **Global aggregate** and an **Alignment-group study** table (compute
-impact + fidelity) on top of the per-run tables A/B/C/C2/D.
+`make pod` runs in a background tmux session, so closing the terminal is fine. Stages:
 
-### Publication-grade aggregation (use this for anything cited)
+| Stage | Time | What |
+|---|---|---|
+| prep | 30–60 min | system packages, method envs, model weights |
+| check | ~3 min | GPU/CUDA in every env, nvblox fuses on the GPU, VGGT-SLAM closes a loop on its own sample |
+| data | ~5 min | downloads the frames from HF, checks they match this code |
+| precheck | ~15 min | every method on one real sequence + VGGT-SLAM on a loop path; any FAIL stops here |
+| bench | ~3 h | 156 runs, one at a time; checkpoint to HF every 15 min |
+| pack | ~2 min | results tar → HF `results/rerun-v2/` |
+| studio | — | Gradio link to download the tar |
 
-`make report` aggregates **everything** in `results/` — seeded and unseeded, complete and
-crashed alike. That is what contaminated the 2026-07 tables. For anything the paper cites:
+### While it runs
 
 ```bash
-make report-clean     # seeded-only + named exclusions + complete-runs-only
-make report-tables    # freeze into the layout uofa-2026-report ingests
-make verify-clean     # fail loudly if a contaminated run leaked in
-make publication      # all three
+make watch                      # stage, progress bar, ETA, current run, flagged runs (Ctrl-C leaves; run continues)
+tmux attach -t pod              # raw output (Ctrl-b then d to detach)
+cat logs/precheck.json          # pre-check table
+df -h /                         # disk
+grep -o "https://[a-z0-9.-]*gradio.live" logs/pod_latest.log | tail -1   # download link at the end
 ```
 
-`report-clean` also emits error bars (within-cell seed std), a paired head-to-head, and a
-per-method **completion table** — read that one first: the 2026-07 run failed 25.6% of its
-PRISM-arm runs, all concentrated on the hardest scenes. See `RESULTS_CHANGELOG.md`.
+### If something stops
 
-## The adapter contract
+Fix the cause, then run `make pod` again. It resumes:
 
-Adapters read the fixed export layout and write the fixed results layout; `eval/*`
-reads only the results layout. See `documentation/docs/adapter_contract.md`.
+- finished stages are skipped (`logs/.done_<stage>`; delete one to redo it),
+- finished runs are skipped; half-done or crashed runs are wiped and redone,
+- a crashed run is retried once automatically; failing twice it is kept as a failure,
+- on a **new** pod, runs already checkpointed to HF are pulled first and skipped.
 
-```
-dataset/exports/<dataset>/<scene>/<traj>/
-  pano/{rgb,depth,mask}/NNNNNN.*   intrinsics.json  meta.json
-  pinhole/<variant>/{rgb,depth,mask}/...            intrinsics.json meta.json
-  poses_gt.tum   gt_mesh.ply
-results/<method>/<dataset>/<scene>/<traj>/<variant>/
-  poses.tum  cloud.ply  perf.json  run.log  (+ ate/recon/metric.json after eval)
-```
+To stop: `make pod-stop`. Prefer stopping right after a run finishes (the stopped run is redone).
 
-## Docs
+### Common problems
+
+| Symptom | Fix |
+|---|---|
+| `libEGL.so.1` / `vggtslam_reference FAIL` | `apt-get install -y libegl1 libgl1 libgomp1 libglib2.0-0`, then `make pod` |
+| `No space left on device` | pod needs 100 GB disk; quick space: `uv cache clean` |
+| `dns error` during prep | transient; install steps retry 3×, otherwise `make pod` again |
+| `OutOfMemoryError` on panovggt/pi3/mapanything | expected on 32 GB; keep `BENCH_OFFLINE=0` |
+| pre-check FAIL | paste `logs/precheck.json`; the run log is in `results/<method>/replica/room_0/<traj>/*/run.log` |
+| data stage: private repo not found | `HF_TOKEN` not exported in the shell that ran `make pod` |
+
+## 3. PC: score
 
 ```bash
-make docs-serve      # browse the design docs + decisions locally
+cd /mnt/c/Dev/ualberta/PRISM-benchmarks
+export HF_TOKEN=hf_xxx
+make results-fetch && make results-merge && make eval-all publication
 ```
 
-See `documentation/docs/roadmap.md` for **current findings & the paper framing** (a
-systems/robotics contribution: the first *metric, streaming, bounded-memory 360°*
-reconstruction in the VGGT family; beats VGGT-SLAM ~4× on trajectory with a 6× smaller
-map) and `decisions.md` (D1–D16) for the design rationale.
+Paper tables: `results/report_tables/`. Analysis: `results/report_clean/clean_report.md`.
 
-Small-run numbers are labelled **preliminary** (2 scenes, fixed seed). The
-`make bench-overnight` run (6 scenes × 4 seeds × motion-stress trajectories, dedicated
-GPU) is what drops that label — but note the 2026-07 run's seed-to-seed ATE spread was
-25–60% of the mean, so that hedge can currently be dropped for throughput and memory,
-**not** for ATE/F. Rendered frames are noise/artifact-free → an optimistic upper bound.
+---
+
+## Options (`make pod VAR=value`)
+
+| Variable | Default | |
+|---|---|---|
+| `BENCH_OFFLINE` | `0` | `1` = also run panovggt / pi3 / mapanything (96 GB GPU) |
+| `BENCH_METHODS` | all | e.g. `"prism prism_sl4"` — split methods across pods (each pod a disjoint set) |
+| `CKPT_EVERY_S` | `900` | seconds between HF checkpoints (always between runs) |
+| `PRECHECK_FORCE` | `1` | `0` = reuse runs that already finished |
+
+## Repo layout
+
+```
+config.yaml          scenes, trajectories, methods, ablations, VGGT-SLAM settings
+bench.env            pinned method commits, HF repo, GPU label
+adapters/            one runner per method (each runs in its own env)
+dataset/             Replica fetch, trajectories, rendering, export
+eval/                trajectory / reconstruction / metric-scale scoring, reports
+scripts/pod.sh       the pod pipeline (stages above)
+scripts/precheck.py  pre-check     scripts/progress.py  make watch
+scripts/inputs.sh    inputs pack/push/fetch     scripts/results.sh  results pack/push/checkpoints/merge
+
+dataset/exports/<ds>/<scene>/<traj>/{pano,pinhole/<variant>}/{rgb,depth,mask}/  poses_gt.tum  gt_mesh.ply
+results/<method>/<ds>/<scene>/<traj>/<variant>/  poses.tum  cloud.ply  perf.json  arm_config.json  run.log
+```
+
+More: `make help`, `RESULTS_CHANGELOG.md` (what changed between result sets),
+`documentation/docs/` (`make docs-serve`).
+
+## Notes for the paper
+
+- Timings come from one RTX 5090; don't mix them with the earlier RTX PRO 6000 numbers.
+- Offline methods on 32 GB: report as **OOM**, with the 50–93 GB peaks measured on the 96 GB card.
+- Ablation arms use seed 0 only (12 sequences each); main methods use 3 seeds.
+- The 2026-07/08 alignment numbers are void (see `RESULTS_CHANGELOG.md` §14).
