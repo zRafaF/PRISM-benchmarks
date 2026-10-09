@@ -255,7 +255,14 @@ methods:
 # the paper. `seeds` limits these OFFLINE reference methods to the listed seed indices
 # (0 = _s0): Table II is a quality reference, not the variance study, and this cuts
 # their GPU time by 2/3. Use [0, 1, 2] for full error bars on Table II too.
+#
+# `run: false` (or BENCH_OFFLINE=0 in the environment) drops the offline methods from
+# the matrix entirely — needed on a 32 GB card (RTX 5090), where all three OOM.
+# `seeds` also applies to every arm flagged `limited_seeds: true` below (the PRISM
+# alignment ablations and VGGT-SLAM without loop closure): an ablation compares arms
+# on the same sequences, it does not need the 3-seed variance study.
 baselines:
+  run: true
   max_frames: 200
   seeds: [0]
 
@@ -284,9 +291,9 @@ ablations:
   # rerun-v2: all three groups fit from the same dense overlap points. prism_sim3lock
   # isolates the per-window scale: Sim(3) with the scale frozen after the warm-up (what
   # the old `prism` arm actually was, but now from dense points).
-  - {name: prism_sl4,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sl4,  run_env: {PRISM_ALIGN: "sl4"}}
-  - {name: prism_se3,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: se3,  run_env: {PRISM_ALIGN: "se3"}}
-  - {name: prism_sim3lock, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sim3lock, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "lock"}}
+  - {name: prism_sl4,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: sl4,  run_env: {PRISM_ALIGN: "sl4"}}
+  - {name: prism_se3,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: se3,  run_env: {PRISM_ALIGN: "se3"}}
+  - {name: prism_sim3lock, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: sim3lock, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "lock"}}
   #  The pre-v2 engine behaviour (Sim(3) from the 4 overlap camera centres, scale frozen)
   #  for a before/after row. Off by default to save GPU; it does not need the full grid.
   # - {name: prism_sim3cam, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sim3cam, run_env: {PRISM_ALIGN: "sim3_cam"}}
@@ -296,7 +303,7 @@ ablations:
   #      Named arms, not a mutable global, so a results tree is always self-describing.
   #      rerun-v2: `vggtslam_loop` REMOVED — it was the same configuration as `vggtslam`
   #      (w=32, max_loops=1) and every one of its runs duplicated a `vggtslam` run.
-  - {name: vggtslam_noloop, camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "0"}}
+  - {name: vggtslam_noloop, camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, limited_seeds: true, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "0"}}
   #  (d) FIDELITY-vs-MEMORY SWEEP (PRISM only). The engine's voxel size and max_depth
   #      are the two knobs that trade map fidelity against memory, and PRISM is the only
   #      method here that HAS such a knob — the feed-forward baselines have exactly one

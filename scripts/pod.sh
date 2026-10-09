@@ -30,6 +30,8 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Vars given to `make pod` (HF_TOKEN, BENCH_OFFLINE, ...) — tmux does not pass them on.
+[ -f .pod.env ] && { set -a; . ./.pod.env; set +a; }
 # Defaults from bench.env when not in the environment (e.g. run outside make/tmux).
 _benv() { sed -n "s/^$1[[:space:]]*[?:]*=[[:space:]]*//p" bench.env 2>/dev/null | head -1; }
 export INPUTS_TAG="${INPUTS_TAG:-$(_benv INPUTS_TAG)}"
@@ -129,7 +131,8 @@ stage_eval() {
 stage_pack() {
   say "pack: raw results + scoring inputs for offline scoring"
   bash scripts/results.sh pack
-  if [ -n "${RESULTS_HF_REPO:-}" ]; then
+  if [ -n "${RESULTS_HF_REPO:-}${INPUTS_HF_REPO:-}" ]; then
+    say "pack: uploading to HF (${RESULTS_HF_REPO:-$INPUTS_HF_REPO}, results/<tag>/)"
     bash scripts/results.sh push || echo "!! push failed — download the pack from Studio instead"
   fi
 }
@@ -151,7 +154,11 @@ case "${1:-all}" in
   pack)     stage_pack ;;
   studio)   stage_studio ;;
   all)
-    stage_prep; stage_check; stage_data; stage_precheck; stage_bench
+    # Re-running `make pod` resumes: finished setup stages are skipped (delete
+    # logs/.done_<stage> to force one), and the bench skips runs that already have results.
+    once() { if [ -f "logs/.done_$1" ]; then echo ">> $1: already done (rm logs/.done_$1 to redo)";
+             else "stage_$1"; touch "logs/.done_$1"; fi; }
+    once prep; once check; once data; once precheck; stage_bench
     [ "${POD_CAPACITY:-0}" = "1" ] && stage_capacity
     [ "${POD_EVAL:-0}" = "1" ] && stage_eval
     stage_pack; say "DONE"; stage_studio ;;

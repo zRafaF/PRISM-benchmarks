@@ -15,19 +15,33 @@ from pathlib import Path
 
 from bench.config import REPO_ROOT, load_config, resolve_trajs
 
+import os
+
 _SEED_RE = re.compile(r"_s(\d+)$")
+
+
+def offline_enabled(cfg: dict) -> bool:
+    """Offline (full-batch) methods run unless BENCH_OFFLINE=0 or baselines.run: false.
+    They need 50-93 GB of VRAM at 200 frames, so turn them off on a 32 GB card."""
+    env = os.environ.get("BENCH_OFFLINE", "").strip()
+    if env:
+        return env not in ("0", "false", "no")
+    return bool((cfg.get("baselines") or {}).get("run", True))
 
 
 def main_methods(cfg: dict) -> list[str]:
     """Every method the overnight runs on the full grid (sweep arms excluded)."""
-    out = [m["name"] for m in cfg.get("methods", [])]
-    out += [m["name"] for m in cfg.get("ablations", []) if m.get("role") != "sweep"]
+    off_ok = offline_enabled(cfg)
+    out = [m["name"] for m in cfg.get("methods", []) if off_ok or m.get("mode") != "batch"]
+    out += [m["name"] for m in cfg.get("ablations", []) if m.get("role") != "sweep"
+            and (off_ok or m.get("mode") != "batch")]
     return out
 
 
 def offline_methods(cfg: dict) -> set[str]:
+    """Methods limited to baselines.seeds: offline ones + arms flagged limited_seeds."""
     return {m["name"] for m in cfg.get("methods", []) + cfg.get("ablations", [])
-            if m.get("mode") == "batch"}
+            if m.get("mode") == "batch" or m.get("limited_seeds")}
 
 
 def offline_seed_ok(cfg: dict, traj: str) -> bool:

@@ -51,3 +51,5 @@ Thumbs.db
 .vscode/
 # uv lockfile written by `uv sync` on each machine (not pinned in this repo)
 uv.lock
+# make pod: env handed to the tmux pipeline (contains HF_TOKEN)
+.pod.env

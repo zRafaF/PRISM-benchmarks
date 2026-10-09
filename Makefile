@@ -528,6 +528,10 @@ clean-results:
 #   make results-fetch results-merge eval-all publication
 POD_SESSION ?= pod
 pod:
+	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|INPUTS_TAG|BENCH_OFFLINE|NVBLOX_MODE|POD_[A-Z_]+|PRECHECK_[A-Z_]+|SHARD|BENCH_SCENES)=' \
+	  | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" > .pod.env; chmod 600 .pod.env
+	@if tmux has-session -t $(POD_SESSION) 2>/dev/null; then \
+	  echo "!! tmux session '$(POD_SESSION)' exists — 'make pod-stop' first (or tmux attach -t $(POD_SESSION))"; exit 1; fi
 	@if command -v tmux >/dev/null 2>&1; then \
 	  tmux new -d -s $(POD_SESSION) 'bash scripts/pod.sh all; exec bash'; \
 	  echo ">> pod pipeline running in tmux session '$(POD_SESSION)' (SHARD=$(SHARD))"; \

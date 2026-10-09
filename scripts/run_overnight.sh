@@ -87,12 +87,15 @@ import shlex, sys
 from bench.config import load_config, resolve_trajs
 c = load_config('config.yaml')
 ms, ab = c.get('methods', []), c.get('ablations', [])
-core  = [m['name'] for m in ms]
+import os
+_env = os.environ.get('BENCH_OFFLINE', '').strip()
+off_ok = (_env not in ('0', 'false', 'no')) if _env else bool((c.get('baselines') or {}).get('run', True))
+core  = [m['name'] for m in ms if off_ok or m.get('mode') != 'batch']
 align = [m['name'] for m in ab if m.get('align_group')]
 vslam = [m['name'] for m in ab if m.get('runner') == 'vggtslam']
 sweep = [m['name'] for m in ab if m.get('role') == 'sweep']
 # Offline (full-batch) reference methods may be limited to some seed indices.
-offline = [m['name'] for m in ms + ab if m.get('mode') == 'batch']
+offline = [m['name'] for m in ms + ab if m.get('mode') == 'batch' or m.get('limited_seeds')]
 off_seeds = (c.get('baselines') or {}).get('seeds')
 guard = [m['name'] for m in ab
          if not m.get('align_group') and m.get('runner') != 'vggtslam'
@@ -256,7 +259,7 @@ run_set() {   # run_set <traj> <methods...>
     if [ -n "${OFFLINE_SEEDS:-}" ] && echo " $OFFLINE " | grep -q " $m "; then
       _sfx="${traj##*_}"
       if [[ "$_sfx" == s[0-9]* ]] && ! echo " $OFFLINE_SEEDS " | grep -q " $_sfx "; then
-        log "--- skip $m on $traj (offline methods run on seeds: $OFFLINE_SEEDS)"
+        log "--- skip $m on $traj (offline/ablation arms run on seeds: $OFFLINE_SEEDS)"
         continue
       fi
     fi

@@ -7,6 +7,7 @@
 #   bash scripts/inputs.sh fetch    # on a pod: download + unpack (only this SHARD's scenes)
 #   bash scripts/inputs.sh unpack   # on a pod: unpack tars you copied into dataset/inputs/<tag>/
 #   bash scripts/inputs.sh verify   # every frozen (scene, traj) has its method inputs
+#   bash scripts/inputs.sh rehash   # re-stamp MANIFEST fingerprint (render settings unchanged)
 #
 # A pack holds exactly what the METHODS read: rgb/ + mask/ + meta.json +
 # intrinsics.json per camera, plus poses_gt.tum and measured_camera_height.json. It
@@ -66,14 +67,12 @@ pack)
 import hashlib, json, subprocess, sys, time
 from pathlib import Path
 d, ds, sc = Path(sys.argv[1]), sys.argv[2], sys.argv[3].split()
-h = hashlib.sha256()
-for f in ("config.yaml", "config.local.yaml", "dataset/trajectories.py", "dataset/render_scene.py"):
-    h.update(Path(f).read_bytes())
+from bench.render_hash import render_hash
 git = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 dirty = bool(subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout.strip())
 (d / "MANIFEST.json").write_text(json.dumps({
     "tag": d.name, "dataset": ds, "scenes": sc, "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    "git_commit": git, "git_dirty": dirty, "render_config_sha256": h.hexdigest(),
+    "git_commit": git, "git_dirty": dirty, "render_config_sha256": render_hash(), "hash_v": 2,
     "files": {p.name: p.stat().st_size for p in sorted(d.glob("*.tar"))}}, indent=2))
 print(f">> MANIFEST: {len(sc)} scenes, commit {git[:8]}{' (DIRTY)' if dirty else ''}")
 PY
@@ -95,7 +94,7 @@ fetch)
   fi
   cp "dataset/_hf/inputs/$TAG/config.local.yaml" config.local.yaml
   cp "dataset/_hf/inputs/$TAG/MANIFEST.json" "$DIR/MANIFEST.json"
-  "$0" check-hash
+  bash "$0" check-hash
   SC="$(shard_of "$(frozen_scenes)")"
   echo ">> fetching inputs/$TAG for: $SC"
   for sc in $SC; do
@@ -105,7 +104,7 @@ fetch)
     rm -f "dataset/_hf/inputs/$TAG/$sc.tar"
     echo "   $sc unpacked"
   done
-  "$0" verify ;;
+  bash "$0" verify ;;
 unpack)
   [ -f "$DIR/MANIFEST.json" ] && [ -f "$DIR/config.local.yaml" ] || {
     echo "!! copy MANIFEST.json, config.local.yaml and <scene>.tar into $DIR first"; exit 1; }
@@ -113,9 +112,9 @@ unpack)
     cp config.local.yaml "config.local.yaml.bak.$(date +%s)"
   fi
   cp "$DIR/config.local.yaml" config.local.yaml
-  "$0" check-hash
+  bash "$0" check-hash
   for t in "$DIR"/*.tar; do echo ">> unpacking $(basename "$t")"; tar -xf "$t" -C .; done
-  "$0" verify ;;
+  bash "$0" verify ;;
 check-hash)
   # The pod must run the SAME trajectory/render code that produced the inputs.
   M="$DIR/MANIFEST.json"
@@ -124,17 +123,32 @@ check-hash)
 import hashlib, json, sys
 from pathlib import Path
 m = json.loads(Path(sys.argv[1]).read_text())
-h = hashlib.sha256()
-for f in ("config.yaml", "config.local.yaml", "dataset/trajectories.py", "dataset/render_scene.py"):
-    h.update(Path(f).read_bytes())
-ok = h.hexdigest() == m.get("render_config_sha256")
+from bench.render_hash import render_hash
+ok = render_hash() == m.get("render_config_sha256")
+if m.get("hash_v") != 2:
+    print("!! MANIFEST uses the old whole-config fingerprint: on the PC run "
+          "'bash scripts/inputs.sh rehash && make inputs-push'"); sys.exit(1)
 print(f">> inputs rendered at commit {m.get('git_commit', '?')[:8]}"
       f"{' (DIRTY)' if m.get('git_dirty') else ''}: config/trajectory code "
       f"{'MATCHES' if ok else 'DIFFERS FROM'} this checkout")
 if not ok:
-    print("!! config.yaml / trajectories.py / render_scene.py changed since the inputs were "
+    print("!! render settings (datasets/camera/trajectories) or trajectories.py / render_scene.py changed since the inputs were "
           "rendered. Re-render + re-pack on the PC, or check out the commit above.")
 sys.exit(0 if ok else 1)
+PY
+  ;;
+rehash)
+  # Re-stamp MANIFEST.json with the current fingerprint WITHOUT re-rendering. Only valid
+  # when the render settings/code are unchanged since the frames were made (e.g. after
+  # editing run settings, or moving to a new fingerprint format).
+  M="$DIR/MANIFEST.json"; [ -f "$M" ] || { echo "!! no $M"; exit 1; }
+  $RUN - "$M" <<'PY'
+import json, sys
+from pathlib import Path
+from bench.render_hash import render_hash
+p = Path(sys.argv[1]); m = json.loads(p.read_text())
+m["render_config_sha256"], m["hash_v"] = render_hash(), 2
+p.write_text(json.dumps(m, indent=2)); print(">> MANIFEST re-stamped:", m["render_config_sha256"][:12])
 PY
   ;;
 verify)
