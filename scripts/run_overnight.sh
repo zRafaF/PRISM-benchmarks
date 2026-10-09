@@ -100,6 +100,17 @@ off_seeds = (c.get('baselines') or {}).get('seeds')
 guard = [m['name'] for m in ab
          if not m.get('align_group') and m.get('runner') != 'vggtslam'
          and m.get('role') != 'sweep']
+# Multi-pod split BY METHOD: BENCH_METHODS="a b" runs only those arms on this pod, so
+# every run of a method (and its timing) comes from ONE machine, and pods write
+# disjoint results/<method>/ trees (no collisions locally, on HF or when merging).
+_sel = os.environ.get('BENCH_METHODS', '').split()
+if _sel:
+    _known = {m['name'] for m in ms + ab}
+    _bad = [m for m in _sel if m not in _known]
+    if _bad:
+        sys.exit(f"BENCH_METHODS: unknown method(s) {_bad}; known: {sorted(_known)}")
+    _keep = lambda L: [m for m in L if m in _sel]
+    core, align, vslam, guard, sweep = map(_keep, (core, align, vslam, guard, sweep))
 ds     = c['datasets'][c['datasets']['active'][0]]
 scenes = list(ds.get('scenes') or [])
 seeds  = list(c['datasets'].get('seeds') or [c['datasets'].get('seed')])
@@ -178,6 +189,7 @@ cat <<PLAN
 ################################################################################
   scenes frozen    : ${N_SCENES} -> ${SCENES_FROZEN:-<none: 'make split' will freeze them>}
   THIS RUN's scenes: ${SCENE_ARG:-<all frozen>}   (SHARD=${SHARD:-none} BENCH_SCENES=${BENCH_SCENES:-none})
+  THIS RUN's methods: ${BENCH_METHODS:-<all>}
   pod flags        : SKIP_RENDER=${SKIP_RENDER} SKIP_EVAL=${SKIP_EVAL}
   target scenes    : ${NSCENES_TARGET}   (datasets.<ds>.n_scenes_start)
   seeds            : ${NSEEDS}  [${SEEDS}]

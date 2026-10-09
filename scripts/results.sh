@@ -9,6 +9,7 @@
 #   bash scripts/results.sh sync-up         # checkpoint: upload finished run dirs + logs to HF
 #                                           #   (results/<tag>/live/), only new/changed files
 #   bash scripts/results.sh sync-down       # resume: pull that checkpoint into results/
+#   CONFIRM=yes bash scripts/results.sh hf-reset   # wipe results/<tag>/ on HF (before any pod)
 #                                           #   (never overwrites) so finished runs are skipped
 #
 # Unlike `make bundle` (a report-oriented zip WITHOUT point clouds), a pod pack is the
@@ -30,6 +31,17 @@ HF="${HF_CLI:-uvx --from huggingface_hub[cli]>=0.34 hf}"
 OUTD=results/bundles
 SHARD_ID="$(echo "${SHARD:-all}" | sed 's#/#of#')"
 
+# This pod's methods (BENCH_METHODS) scope every upload/download/pack, so two pods
+# never touch each other's files. Unset = every method under results/.
+METHODS="${BENCH_METHODS:-}"
+run_dirs() {   # finished-or-not run dirs of THIS pod's methods
+  ls -d results/*/*/*/*/*/ 2>/dev/null | grep -vE '^results/(report|bundles|figures|_|prism-benchmarks_)' \
+    | { if [ -n "$METHODS" ]; then grep -E "^results/($(echo $METHODS | tr ' ' '|'))/"; else cat; fi; } || true
+}
+hf_retry() {   # concurrent commits from two pods can collide: retry with backoff
+  local i; for i in 1 2 3 4 5; do "$@" && return 0; echo "   (HF call failed, retry $i/5)"; sleep $((i * 15)); done; return 1
+}
+
 provenance() {
   mkdir -p logs/env
   {
@@ -50,33 +62,56 @@ case "${1:-}" in
 sync-up)
   [ -n "$REPO_ID" ] || { echo "!! set INPUTS_HF_REPO or RESULTS_HF_REPO"; exit 1; }
   provenance
-  $HF upload "$REPO_ID" results "results/$TAG/live/results" --repo-type dataset \
-      --exclude "bundles/*" --exclude "report*/*" --exclude "figures/*" --exclude "_*/*" \
-      --exclude "prism-benchmarks_*/*" --commit-message "checkpoint $(hostname) $(date +%H:%M)" >/dev/null
-  $HF upload "$REPO_ID" logs "results/$TAG/live/logs/$(hostname)" --repo-type dataset \
+  INC=(); if [ -n "$METHODS" ]; then for m in $METHODS; do INC+=(--include "$m/*"); done
+          else INC=(--exclude "bundles/*" --exclude "report*/*" --exclude "figures/*" --exclude "_*/*" --exclude "prism-benchmarks_*/*"); fi
+  hf_retry $HF upload "$REPO_ID" results "results/$TAG/live/results" --repo-type dataset "${INC[@]}" \
+      --commit-message "checkpoint $(hostname) $(date +%H:%M) [${METHODS:-all}]" >/dev/null
+  hf_retry $HF upload "$REPO_ID" logs "results/$TAG/live/logs/$(hostname)" --repo-type dataset \
       --exclude ".done_*" --commit-message "checkpoint logs $(hostname)" >/dev/null
-  echo ">> checkpoint uploaded: $(ls -d results/*/*/*/*/*/ 2>/dev/null | grep -vcE '^results/(report|bundles|figures|_|prism-benchmarks_)') run dirs -> $REPO_ID results/$TAG/live/" ;;
+  echo ">> checkpoint uploaded: $(run_dirs | wc -l) run dirs [${METHODS:-all methods}] -> $REPO_ID results/$TAG/live/" ;;
 sync-down)
   [ -n "$REPO_ID" ] || { echo ">> no HF repo set — nothing to resume from"; exit 0; }
   rm -rf dataset/_hf_live
-  $HF download "$REPO_ID" --repo-type dataset --include "results/$TAG/live/results/*" \
-      --local-dir dataset/_hf_live >/dev/null 2>&1 || true
+  INC=(); if [ -n "$METHODS" ]; then for m in $METHODS; do INC+=(--include "results/$TAG/live/results/$m/*"); done
+          else INC=(--include "results/$TAG/live/results/*"); fi
+  hf_retry $HF download "$REPO_ID" --repo-type dataset "${INC[@]}" --local-dir dataset/_hf_live >/dev/null 2>&1 || true
   src="dataset/_hf_live/results/$TAG/live/results"
   if [ -d "$src" ]; then
     n=$(find "$src" -name perf.json | wc -l)
     cp -rn "$src/." results/
-    echo ">> resumed $n finished run(s) from the HF checkpoint (existing local runs kept)"
+    echo ">> resumed $n run(s) [${METHODS:-all methods}] from the HF checkpoint (local files kept;"
+    echo "   half-done or crashed ones are redone by the adapter)"
   else
-    echo ">> no HF checkpoint for $TAG yet — starting fresh"
+    echo ">> no HF checkpoint for $TAG [${METHODS:-all methods}] — starting fresh"
   fi
   rm -rf dataset/_hf_live ;;
+hf-reset)
+  # Delete results/<tag>/ (checkpoints + packs) from the HF repo. Run ONCE, before any
+  # pod starts — never while a pod is running.
+  [ -n "$REPO_ID" ] || { echo "!! no HF repo set"; exit 1; }
+  [ "${CONFIRM:-}" = "yes" ] || { echo "!! this deletes results/$TAG/ from $REPO_ID — rerun with CONFIRM=yes"; exit 1; }
+  uvx --from 'huggingface_hub>=0.34' python - "$REPO_ID" "$TAG" <<'PY'
+import sys
+from huggingface_hub import HfApi
+repo, tag = sys.argv[1], sys.argv[2]
+api = HfApi()
+files = [f for f in api.list_repo_files(repo, repo_type="dataset") if f.startswith(f"results/{tag}/")
+         or f == "results/_write_test.txt"]
+if not files:
+    print(f">> nothing under results/{tag}/ — already clean")
+else:
+    api.delete_files(repo, delete_patterns=[f"results/{tag}/**", "results/_write_test.txt"],
+                     repo_type="dataset", commit_message=f"reset results/{tag}")
+    print(f">> deleted {len(files)} file(s) under results/{tag}/ in {repo} (inputs untouched)")
+PY
+  ;;
 pack)
   provenance
   mkdir -p "$OUTD"
   F="$OUTD/pod_${TAG}_${SHARD_ID}_$(hostname)_$(date +%Y%m%d_%H%M).tar"
   # Run dirs only (results/<method>/<ds>/<scene>/<traj>/<variant>/...), never the
   # report*/bundles dirs, plus logs.
-  mapfile -t RUNDIRS < <(ls -d results/*/*/*/*/*/ 2>/dev/null | grep -vE '^results/(report|bundles|figures|_)' || true)
+  mapfile -t RUNDIRS < <(run_dirs)
   [ "${#RUNDIRS[@]}" -gt 0 ] || { echo "!! no run dirs under results/"; exit 1; }
   # Scoring inputs for the scenes this pod ran.
   SCORE=()
@@ -105,7 +140,7 @@ push)
   F="$(ls -t "$OUTD"/pod_"${TAG}"_*.tar 2>/dev/null | head -1)"
   [ -n "$F" ] || { echo "!! no pod pack in $OUTD (results.sh pack)"; exit 1; }
   $HF repo create "$REPO_ID" --repo-type dataset --private >/dev/null 2>&1 || true
-  $HF upload "$REPO_ID" "$F" "results/$TAG/$(basename "$F")" --repo-type dataset \
+  hf_retry $HF upload "$REPO_ID" "$F" "results/$TAG/$(basename "$F")" --repo-type dataset \
       --commit-message "results $TAG $(basename "$F")" ;;
 fetch)
   [ -n "$REPO_ID" ] || { echo "!! set RESULTS_HF_REPO"; exit 1; }

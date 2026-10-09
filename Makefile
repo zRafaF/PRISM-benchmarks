@@ -528,7 +528,7 @@ clean-results:
 #   make results-fetch results-merge eval-all publication
 POD_SESSION ?= pod
 pod:
-	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|INPUTS_TAG|BENCH_OFFLINE|NVBLOX_MODE|POD_[A-Z_]+|PRECHECK_[A-Z_]+|SHARD|BENCH_SCENES)=' \
+	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|INPUTS_TAG|BENCH_OFFLINE|BENCH_METHODS|CKPT_EVERY_S|NVBLOX_MODE|POD_[A-Z_]+|PRECHECK_[A-Z_]+|SHARD|BENCH_SCENES)=' \
 	  | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" > .pod.env; chmod 600 .pod.env
 	@if tmux has-session -t $(POD_SESSION) 2>/dev/null; then \
 	  echo "!! tmux session '$(POD_SESSION)' exists — 'make pod-stop' first (or tmux attach -t $(POD_SESSION))"; exit 1; fi
@@ -608,3 +608,7 @@ progress: setup
 
 watch: setup
 	@$(ORCH_RUN) scripts/progress.py --watch 15
+
+# Wipe this tag's results/checkpoints on HF (inputs untouched). Before any pod starts.
+results-hf-reset: setup
+	CONFIRM=yes bash scripts/results.sh hf-reset

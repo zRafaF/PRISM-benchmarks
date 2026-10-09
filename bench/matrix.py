@@ -29,13 +29,20 @@ def offline_enabled(cfg: dict) -> bool:
     return bool((cfg.get("baselines") or {}).get("run", True))
 
 
+def selected_methods() -> list[str]:
+    """BENCH_METHODS="a b": this pod's share of the methods (multi-pod split)."""
+    return os.environ.get("BENCH_METHODS", "").split()
+
+
 def main_methods(cfg: dict) -> list[str]:
-    """Every method the overnight runs on the full grid (sweep arms excluded)."""
+    """Every method the overnight runs on the full grid (sweep arms excluded),
+    restricted to BENCH_METHODS when set (same rule as scripts/run_overnight.sh)."""
     off_ok = offline_enabled(cfg)
     out = [m["name"] for m in cfg.get("methods", []) if off_ok or m.get("mode") != "batch"]
     out += [m["name"] for m in cfg.get("ablations", []) if m.get("role") != "sweep"
             and (off_ok or m.get("mode") != "batch")]
-    return out
+    sel = selected_methods()
+    return [m for m in out if m in sel] if sel else out
 
 
 def offline_methods(cfg: dict) -> set[str]:
