@@ -46,23 +46,35 @@ export PATH="$HOME/.local/bin:$PATH"
 
 say() { echo; echo "[$(date +%H:%M:%S)] ===== $* ====="; echo "$(date +%H:%M) $*" > logs/pod_stage; }
 
+# Network steps on a fresh pod (git clone, uv sync, weight downloads) hit transient DNS
+# / mirror errors. Retry each install step a few times before giving up; every step is
+# idempotent, so a retry just continues where the failed attempt stopped.
+retry() {
+  local i
+  for i in 1 2 3; do
+    "$@" && return 0
+    echo "!! '$*' failed (attempt $i/3) — retrying in $((i * 30)) s"; sleep $((i * 30))
+  done
+  echo "!! '$*' failed 3 times"; return 1
+}
+
 stage_prep() {
   say "prep: system packages"
   if command -v apt-get >/dev/null 2>&1; then
     SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
-    $SUDO apt-get update -qq
+    retry $SUDO apt-get update -qq
     $SUDO apt-get install -y -qq wget pigz unzip tmux git curl zstd lsb-release \
         build-essential cmake git-lfs python3-dev \
         libegl1 libgl1 libgomp1 libglib2.0-0 >/dev/null   # open3d (VGGT-SLAM, eval) needs libEGL/libGL
   fi
   command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
   say "prep: pinned submodules (bench.env: PRISM-VGGT @ prism-v2, baselines @ commits)"
-  make init
+  retry make init
   say "prep: orchestrator env"
-  make setup
+  retry make setup
   for m in prism vggtslam laser pi3 mapanything; do
     say "prep: setup-$m"
-    make "setup-$m"
+    retry make "setup-$m"
   done
 }
 
