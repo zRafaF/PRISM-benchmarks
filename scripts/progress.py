@@ -98,7 +98,8 @@ def render(cfg) -> str:
     pod = _pod_lines()
     if not units:
         return "\n".join(pod + ["", "No frozen scenes yet (the data stage freezes them)."])
-    per = defaultdict(lambda: {"total": 0, "done": 0, "fail": 0, "secs": []})
+    per = defaultdict(lambda: {"total": 0, "done": 0, "fail": 0, "part": 0, "secs": []})
+    flagged = []
     for u in units:
         d = per[u.method]
         d["total"] += 1
@@ -107,8 +108,15 @@ def render(cfg) -> str:
             d["done"] += 1
             if not p.get("completed", False):
                 d["fail"] += 1
-            elif p.get("wall_s"):
-                d["secs"].append(float(p["wall_s"]))
+                flagged.append(f"FAILED  {u.method} {u.scene}/{u.traj}  ({p.get('failure_kind')}, "
+                               f"{p.get('attempts', 1)} attempt(s))")
+            else:
+                if p.get("wall_s"):
+                    d["secs"].append(float(p["wall_s"]))
+                ni, nd = p.get("n_frames_input") or 0, p.get("n_frames_done") or 0
+                if not u.method.startswith("vggtslam") and ni and nd < ni:
+                    d["part"] += 1
+                    flagged.append(f"PARTIAL {u.method} {u.scene}/{u.traj}  (posed {nd}/{ni} frames)")
     pre = {}
     if PRECHECK.exists():
         try:
@@ -140,6 +148,16 @@ def render(cfg) -> str:
     lines = [f"PRISM-benchmarks  [{_bar(frac, width)}] {100 * frac:5.1f}%  {done}/{total} runs"
              + (f"  {fail} FAILED" if fail else "") + f"   {eta}"]
     lines += pod
+    try:
+        logs = sorted((REPO_ROOT / "results").glob("*/*/*/*/*/run.log"), key=lambda x: x.stat().st_mtime)
+        if logs and time.time() - logs[-1].stat().st_mtime < 900:
+            rl = logs[-1]
+            txt = [x for x in rl.read_text(errors="replace").replace("\r", "\n").splitlines() if x.strip()]
+            rel = rl.parent.relative_to(REPO_ROOT / "results")
+            lines.append(f"current run: {rel}  (its log updated {int(time.time() - rl.stat().st_mtime)} s ago)")
+            lines += ["   " + x[:150] for x in txt[-3:]]
+    except Exception:
+        pass
     cur = _current() if done or "bench" in (pod[0] if pod else "") else None
     if cur:
         m, seq, mt, last = cur
@@ -147,15 +165,17 @@ def render(cfg) -> str:
         lines.append(f"now : {m or '?'}  {seq or ''}   (log updated {int(age)} s ago)"
                      + ("   <-- no log output for >10 min: check `tmux attach -t pod`" if age > 600 else ""))
     lines.append("")
-    lines.append(f"{'method':18s} {'done':>9s} {'fail':>5s} {'avg/run':>8s}  progress")
+    lines.append(f"{'method':18s} {'done':>9s} {'fail':>5s} {'part':>5s} {'avg/run':>8s}  progress")
     for m, d in per.items():
         avg = (sum(d["secs"]) / len(d["secs"])) if d["secs"] else None
         a = f"{avg:6.0f}s" if avg else ("~%4.0fs" % pre[m] if pre.get(m) else "      -")
         f = d["done"] / d["total"] if d["total"] else 0
-        lines.append(f"{m:18s} {d['done']:4d}/{d['total']:<4d} {d['fail']:5d} {a:>8s}  [{_bar(f, 20)}]")
-    if fail:
+        lines.append(f"{m:18s} {d['done']:4d}/{d['total']:<4d} {d['fail']:5d} {d['part']:5d} {a:>8s}  [{_bar(f, 20)}]")
+    if flagged:
         lines.append("")
-        lines.append("failed runs: grep -l '\"completed\": false' results/*/*/*/*/*/perf.json")
+        lines.append(f"flagged ({len(flagged)}): crashed runs are retried once automatically; "
+                     "re-running `make pod` redoes any still-failed or half-written run")
+        lines += ["   " + x for x in flagged[-8:]]
     return "\n".join(lines)
 
 

@@ -23,6 +23,32 @@ from bench.config import REPO_ROOT, RunPaths, common_args, export_dir, load_conf
 from bench.perf import PerfResult, ResourceSampler
 
 
+MAX_ATTEMPTS = int(os.environ.get("BENCH_MAX_ATTEMPTS", "2"))
+
+
+def _resume_state(rp) -> tuple[str, int]:
+    """('run', attempts_so_far) or (<skip reason>, n) for one run dir."""
+    if os.environ.get("PRISM_FORCE", "0") == "1":
+        return "run", 0
+    import json
+    prev = None
+    if rp.perf_json.exists():
+        try:
+            prev = json.loads(rp.perf_json.read_text())
+        except Exception:
+            prev = None                      # truncated perf.json = half-written run
+    if prev is None:
+        return "run", 0                      # never ran, or killed before finishing
+    n = int(prev.get("attempts", 1) or 1)
+    if prev.get("completed") and rp.poses_tum.exists() and rp.poses_tum.stat().st_size > 0:
+        return "already done", n
+    if prev.get("failure_kind") == "oom":
+        return "recorded OOM", n
+    if n >= MAX_ATTEMPTS:
+        return f"failed {n}x ({prev.get('failure_kind')}), kept as a failure", n
+    return "run", n
+
+
 def method_cfg(cfg: dict, name: str) -> dict:
     for m in cfg.get("methods", []) + cfg.get("ablations", []):
         if m["name"] == name:
@@ -72,57 +98,77 @@ def run_method(name: str):
                     if not (in_dir / "meta.json").exists():
                         continue
                     rp = RunPaths(name, dataset, scene, traj, variant or mcfg["camera"])
-                    # Resume: skip a run that already produced poses (unless PRISM_FORCE=1),
-                    # so re-running the pipeline doesn't redo finished (slow) method runs.
-                    if (rp.poses_tum.exists() and rp.poses_tum.stat().st_size > 0
-                            and os.environ.get("PRISM_FORCE", "0") != "1"):
+                    # Resume / repair. A run is SKIPPED only if its perf.json says it
+                    # completed (or hit a recorded OOM, which is a reportable result, or
+                    # already failed MAX_ATTEMPTS times). Anything else is half-done or
+                    # broken — killed mid-run (poses but no perf.json), crashed, or
+                    # empty — and is wiped and run again. PRISM_FORCE=1 redoes everything.
+                    state, attempts = _resume_state(rp)
+                    if state != "run":
                         print(f"[{name}] {dataset}/{scene}/{traj}/{variant or mcfg['camera']}"
-                              f" — already done, skip (PRISM_FORCE=1 to redo)")
+                              f" — {state}, skip (PRISM_FORCE=1 to redo)")
                         continue
-                    rp.dir().mkdir(parents=True, exist_ok=True)
-                    cmd = [str(py), str(runner),
-                           "--in", str(in_dir),
-                           "--out", str(rp.dir()),
-                           "--config", str(REPO_ROOT / args.config)]
-                    print(f"[{name}] {dataset}/{scene}/{traj}/{variant or mcfg['camera']}")
-                    result = PerfResult(method=name)
-                    # Run in the METHOD's own repo dir: these repos resolve config /
-                    # weights / third-party paths relative to their own root. All args
-                    # we pass (--in/--out/--config) are absolute, so this is safe.
-                    cwd = str((REPO_ROOT / mcfg["env"]).resolve())
-                    hint = cfg.get("hardware", {}).get("hw_id")
-                    with open(rp.run_log, "w") as log, \
-                            ResourceSampler(device_index, pid=None, gpu_name_hint=hint) as smp:
-                        proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
-                                              cwd=cwd, env=run_env)
-                    import json
-                    meta = json.loads((in_dir / "meta.json").read_text())
-                    # n_frames_input  = what the method was ASKED to process.
-                    # n_frames_done   = what it actually produced a pose for.
-                    # On a run that dies part-way these differ, and using the input
-                    # count would report a spuriously HIGH eff_fps (same wall clock,
-                    # more nominal frames) — which is exactly how the 2026-07 big run
-                    # ended up averaging crashed PRISM runs into its throughput.
-                    result.n_frames_input = meta.get("n_frames", 0)
-                    result.n_frames_done = _count_poses(rp.poses_tum)
-                    result.n_frames = result.n_frames_done or result.n_frames_input
-                    result.returncode = proc.returncode
-                    result.failure_kind = _classify_failure(rp.run_log, proc.returncode)
-                    result.oom = (result.failure_kind == "oom")
-                    result.completed = bool(proc.returncode == 0 and result.n_frames_done)
-                    smp.summarize(result)
-                    # A COMPLETED keyframe method (VGGT-SLAM) consumed every input frame
-                    # even though it emits fewer poses; counting only its poses
-                    # understated its throughput ~2.5x. Partial runs keep the
-                    # done-count (the 2026-07 guard above).
-                    if result.completed and result.n_frames_input and result.wall_s > 0:
-                        result.eff_fps = result.n_frames_input / result.wall_s
-                    _merge_runner_perf(rp, result, window=int(cfg["engine"]["window_size"]),
-                                       overlap=int(cfg["engine"]["overlap"]))
-                    if (result.completed and result.latency_source == "runner"
-                            and result.latency_end_to_end_s > 0 and result.n_frames_input):
-                        result.proc_fps = result.n_frames_input / result.latency_end_to_end_s
-                    result.write(rp.perf_json)
+                    while True:
+                        if rp.dir().exists():
+                            import shutil
+                            shutil.rmtree(rp.dir())   # never mix a stale half-run's files in
+                        rp.dir().mkdir(parents=True, exist_ok=True)
+                        cmd = [str(py), str(runner),
+                               "--in", str(in_dir),
+                               "--out", str(rp.dir()),
+                               "--config", str(REPO_ROOT / args.config)]
+                        print(f"[{name}] {dataset}/{scene}/{traj}/{variant or mcfg['camera']}")
+                        result = PerfResult(method=name)
+                        attempts += 1
+                        result.attempts = attempts
+                        # Run in the METHOD's own repo dir: these repos resolve config /
+                        # weights / third-party paths relative to their own root. All args
+                        # we pass (--in/--out/--config) are absolute, so this is safe.
+                        cwd = str((REPO_ROOT / mcfg["env"]).resolve())
+                        hint = cfg.get("hardware", {}).get("hw_id")
+                        with open(rp.run_log, "w") as log, \
+                                ResourceSampler(device_index, pid=None, gpu_name_hint=hint) as smp:
+                            proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
+                                                  cwd=cwd, env=run_env)
+                        import json
+                        meta = json.loads((in_dir / "meta.json").read_text())
+                        # n_frames_input  = what the method was ASKED to process.
+                        # n_frames_done   = what it actually produced a pose for.
+                        # On a run that dies part-way these differ, and using the input
+                        # count would report a spuriously HIGH eff_fps (same wall clock,
+                        # more nominal frames) — which is exactly how the 2026-07 big run
+                        # ended up averaging crashed PRISM runs into its throughput.
+                        result.n_frames_input = meta.get("n_frames", 0)
+                        result.n_frames_done = _count_poses(rp.poses_tum)
+                        result.n_frames = result.n_frames_done or result.n_frames_input
+                        result.returncode = proc.returncode
+                        result.failure_kind = _classify_failure(rp.run_log, proc.returncode)
+                        result.oom = (result.failure_kind == "oom")
+                        result.completed = bool(proc.returncode == 0 and result.n_frames_done)
+                        smp.summarize(result)
+                        # A COMPLETED keyframe method (VGGT-SLAM) consumed every input frame
+                        # even though it emits fewer poses; counting only its poses
+                        # understated its throughput ~2.5x. Partial runs keep the
+                        # done-count (the 2026-07 guard above).
+                        if result.completed and result.n_frames_input and result.wall_s > 0:
+                            result.eff_fps = result.n_frames_input / result.wall_s
+                        _merge_runner_perf(rp, result, window=int(cfg["engine"]["window_size"]),
+                                           overlap=int(cfg["engine"]["overlap"]))
+                        if (result.completed and result.latency_source == "runner"
+                                and result.latency_end_to_end_s > 0 and result.n_frames_input):
+                            result.proc_fps = result.n_frames_input / result.latency_end_to_end_s
+                        result.write(rp.perf_json)
+                        if result.completed or result.oom or attempts >= MAX_ATTEMPTS:
+                            break
+                        print(f"[{name}]   -> run failed ({result.failure_kind}, rc="
+                              f"{result.returncode}) — RETRYING once (attempt {attempts + 1}"
+                              f"/{MAX_ATTEMPTS}); its log is kept in logs/failed_*")
+                        try:
+                            import shutil
+                            shutil.copy(rp.run_log, REPO_ROOT / "logs" /
+                                        f"failed_{name}_{scene}_{traj}_attempt{attempts}.log")
+                        except Exception:
+                            pass
                     if result.oom:
                         print(f"[{name}]   -> OUT OF MEMORY at {result.n_frames_input} "
                               f"frames (peak {result.vram_peak_gb:.1f} GB of "

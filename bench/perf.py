@@ -40,6 +40,7 @@ class PerfResult:
     # latency, which excludes model loading) and over the frames it was GIVEN. eff_fps
     # (orchestrator wall, incl. model load) is kept for continuity with old tables.
     proc_fps: float = 0.0
+    attempts: int = 1           # harness retries: a crashed run is retried once
     latency_end_to_end_s: float = 0.0
     # Provenance for the latency figures — "runner" (method self-reported),
     # "orchestrator_wall" / "derived_wall_over_windows" (orchestrator fallback), or
