@@ -267,7 +267,7 @@ RUN_FAIL=0
 # never overlaps a timed run. A new pod resumes from it (pod.sh bench -> sync-down).
 CKPT_EVERY_S="${CKPT_EVERY_S:-900}"
 LAST_CKPT=$(date +%s)
-checkpoint() {
+hf_checkpoint() {   # NOT `checkpoint`: that name is the phase-end eval checkpoint below
   [ -n "${INPUTS_HF_REPO:-}${RESULTS_HF_REPO:-}" ] || return 0
   local now; now=$(date +%s)
   if [ "${1:-}" = "force" ] || [ $((now - LAST_CKPT)) -ge "$CKPT_EVERY_S" ]; then
@@ -297,7 +297,7 @@ run_set() {   # run_set <traj> <methods...>
       RUN_FAIL=$((RUN_FAIL + 1)); note "FAIL $traj  $m   (continuing)"
       log  "!!! FAILED method=$m traj=$traj — continuing"
     fi
-    checkpoint
+    hf_checkpoint
   done
 }
 
@@ -318,6 +318,7 @@ eval_step() {   # eval_step <phase> <script> [args...]
 }
 
 checkpoint() {
+  hf_checkpoint force            # every phase end also uploads to HF
   if [ "$SKIP_EVAL" = "1" ]; then
     log "=== CHECKPOINT skipped (SKIP_EVAL=1; score offline with 'make eval-all') — phase $1, $RUN_N runs ==="
     note "checkpoint skipped after phase $1 ($RUN_N runs: $RUN_OK ok / $RUN_FAIL failed)"
@@ -547,7 +548,7 @@ make snapshots SNAP_METHODS="$SNAP_M" SNAP_SCENES="$SCENE_ARG" SNAP_TRAJ="$SNAP_
 fi
 
 rm -f "$PLAN_SH"
-checkpoint force
+hf_checkpoint force
 log "############ DONE  stamp=$STAMP ############"
 log "### $RUN_N runs dispatched: $RUN_OK ok, $RUN_FAIL failed"
 note "done $STAMP  ($RUN_N runs: $RUN_OK ok / $RUN_FAIL failed)"
