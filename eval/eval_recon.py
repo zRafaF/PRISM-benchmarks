@@ -222,7 +222,11 @@ def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
     if icp_cfg.get("enabled", True) and len(pred_pts) and len(gt_pts):
         pred_pts = _icp_refine(pred_pts, gt_pts, icp_cfg.get("max_dist_m", 0.15))
 
-    pin_variants = list((_export_base(dataset, scene, traj) / "pinhole").glob("*"))
+    # The co-visibility mask comes from the ordinary pinhole trajectory, never from a
+    # cube-face variant (4 images per timestep, D28): synthetic_fov first.
+    pin_variants = sorted((p for p in (_export_base(dataset, scene, traj) / "pinhole").glob("*")
+                           if p.is_dir() and not (p / "faces.json").exists()),
+                          key=lambda p: (p.name != "synthetic_fov", p.name))
     # Cloud size / compactness (on the saved cloud; voxel-deduped identically for all).
     out = {"threshold_m": thr,
            "point_count": int(len(pred_pts)),

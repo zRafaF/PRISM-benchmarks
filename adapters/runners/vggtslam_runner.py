@@ -169,6 +169,11 @@ def main():
         except OSError:
             pass
 
+    # Cube-face input (D28): one pose per timestep from the front face; rig stats kept.
+    cube = _io.collapse_cube_faces(Path(args.in_dir), out)
+    if cube:
+        n_poses = cube["n_timesteps_posed"]
+
     arm = {"max_loops": max_loops, "loop_closure": bool(max_loops),
            "submap_size": submap, "min_disparity": min_disp,
            "lc_thres": lc_thres, "conf_threshold": conf_thr,
@@ -178,7 +183,8 @@ def main():
            "method_engaged": (not degenerate) if n_submaps is not None else None,
            "degenerate_single_submap": degenerate,
            "n_poses": n_poses, "n_duplicate_poses_dropped": n_dup,
-           "cloud_points_raw": n_raw_pts, "cloud_points": n_pts}
+           "cloud_points_raw": n_raw_pts, "cloud_points": n_pts,
+           **(cube or {})}
     (out / "arm_config.json").write_text(json.dumps(arm, indent=2))
 
     # Latency: VGGT-SLAM's own processing span when it printed one (excludes model

@@ -36,7 +36,7 @@ PYCHK    ?= python3
         pod pod-status pod-stop env-check replica replica-full inputs-pack inputs-push inputs-fetch \
         inputs-verify results-pack results-push results-fetch results-merge eval-all \
         inputs precheck progress watch \
-        traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report
+        traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report sanity-tum lost
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -593,6 +593,7 @@ eval-all: setup
 	$(ORCH_RUN) eval/collect_perf.py    --config $(CONFIG)
 	$(ORCH_RUN) eval/make_report.py     --config $(CONFIG)
 	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source live
+	$(ORCH_RUN) scripts/lost_metrics.py --plot
 	@echo ">> scored. Next: make publication   (and make snapshots for the figures)"
 
 # ── Render on your PC, pre-check, progress (rerun-v2) ─────────────────────────────
@@ -636,6 +637,12 @@ pilot:
 	bash scripts/pilot.sh pod
 pilot-report: setup
 	bash scripts/pilot.sh report
+# sanity-tum : pod — VGGT-SLAM on TUM fr1, its own eval script vs our runner (decisions D29)
+# lost       : tracking-continuity metrics (tracked %, loss events, distance to failure; D25)
+sanity-tum: setup
+	bash scripts/sanity_tum.sh
+lost: setup
+	$(ORCH_RUN) scripts/lost_metrics.py --plot
 
 diag: setup
 	$(ORCH_RUN) scripts/diag.py --scene "$(SCENE)" --traj "$(TRAJ)" --methods "$(METHODS)"

@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bench.config import REPO_ROOT, RunPaths, common_args, export_dir, load_config, resolve_scenes, resolve_trajs
+from bench.config import is_cube_variant, REPO_ROOT, RunPaths, common_args, export_dir, load_config, resolve_scenes, resolve_trajs
 from bench.perf import PerfResult, ResourceSampler
 
 
@@ -66,8 +66,12 @@ def input_dirs_for(cfg: dict, mcfg: dict, dataset: str, scene: str, traj: str):
     """Yield (variant, export_dir) for the method's camera model."""
     if mcfg["camera"] == "pano":
         yield "", export_dir(dataset, scene, traj, "pano", "")
-    else:
-        for vname in cfg["camera"]["pinhole"]["variants"]:
+        return
+    # camera: pinhole -> the ordinary pinhole variants; camera: cube -> the cube-face
+    # variants (360 deg as 4 pinhole faces per timestep, decisions D28).
+    want_cube = mcfg["camera"] == "cube"
+    for vname, vcfg in cfg["camera"]["pinhole"]["variants"].items():
+        if is_cube_variant(vcfg) == want_cube:
             yield vname, export_dir(dataset, scene, traj, "pinhole", vname)
 
 

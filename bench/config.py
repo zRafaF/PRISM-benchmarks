@@ -157,6 +157,24 @@ def derived_source(cfg: dict, traj: str):
     return base_id, int(round(base / rate))
 
 
+def is_cube_variant(vcfg: dict) -> bool:
+    """A pinhole variant that holds the 360 deg view as cube faces (decisions D28)."""
+    return bool((vcfg or {}).get("cube_faces"))
+
+
+def variant_applies(cfg: dict, vname: str, traj: str) -> bool:
+    """Is pinhole variant `vname` rendered for `traj`? A variant may list `seeds`
+    (seed indices, the `_sN` suffix; no suffix = 0) to be rendered only for those —
+    the cube faces are rendered for seed 0 only, like the other limited-seed arms."""
+    import re
+    vcfg = cfg["camera"]["pinhole"]["variants"].get(vname) or {}
+    seeds = vcfg.get("seeds")
+    if seeds is None:
+        return True
+    m = re.search(r"_s(\d+)$", traj)
+    return (int(m.group(1)) if m else 0) in {int(x) for x in seeds}
+
+
 def traj_rate_hz(traj: str, default: float = 2.0) -> float:
     """Parse the capture rate from any '<kind>_<rate>hz[_sN]' traj id."""
     import re

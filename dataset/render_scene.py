@@ -26,7 +26,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench import cameras
 from bench.config import (REPO_ROOT, common_args, derived_source, export_dir,
-                          load_config, resolve_scenes, resolve_trajs, traj_rate_hz,
+                          is_cube_variant, variant_applies, load_config, resolve_scenes, resolve_trajs, traj_rate_hz,
                           traj_kind, traj_seed)
 import trajectories as traj_mod
 
@@ -261,7 +261,9 @@ def make_trajectory(cfg: dict, mesh, raycast, floor_z: float, traj: str,
             min_frames=int(sp.get("min_frames", 32)), max_frames=hard_cap,
             max_yaw_rate_dps=yaw_rate,
             lookahead_m=float(sp.get("lookahead_m", 0.5)),
-            res=float(sp.get("grid_res_m", 0.05)), debug=debug)
+            res=float(sp.get("grid_res_m", 0.05)), debug=debug,
+            small_area_m2=sp.get("small_scene_area_m2"),
+            small_path_m=sp.get("small_scene_path_m"))
         if kind == "stopgo":
             poses = traj_mod.insert_dwells(poses, rate, int(sg.get("n_stops", 2)),
                                            float(sg.get("dwell_s", 5.0)), hard_cap)
@@ -442,6 +444,11 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
 
     # ── PINHOLE (both intrinsics variants) ──
     for vname, vcfg in cfg["camera"]["pinhole"]["variants"].items():
+        if not variant_applies(cfg, vname, traj):
+            continue                       # e.g. cube faces: seed 0 only
+        if is_cube_variant(vcfg):
+            _render_cube_faces(cfg, raycast, mesh_t, poses, dataset, scene, traj, vname, vcfg)
+            continue
         if vcfg.get("use_dataset_k"):
             intr = _dataset_intrinsics(cfg, dataset, scene)
             if intr is None:
@@ -461,6 +468,51 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
             optical = cameras.radial_to_optical_z(radial, pin_dirs, intr.width, intr.height)
             _save_frame(vdir, i, rgb, optical, mask)
     print(f"[render] {dataset}/{scene}/{traj}: {len(poses)} frames (pano + pinhole variants)")
+
+
+def cube_face_rotations(n_faces: int = 4) -> list:
+    """Rotation of each face camera in the body (front) camera frame, OpenCV axes
+    (x right, y down, z forward): face k is turned k x 90 deg to the right about y.
+    Order: front, right, back, left."""
+    out = []
+    for k in range(int(n_faces)):
+        a = np.radians(90.0 * k)
+        out.append(np.array([[np.cos(a), 0.0, np.sin(a)],
+                             [0.0, 1.0, 0.0],
+                             [-np.sin(a), 0.0, np.cos(a)]]))
+    return out
+
+
+def _render_cube_faces(cfg, raycast, mesh_t, poses, dataset, scene, traj, vname, vcfg):
+    """The 360 deg view as n square 90 deg pinhole faces per timestep (decisions D28).
+
+    Images are interleaved: file 4t+k is face k of timestep t, so a pinhole method fed
+    the folder in order sees each timestep's faces back to back. faces.json records the
+    face rotations (runners collapse per-face poses back to per-timestep poses with it).
+    The horizontal ring only (no up/down faces): PanoVGGT/PRISM's cubemap uses the same
+    four, and floor/ceiling faces are near-textureless in these scenes."""
+    nf = int(vcfg.get("cube_faces", 4))
+    size = int(vcfg.get("width", 512))
+    intr = cameras.PinholeIntrinsics.from_fov(size, size, float(vcfg.get("fov_deg", 90)))
+    dirs = cameras.pinhole_rays_cam(intr)
+    Rf = cube_face_rotations(nf)
+    vdir = export_dir(dataset, scene, traj, "pinhole", vname)
+    vdir.mkdir(parents=True, exist_ok=True)
+    (vdir / "intrinsics.json").write_text(json.dumps(intr.to_json(), indent=2))
+    (vdir / "faces.json").write_text(json.dumps({
+        "n_faces": nf, "order": ["front", "right", "back", "left"][:nf],
+        "interleave": "image index = n_faces * timestep + face",
+        "R_body_face": [r.tolist() for r in Rf]}, indent=2))
+    for i, T in enumerate(poses):
+        for k in range(nf):
+            Tk = np.array(T, dtype=np.float64).copy()
+            Tk[:3, :3] = T[:3, :3] @ Rf[k]
+            o, d = cameras.rays_to_world(dirs, Tk)
+            radial, rgb, mask = _render_rays(raycast, mesh_t, o, d, intr.width, intr.height,
+                                             cfg["engine"]["max_depth"])
+            optical = cameras.radial_to_optical_z(radial, dirs, intr.width, intr.height)
+            _save_frame(vdir, nf * i + k, rgb, optical, mask)
+    print(f"[render] {dataset}/{scene}/{traj}/{vname}: {len(poses)} timesteps x {nf} cube faces")
 
 
 def derive_strided(cfg: dict, dataset: str, scene: str, base: str, traj: str, stride: int):
@@ -504,13 +556,18 @@ def derive_strided(cfg: dict, dataset: str, scene: str, base: str, traj: str, st
         odir.mkdir(parents=True, exist_ok=True)
         if (cdir / "intrinsics.json").exists():
             _put(cdir / "intrinsics.json", odir / "intrinsics.json")
+        nf = 1
+        if (cdir / "faces.json").exists():          # cube faces: stride whole timesteps
+            _put(cdir / "faces.json", odir / "faces.json")
+            nf = int(json.loads((cdir / "faces.json").read_text())["n_faces"])
         for sub in ("rgb", "depth", "mask"):
             if not (cdir / sub).exists():
                 continue
             for new_i, old_i in enumerate(keep):
-                a = cdir / sub / f"{old_i:06d}.png"
-                if a.exists():
-                    _put(a, odir / sub / f"{new_i:06d}.png")
+                for k in range(nf):
+                    a = cdir / sub / f"{nf * old_i + k:06d}.png"
+                    if a.exists():
+                        _put(a, odir / sub / f"{nf * new_i + k:06d}.png")
     (dst / "derived_from.json").write_text(json.dumps(
         {"base": base, "stride": stride, "n_frames": len(keep)}, indent=2))
     print(f"[render] {dataset}/{scene}/{traj}: derived from {base} (stride {stride}) "

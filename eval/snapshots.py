@@ -144,7 +144,10 @@ def _covis_keep(pts, dataset, scene, traj, cfg):
     so the picture and the number tell the same story.
     """
     pin_dir = _export_base(dataset, scene, traj) / "pinhole"
-    variants = sorted(p for p in pin_dir.glob("*") if p.is_dir()) if pin_dir.exists() else []
+    # same choice as eval_recon: an ordinary pinhole variant (synthetic_fov first),
+    # never the cube faces (D28)
+    variants = sorted((p for p in pin_dir.glob("*") if p.is_dir() and not (p / "faces.json").exists()),
+                      key=lambda p: (p.name != "synthetic_fov", p.name)) if pin_dir.exists() else []
     if not variants:
         return None
     try:

@@ -883,7 +883,8 @@ def grid_walk(scene, lo, hi, floor_z: float, cam_z: float, seed: int,
               min_span_m: float = 2.0, min_frames: int = 32, max_frames: int = 1000,
               max_yaw_rate_dps: float | None = 45.0, lookahead_m: float = 0.5,
               res: float = 0.05, chaikin_iters: int = 3, debug: bool = True,
-              return_info: bool = False):
+              return_info: bool = False, small_area_m2: float | None = None,
+              small_path_m: float | None = None):
     """Collision-free constant-speed walk on the free-space grid. Returns (n,4,4) c2w.
 
     Same contract as ``synthetic_spline`` in path mode: the physical path length
@@ -902,6 +903,17 @@ def grid_walk(scene, lo, hi, floor_z: float, cam_z: float, seed: int,
         print(f"[grid] {G['free'].shape[0]}x{G['free'].shape[1]} cells @ {res} m: "
               f"walkable {G['n_free']} in the main component ({G['n_free'] * res * res:.1f} m^2; "
               f"{G['n_components']} component(s), {G['n_free_all']} free in total)")
+
+    # Walk length by scene size (decisions D23): a scene whose walkable area is below
+    # small_area_m2 walks small_path_m instead of path_target_m. A fixed 74.75 m was
+    # ~16 m per m2 of floor in office_0 (5 laps of a 4.6 m2 office) vs 1.7 in the
+    # apartments.
+    area = G["n_free"] * res * res
+    if small_area_m2 and small_path_m and area < float(small_area_m2):
+        if debug:
+            print(f"[grid] walkable {area:.1f} m2 < {small_area_m2} m2 -> small-scene walk "
+                  f"{small_path_m} m (instead of {path_target_m:.2f} m)")
+        path_target_m = float(small_path_m)
 
     room_diag = float(np.hypot(*(cxy.max(0) - cxy.min(0))))
     span_req = min(min_span_m, 0.35 * room_diag)

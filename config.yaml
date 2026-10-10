@@ -85,6 +85,18 @@ camera:
         fov_deg: 90
       real_intrinsics:       # reuse the dataset's own perspective K when it has one
         use_dataset_k: true
+      # rerun-v3 (decisions D28): the SAME 360 deg capture given to the pinhole baselines
+      # as 4 square 90 deg cube faces per timestep (front/right/back/left), interleaved
+      # 4t+k in one folder. Answers "is it the 360 deg data or the engine?" and gives the
+      # pinhole methods the view behind them. Methods with `camera: cube` read it; their
+      # per-face poses are collapsed to one pose per timestep (front face). Rendered for
+      # seed 0 only (like the other limited-seed arms) — 4 x 512^2 px per timestep.
+      cube4:
+        cube_faces: 4
+        width: 512
+        height: 512
+        fov_deg: 90
+        seeds: [0]
   camera_height_m: 1.7       # PRISM metric-scale anchor (known robot camera height)
 
 # ── Trajectories (both variants rendered) ─────────────────────────────────────
@@ -160,6 +172,11 @@ trajectories:
                              #   (0.30 cut room_0's living room into 4 unreachable pieces)
     pref_clearance_m: 0.60   # grid planner: paths are pushed to >= this where the room allows
     lookahead_m: 0.5         # grid planner: heading aims 0.5 m ahead (turns start before corners)
+    # Walk length by scene size (decisions D23): scenes with < 20 m2 of walkable floor
+    # (office_0 4.6, room_1 7.4, room_2 10.8, room_0 14.4) walk 30 m (121 frames at 2 Hz);
+    # the apartments (43-45 m2) keep the n_frames path (74.75 m, 300 frames).
+    small_scene_area_m2: 20.0
+    small_scene_path_m: 30.0
     grid_res_m: 0.05         # grid planner: free-space raster resolution
     loop: false
     # ── Reaching n_frames (see dataset/trajectories.py::synthetic_spline) ──
@@ -206,7 +223,9 @@ trajectories:
   # Re-enable by uncommenting; nothing else needs to change.
   extra_kinds:
     # stopgo: {rates_hz: [2.0], n_stops: 2, dwell_s: 5.0}
-    loop:   {rates_hz: [2.0]}
+    # loop:   {rates_hz: [2.0]}   # DROPPED in rerun-v3 (decisions D21): every walk already
+    #   revisits 40-85% of its frames, so loop closure is exercised in every sequence; in
+    #   rerun-v2 loop_* were the same poses as synthetic_* anyway. Uncomment to restore.
 
 # ── PRISM engine knobs (mirror the live/report config) ────────────────────────
 engine:
@@ -254,6 +273,12 @@ methods:
   # below). The loop-closure-OFF arm is `vggtslam_noloop` in ablations.
   - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
   - {name: laser,       camera: pinhole,  env: submodules/LASER,      mode: stream, metric: false, role: baseline}   # training-free streaming (wraps Pi3); pinhole
+  # rerun-v3 (decisions D28): the same two baselines on the 360 deg capture as 4 cube
+  # faces per timestep (variant cube4, seed 0). Windows count IMAGES: VGGT-SLAM submap
+  # 64 = 16 timesteps; LASER 32/8 = 8 timesteps with 2 shared (window boundaries fall on
+  # timestep boundaries). VRAM at these sizes is checked by the pod precheck.
+  - {name: vggtslam_cube, camera: cube, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, limited_seeds: true, runner: vggtslam, run_env: {VGGTSLAM_SUBMAP_SIZE: "64"}}
+  - {name: laser_cube,    camera: cube, env: submodules/LASER,     mode: stream, metric: false, role: baseline, limited_seeds: true, runner: laser,    run_env: {LASER_WINDOW: "32", LASER_OVERLAP: "8"}}
 
 # Feed-forward baselines process every frame at once. `max_frames` would subsample to
 # keep them under the VRAM ceiling — deliberately left null so they are NOT protected:
@@ -304,7 +329,9 @@ ablations:
   # the old `prism` arm actually was, but now from dense points).
   - {name: prism_sl4,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: sl4,  run_env: {PRISM_ALIGN: "sl4"}}
   - {name: prism_se3,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: se3,  run_env: {PRISM_ALIGN: "se3"}}
-  - {name: prism_sim3lock, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: sim3lock, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "lock"}}
+  #  prism_sim3lock DROPPED in rerun-v3 (decisions D24): within 0.1 cm of prism_se3 on
+  #  every scene in the rerun-v2 diag, so it measured nothing new.
+  # - {name: prism_sim3lock, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: sim3lock, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "lock"}}
   #  The pre-v2 engine behaviour (Sim(3) from the 4 overlap camera centres, scale frozen)
   #  for a before/after row. Off by default to save GPU; it does not need the full grid.
   # - {name: prism_sim3cam, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sim3cam, run_env: {PRISM_ALIGN: "sim3_cam"}}

@@ -162,7 +162,7 @@ PY
 verify)
   $RUN - <<'PY'
 import os, sys
-from bench.config import load_config, export_dir, resolve_trajs
+from bench.config import load_config, export_dir, resolve_trajs, variant_applies
 c = load_config("config.yaml"); ds = c["datasets"]["active"][0]
 scenes = (os.environ.get("BENCH_SCENES") or "").split() or (c["datasets"][ds].get("scenes") or [])
 sh = os.environ.get("SHARD", "")
@@ -176,6 +176,8 @@ for sc in scenes:
             d = export_dir(ds, sc, tj, cam, var)
             if var == "real_intrinsics" and not d.exists():
                 continue               # only rendered when the dataset has its own K
+            if var and not variant_applies(c, var, tj):
+                continue               # e.g. cube faces: rendered for seed 0 only (D28)
             if not (d / "meta.json").exists() or not any((d / "rgb").glob("*.png")):
                 missing.append(str(d))
 print(f">> verify: {len(scenes)} scene(s) x {len(resolve_trajs(c, 'all'))} traj(s): "

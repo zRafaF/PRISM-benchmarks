@@ -771,3 +771,17 @@ make results-fetch results-merge eval-all publication
 ```
 Pods skip all scoring (`SKIP_EVAL=1`; the 08-09 checkpoints were 3.5 of its 7 hours)
 and every pod writes disjoint results trees. See documentation/docs/pods.md.
+
+## 15. rerun-v3 (2026-10-10) — trajectories re-planned; rerun-v2 numbers superseded
+
+The rerun-v2 pilot (13-20 runs) was stopped after the point clouds showed 3 copies of
+the apartments. Cause: the camera path went through walls (decisions D19). Also found:
+the `loop` family duplicated `synthetic` (D21) and room_2 is tilted 8.7 deg (D20).
+Every input is re-rendered with the grid planner and levelled meshes; no rerun-v2
+result is comparable. Capture rate, window sizes, path length and matrix size are
+being decided with a pilot (D22-D24). Audit outputs: `results/traj_audit/`.
+
+Applied for the full rerun-v3 matrix (decisions D21-D24, D28, D29): 2 Hz, no `loop`
+family, no `prism_sim3lock`, rooms walk 30 m / apartments 74.75 m, 3 seeds; new
+cube-face arms `vggtslam_cube` / `laser_cube` (seed 0); VGGT-SLAM TUM sanity check
+(`make sanity-tum`) before the matrix. Loss metrics: `scripts/lost_metrics.py` (D25).

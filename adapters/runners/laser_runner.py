@@ -16,6 +16,7 @@ Emits poses.tum, cloud.ply, perf_runner.json.
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -112,6 +113,9 @@ def main():
         pw.append(w); cw.append(c)
     pts, cols = fuse_pointmaps(pw, cw, cfg["engine"]["voxel_size"])
     _io.write_cloud(out / "cloud.ply", pts, cols)
+    cube = _io.collapse_cube_faces(Path(args.in_dir), out)     # D28: per-timestep poses
+    (out / "arm_config.json").write_text(json.dumps(
+        {"window_size": laser_ws, "overlap": laser_ov, **(cube or {})}, indent=2))
     _io.write_runner_perf(out, per_window_latency_s=[], latency_end_to_end_s=wall)
     print(f"[laser_runner] {S} frames -> {len(poses)} poses, {len(pts)} pts, {wall:.1f}s")
 
