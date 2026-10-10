@@ -34,9 +34,13 @@ SHARD_ID="$(echo "${SHARD:-all}" | sed 's#/#of#')"
 # This pod's methods (BENCH_METHODS) scope every upload/download/pack, so two pods
 # never touch each other's files. Unset = every method under results/.
 METHODS="${BENCH_METHODS:-}"
+# RESULTS_DATASET (e.g. loc360) scopes everything to one dataset's run dirs, so a
+# real-data run never packs or uploads the Replica runs of the same methods (D31).
+RDS="${RESULTS_DATASET:-}"
 run_dirs() {   # finished-or-not run dirs of THIS pod's methods
   ls -d results/*/*/*/*/*/ 2>/dev/null | grep -vE '^results/(report|bundles|figures|_|prism-benchmarks_)' \
-    | { if [ -n "$METHODS" ]; then grep -E "^results/($(echo $METHODS | tr ' ' '|'))/"; else cat; fi; } || true
+    | { if [ -n "$METHODS" ]; then grep -E "^results/($(echo $METHODS | tr ' ' '|'))/"; else cat; fi; } \
+    | { if [ -n "$RDS" ]; then grep -E "^results/[^/]+/$RDS/"; else cat; fi; } || true
 }
 hf_retry() {   # concurrent commits from two pods can collide: retry with backoff
   local i; for i in 1 2 3 4 5; do "$@" && return 0; echo "   (HF call failed, retry $i/5)"; sleep $((i * 15)); done; return 1
@@ -62,7 +66,7 @@ case "${1:-}" in
 sync-up)
   [ -n "$REPO_ID" ] || { echo "!! set INPUTS_HF_REPO or RESULTS_HF_REPO"; exit 1; }
   provenance
-  INC=(); if [ -n "$METHODS" ]; then for m in $METHODS; do INC+=(--include "$m/*"); done
+  INC=(); if [ -n "$METHODS" ]; then for m in $METHODS; do INC+=(--include "$m/${RDS:+$RDS/}*"); done
           else INC=(--exclude "bundles/*" --exclude "report*/*" --exclude "figures/*" --exclude "_*/*" --exclude "prism-benchmarks_*/*"); fi
   hf_retry $HF upload "$REPO_ID" results "results/$TAG/live/results" --repo-type dataset "${INC[@]}" \
       --commit-message "checkpoint $(hostname) $(date +%H:%M) [${METHODS:-all}]" >/dev/null

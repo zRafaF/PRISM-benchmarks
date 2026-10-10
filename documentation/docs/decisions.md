@@ -342,7 +342,7 @@ accept the Replica terms before downloading. Card: `documentation/hf/README.md`;
 `scripts/hf_publish.py` uploads it, enables gating, then flips the repo public.
 (Not legal advice; the PanoVGGT weights bucket is a separate repo.)
 
-## D31 — A small real 360 deg dataset for the harness *(PROPOSED 2026-10-10)*
+## D31 — A small real 360 deg dataset for the harness *(DECIDED 2026-10-10: 360Loc)*
 Need: real equirectangular sequences with GT poses, indoor, small enough to add quickly
 (not KITTI-360). Candidates checked:
 - **360Loc** (CVPR 2024; https://huajianup.github.io/research/360Loc/, data via
@@ -361,9 +361,76 @@ Need: real equirectangular sequences with GT poses, indoor, small enough to add 
   sequences x ~180 s, Insta360 ONE RS 1-inch at 30 Hz, lidar-inertial GT, construction
   site (robot-like). Raw dual-fisheye (stitching needed) and much larger: a second step.
 - ORBIT / ORBIT++ (360 deg video SfM) — rejected: pseudo-GT from SfM, perspective crops.
-Plan: one indoor 360Loc scene (hall or atrium reference sequence) through a
-`dataset/import_360loc.py` that writes our export layout (pano downscaled to 1036x518,
-cube faces from the pano, GT poses), then the normal adapters.
+Implemented: `dataset/import_360loc.py` + `config.real360.yaml` + `scripts/real360.sh`
+(`make real-*`), tag `real360-v1`, dataset id `loc360`. The panorama is resized to
+1036x518 (360Loc's equirect and camera axes are the same as ours, checked against its
+process.py); the 90 deg pinhole and both cube variants are resampled from the same
+full-resolution panorama, so every method sees the same capture. GT = 360Loc's lidar
+poses (frame-index timestamps); the longest continuous segment is used (split at jumps
+> max(1 m, 8x median step)). Camera height for PRISM: estimated from the scene point
+cloud under the GT poses (or set in the config); a 25 deg cone around nadir is masked
+in the panorama (handheld rig/operator). No depth/GT mesh: trajectory and continuity
+metrics only (`scripts/real360_report.py`: ATE, metric scale, tracked %, loss events,
+survival, fps per 360 capture). Quick check: hall, reference sequence, 5 arms.
+Isolation from the Replica matrix: own overlay, tag and dataset dir; no change to the
+render settings or trajectory/render code (rerun-v3 inputs stay valid); results.sh
+packs/uploads only `loc360` runs (`RESULTS_DATASET`).
+Validated before the real download (the cloud sandbox cannot reach the 360Loc host): a
+fake 360Loc scene rendered from Replica office_0 — importer camera height 1.466 m vs
+1.45 m true; resampled pinhole vs direct render mean abs. diff 2.6/255 (pano rendered at
+1024 px only).
+Download: the SharePoint links in the 360Loc repo now return an HTML page; the scripts
+use the authors' file server https://hkustvgd.com/statics/360loc/<scene>.zip (hall
+7.1 GB). Only the PC downloads raw 360Loc; pods fetch the imported, resized inputs from
+HF (`inputs/real360-v1/`, a few hundred MB per sequence) like the Replica inputs.
+360Loc states no licence: its imported frames can go to a separate HF repo
+(`REAL_HF_REPO=<user>/<repo>`, e.g. private) until the authors confirm re-hosting is fine;
+the public paper artefacts then link to 360Loc instead of re-hosting.
+Alternatives re-checked 2026-10-10 (licence was the question):
+- **Hilti-Trimble-Oxford 2026** — **CC BY-NC-SA 3.0** (re-hosting derived frames under the
+  same terms is allowed), per-sequence ROS 2 bags on HF
+  (`Hilti-Research/hilti-trimble-slam-challenge-2026`, 30 sequences, 162 GB total ->
+  ~5 GB each), Insta360 ONE RS 1-inch dual fisheye 1472x1440 at 30 Hz + 1 kHz IMU, GT
+  (lidar-inertial, `cam0 -> map`, TUM) public for ALL sequences since 2026-06-16 (first ~5
+  s not covered), Kalibr EUCM calibration, and a reference dual-fisheye -> equirect
+  stitcher in their repo (`challenge_tools_ros/bag_helper/image_stitching.py`; not exact,
+  the lenses have different centres). Construction site across 7 floors — robot-like,
+  long, textureless. No point cloud/mesh released (raw lidar withheld), so PRISM's camera
+  height must come from the rig spec and reconstruction cannot be scored. Best licensed
+  option; ~1 day to add (bag reader + stitching + 30 -> 2 Hz).
+- **ODGS-SLAM** (CVPR 2026, UIBK) — CC BY-NC-SA 4.0, real indoor room with Insta360
+  Pro / X4 on a mobile robot and motion-capture GT; but the real-world part is one
+  126.9 GB zip, format not documented. Too heavy for a quick add.
+- PALVIO — panoramic annular lens (360 x 40-120 deg, grayscale), Vicon GT; not an
+  equirect 360 camera.
+- IM360 / Matterport3D / Stanford2D3D — single panoramas, no sequences.
+Decision: run the quick check on 360Loc now (downloaded, importer ready; frames go to
+our HF repo provisionally while the authors are asked about the licence); add
+Hilti-Trimble-Oxford 2026 as the licensed real dataset for the paper.
+First look at the real data (hall, 2026-10-10):
+- Layout: `mapping/daytime_360_0/{image,depth,camera_pose.json}`, 540 images, 275 m,
+  0.51 m median step (one continuous sequence); `pose/360_mapping_gt.txt` matches.
+  No point cloud in the zip; 16-bit 360 depth maps per image.
+- Depth unit = centimetres: unprojecting frames 5 and 10 with the GT poses, the clouds
+  agree to a 1.6 cm median at scale 0.01 vs 3.4-6.5 cm at 0.0075/0.0125/0.002. This also
+  confirms that 360Loc's equirect and camera axes match ours. Straight-down depth ~1.9 m
+  = camera height (rig held above the operator's head).
+- **hall is outdoor** (a courtyard between dormitory buildings). It stays as the pipeline
+  check; the indoor scenes for the paper are atrium and concourse.
+- **The operator is in every panorama**, and the image centre is not the walking
+  direction (the person sits at azimuth ~29 deg in frame 5, ~125 deg in frame 200 —
+  i.e. right behind the direction of travel: 29 / 114 deg predicted from the GT motion).
+  Fix in the importer: rotate each panorama about the vertical (exact column shift) so
+  its centre looks along the world-smoothed direction of travel, apply the same rotation
+  to the GT; the operator is then always at the back and a fixed region is blacked out
+  (back +-55 deg below -8 deg, +-85 deg below -35 deg, everything below -65 deg; ~26% of
+  the panorama, almost all below the horizon) before any view is resampled, and set
+  invalid in every mask. The forward pinhole never sees the operator; the cube faces see
+  the same blacked-out pixels as PRISM. Validated on a synthetic stand-in with random
+  per-frame grip rotations: a pinhole rendered directly at the written GT pose matches
+  the imported pinhole to 2.5-3.1/255 mean abs. difference.
+Unverified until the real data is downloaded: the folder layout of `mapping/` (use
+`make real-list`), frame spacing, and the presence/format of the point cloud.
 
 ## Conflict note (brief vs. 05)
 05 marked the ScanNet-render pipeline "build deferred" and prioritised perf + lab

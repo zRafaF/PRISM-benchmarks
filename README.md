@@ -5,13 +5,15 @@ Every method runs in its own environment; everything is driven through `make`.
 
 | What | Where |
 |---|---|
-| This repo (branch `rerun-v2`) | https://github.com/zRafaF/PRISM-benchmarks |
+| This repo (branch `rerun-v2`, campaign tag `rerun-v3`) | https://github.com/zRafaF/PRISM-benchmarks |
 | PRISM-VGGT (branch `prism-v2`, pinned in `bench.env`) | https://github.com/zRafaF/PRISM-VGGT |
-| Rendered inputs + results (private HF dataset) | https://huggingface.co/datasets/DoninhaD/prism-bench-inputs |
+| Inputs + results (HF dataset, public and gated by the Replica terms — `scripts/hf_publish.py`) | https://huggingface.co/datasets/DoninhaD/prism-bench-inputs |
 | PanoVGGT weights (private HF bucket) | https://huggingface.co/buckets/DoninhaD/PanoVGGT-bucket |
 
-Inside the HF dataset: `inputs/rerun-v2/` = rendered frames (one tar per scene),
-`results/rerun-v2/live/` = checkpoints written during a run, `results/rerun-v2/*.tar` = final results.
+Inside the HF dataset: `inputs/<tag>/` = frames (one tar per scene), `results/<tag>/live/` =
+checkpoints during a run, `results/<tag>/*.tar` = final results, `sanity/tum_vggtslam/` = the
+VGGT-SLAM TUM check. Tags: `rerun-v3` (Replica matrix), `real360-v1` (real 360 deg data),
+`pilot-v3` (rate/window study); older tags are superseded.
 
 ## The flow
 
@@ -21,19 +23,21 @@ Inside the HF dataset: `inputs/rerun-v2/` = rendered frames (one tar per scene),
 
 ## What runs
 
-- **6 Replica scenes:** `apartment_0 apartment_1 office_0 room_0 room_1 room_2`
-- **2 camera paths** at 2 Hz, 300 frames (150 s of video) each: `synthetic` (smooth) and `loop` (revisits places)
-- **3 seeds** per path → 36 sequences
+- **6 Replica scenes**, collision-free walks planned per scene at 0.5 m/s, 2 Hz: rooms 30 m
+  (121 frames), apartments 74.75 m (300 frames); **3 seeds** → 18 sequences
+- Cameras rendered from the same poses: 360 deg panorama, 90 deg pinhole, and the panorama as
+  4 cube faces per timestep (`cube4` 90 deg, `cube4_o20` 110 deg with 20 deg overlap; seed 0)
 
 | Method | Runs | Note |
 |---|---|---|
-| `prism` | 36 | ours, Sim(3) alignment |
-| `vggtslam` | 36 | VGGT-SLAM as published: 32-frame submaps, loop closure on |
-| `laser` | 36 | |
-| `prism_sl4`, `prism_se3`, `prism_sim3lock` | 12 each | alignment ablation, seed 0 only |
-| `vggtslam_noloop` | 12 | VGGT-SLAM with loop closure off, seed 0 only |
+| `prism` | 18 | ours |
+| `vggtslam` | 18 | as published: 32-frame submaps, loop closure on |
+| `laser` | 18 | |
+| `vggtslam_cube`, `laser_cube` | 12 each | the baselines on the 360 deg data (both cube variants), seed 0 |
+| `prism_sl4`, `prism_se3` | 6 each | alignment ablation, seed 0 |
+| `vggtslam_noloop` | 6 | loop closure off, seed 0 |
 
-**156 runs, ~3 h on one RTX 5090.** Runs are strictly sequential, so timings are clean.
+**~96 runs, ~3.5 h on one RTX 5090**, strictly sequential. Why each choice: `documentation/docs/decisions.md`.
 
 Offline methods (`panovggt`, `pi3`, `mapanything`) are **off by default**: they need
 50–93 GB of VRAM at only 200 frames. Turn them on only on a 96 GB card (see Hardware).
@@ -72,14 +76,16 @@ git config core.fileMode false
 
 make inputs                 # Replica meshes -> scene split -> check -> render -> export -> pack (a few hours)
 export HF_TOKEN=hf_xxx
-make inputs-push            # uploads dataset/inputs/rerun-v2/ (~7.5 GB)
+make inputs-push            # uploads dataset/inputs/rerun-v3/
 ```
 
 - `make replica` streams the 34 GB Replica archive and keeps only the 6 meshes (~3 GB on disk).
 - Keep this checkout: scoring needs its depth maps and GT meshes.
-- Inputs only need re-rendering if `config.yaml` render settings, `dataset/trajectories.py`
-  or `dataset/render_scene.py` change — the pod refuses mismatched inputs. After changing
-  only run settings: `bash scripts/inputs.sh rehash && make inputs-push`.
+- `make inputs` resumes per camera: finished sequences are skipped, a new camera variant
+  renders only that variant (`RENDER_FORCE=1` redoes everything).
+- Inputs need re-rendering if `config.yaml` render settings, `dataset/trajectories.py` or
+  `dataset/render_scene.py` change — the pod refuses mismatched inputs.
+- `make traj-audit` checks the planned walks against the meshes (no rendering).
 
 Optional, to start with no old results on HF (inputs are kept): `make results-hf-reset`.
 
@@ -89,6 +95,8 @@ Optional, to start with no old results on HF (inputs are kept): `make results-hf
 apt-get update && apt-get install -y git make tmux
 git clone -b rerun-v2 https://github.com/zRafaF/PRISM-benchmarks.git && cd PRISM-benchmarks
 export HF_TOKEN=hf_xxx
+make sanity-tum && make sanity-tum-push   # once per environment: VGGT-SLAM on TUM, theirs vs ours
+make pod-clean                            # only on a pod that ran an older tag
 make pod
 make watch
 ```
@@ -102,7 +110,7 @@ make watch
 | data | ~5 min | downloads the frames from HF, checks they match this code |
 | precheck | ~15 min | every method on one real sequence + VGGT-SLAM on a loop path; any FAIL stops here |
 | bench | ~3 h | 156 runs, one at a time; checkpoint to HF every 15 min |
-| pack | ~2 min | results tar → HF `results/rerun-v2/` |
+| pack | ~2 min | results tar → HF `results/rerun-v3/` |
 | studio | — | Gradio link to download the tar |
 
 ### While it runs
@@ -146,6 +154,25 @@ make results-fetch && make results-merge && make eval-all publication
 ```
 
 Paper tables: `results/report_tables/`. Analysis: `results/report_clean/clean_report.md`.
+Loss metrics (tracked %, loss events, distance to failure): `results/lost/`.
+
+## Real 360 deg data (360Loc)
+
+A real handheld 360 deg sequence with lidar GT, imported (not rendered) as tag `real360-v1`;
+it never touches the Replica inputs or results. Config: `config.real360.yaml` (scenes,
+sequences, camera height, nadir mask).
+
+```bash
+# PC
+make real-download          # scene zips from the 360Loc authors' server (hall: 7.1 GB)
+make real-list              # sequences in each scene
+make real-inputs            # import -> pano + pinhole + cube views resampled from the real panorama -> pack
+make real-push              # imported frames -> HF (REAL_HF_REPO=<repo> for a separate/private repo)
+# pod (a fresh one, or one whose Replica run has finished)
+make real-pod               # PRISM, VGGT-SLAM, LASER, both cube variants -> table + HF results/real360-v1/
+# PC
+make real-fetch             # merge + print the table (ATE, metric scale, tracked %, loss events, fps)
+```
 
 ---
 
@@ -169,6 +196,8 @@ eval/                trajectory / reconstruction / metric-scale scoring, reports
 scripts/pod.sh       the pod pipeline (stages above)
 scripts/precheck.py  pre-check     scripts/progress.py  make watch
 scripts/inputs.sh    inputs pack/push/fetch     scripts/results.sh  results pack/push/checkpoints/merge
+scripts/traj_audit.py  walks vs meshes    scripts/lost_metrics.py  loss metrics    scripts/sanity_tum.sh  TUM check
+scripts/pilot.sh  rate/window pilot    scripts/real360.sh  360Loc    dataset/import_360loc.py  real-data importer
 
 dataset/exports/<ds>/<scene>/<traj>/{pano,pinhole/<variant>}/{rgb,depth,mask}/  poses_gt.tum  gt_mesh.ply
 results/<method>/<ds>/<scene>/<traj>/<variant>/  poses.tum  cloud.ply  perf.json  arm_config.json  run.log
@@ -179,7 +208,10 @@ More: `make help`, `RESULTS_CHANGELOG.md` (what changed between result sets),
 
 ## Notes for the paper
 
+Findings with draft sentences: `documentation/docs/paper_findings.md`; plan:
+`documentation/docs/paper_plan.md`.
+
 - Timings come from one RTX 5090; don't mix them with the earlier RTX PRO 6000 numbers.
-- Offline methods on 32 GB: report as **OOM**, with the 50–93 GB peaks measured on the 96 GB card.
-- Ablation arms use seed 0 only (12 sequences each); main methods use 3 seeds.
-- The 2026-07/08 alignment numbers are void (see `RESULTS_CHANGELOG.md` §14).
+- Offline methods on 32 GB: report as **OOM**, or run them on the 96 GB card.
+- Ablation and cube arms use seed 0 only; main methods use 3 seeds.
+- Results before rerun-v3 are void or superseded (`RESULTS_CHANGELOG.md` §14–15).

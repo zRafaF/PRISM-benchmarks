@@ -36,7 +36,8 @@ PYCHK    ?= python3
         pod pod-status pod-stop env-check replica replica-full inputs-pack inputs-push inputs-fetch \
         inputs-verify results-pack results-push results-fetch results-merge eval-all \
         inputs precheck progress watch \
-        traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report sanity-tum lost sanity-tum-push pod-clean
+        traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report sanity-tum lost sanity-tum-push pod-clean \
+        real-download real-list real-inputs real-push real-pod real-fetch real-report
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -646,6 +647,21 @@ sanity-tum-push:
 # pod-clean : archive results/ and drop inputs/stage flags so a new tag starts uncontaminated
 pod-clean:
 	bash scripts/pod_clean.sh
+# ── real 360 deg data (360Loc, decisions D31; config.real360.yaml, tag real360-v1) ──
+real-download:
+	bash scripts/real360.sh download
+real-list: setup
+	bash scripts/real360.sh list
+real-inputs: setup
+	bash scripts/real360.sh inputs
+real-push:
+	bash scripts/real360.sh push
+real-pod:
+	bash scripts/real360.sh pod
+real-fetch:
+	bash scripts/real360.sh fetch
+real-report: setup
+	bash scripts/real360.sh report
 lost: setup
 	$(ORCH_RUN) scripts/lost_metrics.py --plot
 

@@ -38,7 +38,7 @@ if [ "${1:-}" = "push" ]; then
   [ -f results/_sanity_tum/theirs_logs/rgbd_dataset_freiburg1_room_run1_w32.txt ] || \
     { mkdir -p results/_sanity_tum/theirs_logs; cp submodules/VGGT-SLAM/logs/rgbd_dataset_freiburg1_*_run1_w32.txt results/_sanity_tum/theirs_logs/ 2>/dev/null || true; }
   ${HF_CLI:-uvx --from 'huggingface_hub[cli]>=0.34' hf} upload "$REPO" results/_sanity_tum sanity/tum_vggtslam \
-      --repo-type dataset --exclude "*.ply" "*.pcd" "*_points*" --commit-message "VGGT-SLAM TUM sanity check (D29)"
+      --repo-type dataset --exclude "*.ply" --exclude "*.pcd" --exclude "*_points*" --commit-message "VGGT-SLAM TUM sanity check (D29)"
   exit 0
 fi
 OUT="$ROOT/results/_sanity_tum"

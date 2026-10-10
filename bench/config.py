@@ -100,6 +100,9 @@ def resolve_trajs(cfg: dict, cli_traj: str) -> list[str]:
         for r in list(rates) + _derived_rates(tj, rates):
             for si in range(nseed):
                 concrete.append(f"{prefix}_{r}hz" + (f"_s{si}" if nseed > 1 else ""))
+    # Recorded (real) sequences have fixed ids, not generated families (D31):
+    # trajectories.sequences: [ref, ...] -> dataset/exports/<ds>/<scene>/<id>/.
+    concrete += [str(t) for t in (tj.get("sequences") or [])]
 
     if cli_traj in ("all", ""):
         return concrete
