@@ -612,3 +612,12 @@ watch: setup
 # Wipe this tag's results/checkpoints on HF (inputs untouched). Before any pod starts.
 results-hf-reset: setup
 	CONFIRM=yes bash scripts/results.sh hf-reset
+
+# Where/how each method goes wrong on one sequence (CPU, seconds). Table + results/diag/*.png
+#   make diag SCENE=apartment_1 TRAJ=synthetic_2.0hz_s0 [METHODS="prism vggtslam"]
+#   make diag-all            # every scene, seed 0, both paths
+diag: setup
+	$(ORCH_RUN) scripts/diag.py --scene "$(SCENE)" --traj "$(TRAJ)" --methods "$(METHODS)"
+diag-all: setup
+	@for sc in $$($(ORCH_RUN) -c "from bench.matrix import frozen_scenes; from bench.config import load_config; print(' '.join(frozen_scenes(load_config('config.yaml'))))"); do \
+	  for tj in synthetic_2.0hz_s0 loop_2.0hz_s0; do $(ORCH_RUN) scripts/diag.py --scene $$sc --traj $$tj --no-plot || true; done; done
