@@ -125,3 +125,21 @@ Hypotheses from the previous agent (verify, don't assume):
 - Don't `git pull` on the pod while `pod.sh`/`run_overnight.sh` is executing (bash reads
   scripts incrementally); Python files are safe.
 - `make -n` executes recipe lines containing `$(MAKE)` — it once started a 34 GB download.
+
+## Addendum (visual check of the rendered frames)
+
+- apartment_1 frame 143 (pano and pinhole): the image is an almost uniform wall
+  surface filling the view — the camera is inside / against a wall. Consistent with H1
+  for the apartments only.
+- room_1 frames 79 -> 80 (VGGT-SLAM's worst jump, 108 deg): both frames are valid
+  renders (window wall, white walls, a dresser), ~20 deg turn between them, low texture
+  and a repeated window pattern. So the room-scene baseline errors are NOT caused by
+  wall crossings; they are the methods in this input regime (2 Hz, large turns,
+  textureless walls, 90 deg HFOV pinhole: 640x480, fx = 320).
+- User idea under discussion: a pinhole-favourable variant. Note that dropping
+  "low-change" frames from the 2 Hz stream makes overlap smaller, not larger;
+  VGGT-SLAM's own keyframing (min_disparity, 50 px default) assumes a dense (~30 fps)
+  input. A denser render of the same path (e.g. 10 Hz, shorter path / rooms / seed 0)
+  with each method's published keyframing is the closer match to the published setups.
+  Not decided.
+- Copies of the inspected frames: `C:\Dev\ualberta\_inspect\` (not in the repo).
