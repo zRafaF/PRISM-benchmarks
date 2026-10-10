@@ -35,7 +35,8 @@ PYCHK    ?= python3
         studio preview snapshots docs docs-serve clean clean-results publication \
         pod pod-status pod-stop env-check replica replica-full inputs-pack inputs-push inputs-fetch \
         inputs-verify results-pack results-push results-fetch results-merge eval-all \
-        inputs precheck progress watch
+        inputs precheck progress watch \
+        traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -616,6 +617,26 @@ results-hf-reset: setup
 # Where/how each method goes wrong on one sequence (CPU, seconds). Table + results/diag/*.png
 #   make diag SCENE=apartment_1 TRAJ=synthetic_2.0hz_s0 [METHODS="prism vggtslam"]
 #   make diag-all            # every scene, seed 0, both paths
+# ── rerun-v3: trajectory audit + pilot (scripts/traj_audit.py, scripts/pilot.sh) ──
+# traj-audit     : what the generator would render now, ray-cast against the mesh (CPU, minutes)
+# traj-audit-v2  : the GT poses already rendered in dataset/exports (uses their gt_mesh.ply)
+# pilot-inputs   : PC — audit gate, render 10 Hz + derive 5/2 Hz, export, pack (config.pilot.yaml)
+# pilot-push     : PC — upload inputs/pilot-v3 to HF
+# pilot          : pod — fetch, run the pilot phases, report, upload results/pilot-v3
+# pilot-report   : summary table from results/p3_*
+traj-audit: setup
+	$(ORCH_RUN) scripts/traj_audit.py --generate --traj all --plot
+traj-audit-v2: setup
+	$(ORCH_RUN) scripts/traj_audit.py --traj all --plot
+pilot-inputs: setup
+	bash scripts/pilot.sh inputs
+pilot-push:
+	bash scripts/pilot.sh push
+pilot:
+	bash scripts/pilot.sh pod
+pilot-report: setup
+	bash scripts/pilot.sh report
+
 diag: setup
 	$(ORCH_RUN) scripts/diag.py --scene "$(SCENE)" --traj "$(TRAJ)" --methods "$(METHODS)"
 diag-all: setup

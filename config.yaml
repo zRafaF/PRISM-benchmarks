@@ -148,8 +148,19 @@ trajectories:
   # Put 5.0 back to restore the rate sweep.
   rates_hz: [2.0]
   synthetic_spline:
+    # rerun-v3: `grid` = collision-free planner (dataset/trajectories.py::grid_walk).
+    # The rerun-v2 `spline` planner checked only its waypoints; the curve between them
+    # crossed walls 5-16 times per apartment sequence (scripts/traj_audit.py), and every
+    # method lost track at exactly those frames. `spline` is kept only to reproduce
+    # old inputs.
+    planner: grid
     speed_mps: 0.5           # constant walking speed; inter-frame baseline = speed/rate
-    min_clearance_m: 0.30    # collision-free sampling against the mesh occupancy
+    min_clearance_m: 0.30    # hard floor: camera centre / body to any surface (doorways ~0.8 m wide)
+    body_clearance_m: 0.20   # grid planner: horizontal gap to furniture/walls at floor + 1 m
+                             #   (0.30 cut room_0's living room into 4 unreachable pieces)
+    pref_clearance_m: 0.60   # grid planner: paths are pushed to >= this where the room allows
+    lookahead_m: 0.5         # grid planner: heading aims 0.5 m ahead (turns start before corners)
+    grid_res_m: 0.05         # grid planner: free-space raster resolution
     loop: false
     # ── Reaching n_frames (see dataset/trajectories.py::synthetic_spline) ──
     # Sequence length is path_len * rate / speed, so n_frames used to only TRUNCATE.

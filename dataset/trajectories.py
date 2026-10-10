@@ -30,7 +30,7 @@ def _look_at(eye: np.ndarray, target: np.ndarray, up=(0, 0, 1)) -> np.ndarray:
 
 
 def rate_limited_yaw(eyes: np.ndarray, rate_hz: float,
-                     max_yaw_rate_dps: float | None) -> np.ndarray:
+                     max_yaw_rate_dps: float | None, lookahead: int = 1) -> np.ndarray:
     """Per-frame camera yaw (radians, world Z-up) that follows the direction of travel
     but never turns faster than ``max_yaw_rate_dps``.
 
@@ -50,13 +50,19 @@ def rate_limited_yaw(eyes: np.ndarray, rate_hz: float,
     ``max_yaw_rate_dps / rate_hz``. The limit is in deg/s, so the same physical turn
     is produced at every capture rate. ``None``/<=0 disables limiting (old headings,
     minus the last-frame snap).
+
+    ``lookahead`` (frames, default 1 = the original behaviour) aims each frame at the
+    position ``lookahead`` frames ahead instead of the next one. The grid planner uses
+    ~0.5 m of look-ahead so the heading anticipates a corner instead of reacting to it.
     """
     n = len(eyes)
     if n == 0:
         return np.zeros(0)
     d = np.zeros((n, 2))
     if n > 1:
-        d[:-1] = eyes[1:, :2] - eyes[:-1, :2]
+        k = max(1, int(lookahead))
+        ahead = np.minimum(np.arange(n) + k, n - 1)
+        d = eyes[ahead, :2] - eyes[:, :2]
         d[-1] = d[-2]
     yaw = np.full(n, np.nan)
     for i in range(n):
@@ -679,3 +685,481 @@ def _span(kept) -> float:
     pts = np.array([xy for xy, _ in kept])
     d = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=-1)
     return float(d.max())
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Grid planner (rerun-v3): collision-free by construction
+# ════════════════════════════════════════════════════════════════════════════
+# WHY. The spline planner checks only its WAYPOINTS against the mesh. The Catmull-Rom
+# curve between two waypoints is a straight-ish line, so in a multi-room scene it cuts
+# straight through walls and door frames. scripts/traj_audit.py on the rerun-v2 inputs:
+# apartment_0/1 had 5-16 wall crossings per 300-frame sequence and 16-53 frames with
+# the camera inside or against geometry — exactly the frames where every method
+# (PRISM, VGGT-SLAM, LASER) lost track at once. The rooms had none, but room_0 seeds
+# 1-2 passed within 0.11-0.14 m of furniture.
+#
+# HOW. Rasterise the walkable free space at camera height into a 2D grid, plan every
+# leg between waypoints with Dijkstra on that grid (the cost pushes the path towards
+# the middle of corridors and doorways), shortcut the cell path where a straight line
+# stays at least as clear, round the corners (Chaikin), then sample by arc length.
+# The final poses are re-checked against the exact mesh distance; a violation raises.
+#
+# A cell is walkable when, at the same time:
+#   * a ray straight down from camera height lands on the floor (not furniture, not
+#     outside the building), and the nearest non-floor cell is >= r_body away
+#     (horizontal clearance from table legs, sofas, beds, walls);
+#   * the distance to any surface at camera height is >= r_cam;
+#   * the distance to any surface at body height (floor + 1 m) is >= r_body;
+#   (r_cam = min_clearance_m 0.30, r_body = body_clearance_m 0.20: at 0.30 the body
+#    test split room_0, a furnished living room, into 4 pieces)
+#   * it belongs to the largest 8-connected free component (no islands).
+#
+# LAPS. The old planner repeated ONE circuit up to 12 times (11 laps in the small
+# rooms: 66-86% of frames revisited a place passed >= 20 s earlier, on the identical
+# route). Here every lap draws a FRESH set of waypoints and tours them from wherever
+# the camera is, so the scene is revisited along different routes and headings.
+#
+# LOOP FAMILY. With laps, the old `loop_*` trajectories were the same poses as
+# `synthetic_*` to within 5 mm (the two appended waypoints fell past the truncation
+# point). Here `close_loop=True` makes the walk END at its start: waypoints are added
+# until the remaining budget equals the geodesic way home, then it walks home.
+
+
+def free_space_grid(scene, lo, hi, floor_z: float, cam_z: float, res: float = 0.05,
+                    r_cam: float = 0.30, r_body: float = 0.30, ground_tol: float = 0.12,
+                    body_h: float = 1.0) -> dict:
+    """Walkable-space grid at camera height (see the block comment above)."""
+    import open3d as o3d
+    from scipy import ndimage
+    xs = np.arange(lo[0], hi[0] + res, res)
+    ys = np.arange(lo[1], hi[1] + res, res)
+    XX, YY = np.meshgrid(xs, ys, indexing="ij")
+    xy = np.column_stack([XX.ravel(), YY.ravel()]).astype(np.float32)
+    n = len(xy)
+
+    def _dist(z):
+        p = np.column_stack([xy, np.full(n, z, np.float32)])
+        return scene.compute_distance(o3d.core.Tensor(p)).numpy().reshape(XX.shape)
+
+    d_cam = _dist(cam_z)
+    d_body = _dist(floor_z + body_h)
+    rays = np.column_stack([xy, np.full(n, cam_z, np.float32),
+                            np.zeros((n, 2), np.float32), -np.ones((n, 1), np.float32)])
+    t = scene.cast_rays(o3d.core.Tensor(rays.astype(np.float32)))["t_hit"].numpy().reshape(XX.shape)
+    floor_ok = np.isfinite(t) & (np.abs((cam_z - t) - floor_z) <= ground_tol)
+    d_floor = ndimage.distance_transform_edt(floor_ok) * res      # to nearest non-floor cell
+    clr = np.minimum(np.minimum(d_cam, d_body), d_floor)
+    free = floor_ok & (d_cam >= r_cam) & (d_body >= r_body) & (d_floor >= r_body)
+    lab, nlab = ndimage.label(free, structure=np.ones((3, 3), bool))
+    if nlab == 0:
+        raise RuntimeError("free_space_grid: no walkable cell (check floor_z / clearances)")
+    sizes = ndimage.sum(free, lab, index=np.arange(1, nlab + 1))
+    big = int(np.argmax(sizes)) + 1
+    comp = lab == big
+    return dict(xs=xs, ys=ys, res=res, lo=np.asarray(lo[:2], float), clr=clr, free=comp,
+                n_free_all=int(free.sum()), n_free=int(comp.sum()), n_components=int(nlab),
+                floor_ok=floor_ok)
+
+
+def _grid_graph(G: dict, pref: float, r_min: float, alpha: float = 4.0):
+    """Sparse 8-connected graph over the free cells. Edge cost = length x (1 + alpha x
+    p^2), p = how far below the PREFERRED clearance the edge is (0 when >= pref), so
+    shortest paths keep to the middle of corridors and doorways."""
+    from scipy.sparse import csr_matrix
+    free, clr, res = G["free"], G["clr"], G["res"]
+    nx, ny = free.shape
+    idx = -np.ones(free.shape, np.int64)
+    cells = np.argwhere(free)
+    idx[free] = np.arange(len(cells))
+    pen = np.clip((pref - clr) / max(pref - r_min, 1e-6), 0.0, 1.0) ** 2
+    rows, cols, w = [], [], []
+    for dx, dy in ((1, 0), (0, 1), (1, 1), (1, -1)):
+        a = cells
+        b = a + np.array([dx, dy])
+        ok = (b[:, 0] >= 0) & (b[:, 0] < nx) & (b[:, 1] >= 0) & (b[:, 1] < ny)
+        a, b = a[ok], b[ok]
+        ok = free[b[:, 0], b[:, 1]]
+        a, b = a[ok], b[ok]
+        L = res * np.hypot(dx, dy)
+        p = 0.5 * (pen[a[:, 0], a[:, 1]] + pen[b[:, 0], b[:, 1]])
+        ww = L * (1.0 + alpha * p)
+        ia, ib = idx[a[:, 0], a[:, 1]], idx[b[:, 0], b[:, 1]]
+        rows += [ia, ib]; cols += [ib, ia]; w += [ww, ww]
+    M = csr_matrix((np.concatenate(w), (np.concatenate(rows), np.concatenate(cols))),
+                   shape=(len(cells), len(cells)))
+    return M, cells, idx
+
+
+def _cell_xy(G, cells):
+    return np.column_stack([G["xs"][cells[:, 0]], G["ys"][cells[:, 1]]])
+
+
+def _clr_at(G, xy):
+    """Nearest-cell clearance (and free flag) at world xy (N,2)."""
+    i = np.clip(np.rint((xy[:, 0] - G["xs"][0]) / G["res"]).astype(int), 0, len(G["xs"]) - 1)
+    j = np.clip(np.rint((xy[:, 1] - G["ys"][0]) / G["res"]).astype(int), 0, len(G["ys"]) - 1)
+    return G["clr"][i, j], G["free"][i, j]
+
+
+def _shortcut(G, pts, pref):
+    """Greedy line-of-sight shortcutting of a cell path. A shortcut i->j is taken only
+    if every point on it is free and at least as clear as min(pref, the clearest the
+    original sub-path i..j ever got), so straightening never pulls the path towards a
+    wall that the cost-weighted plan had kept away from."""
+    clr_path, _ = _clr_at(G, pts)
+    out, i, n = [pts[0]], 0, len(pts)
+    step = G["res"] * 0.5
+    while i < n - 1:
+        j_ok = i + 1
+        run_min = clr_path[i]
+        for j in range(i + 1, n):
+            run_min = min(run_min, clr_path[j])
+            thr = min(pref, run_min) - 1e-6
+            seg = pts[j] - pts[i]
+            L = float(np.linalg.norm(seg))
+            m = max(2, int(L / step) + 1)
+            s = pts[i] + np.linspace(0, 1, m)[:, None] * seg
+            c, f = _clr_at(G, s)
+            if f.all() and (c >= thr).all():
+                j_ok = j
+            else:
+                break
+        out.append(pts[j_ok])
+        i = j_ok
+    return np.array(out)
+
+
+def _chaikin_safe(G, pts, iters, thr):
+    """Chaikin corner cutting that only cuts a corner when the cut stays walkable and
+    >= thr clear (grid lookup); a corner that would graze furniture is kept sharp
+    (the yaw-rate limit then turns the camera through it)."""
+    step = G["res"] * 0.5
+    for _ in range(int(iters)):
+        if len(pts) < 3:
+            return pts
+        out = [pts[0]]
+        for i in range(1, len(pts) - 1):
+            q = 0.75 * pts[i] + 0.25 * pts[i - 1]
+            r = 0.75 * pts[i] + 0.25 * pts[i + 1]
+            L = float(np.linalg.norm(r - q))
+            m = max(2, int(L / step) + 1)
+            smp = q + np.linspace(0, 1, m)[:, None] * (r - q)
+            c, f = _clr_at(G, smp)
+            if f.all() and (c >= thr).all():
+                out += [q, r]
+            else:
+                out.append(pts[i])
+        out.append(pts[-1])
+        pts = np.array(out)
+    return pts
+
+
+def _chaikin(pts, iters):
+    for _ in range(int(iters)):
+        if len(pts) < 3:
+            return pts
+        q = 0.75 * pts[:-1] + 0.25 * pts[1:]
+        r = 0.25 * pts[:-1] + 0.75 * pts[1:]
+        mid = np.empty((2 * (len(pts) - 1), 2))
+        mid[0::2], mid[1::2] = q, r
+        pts = np.vstack([pts[:1], mid[1:-1], pts[-1:]])
+    return pts
+
+
+def _densify(pts, step):
+    out = [pts[:1]]
+    for a, b in zip(pts[:-1], pts[1:]):
+        L = float(np.linalg.norm(b - a))
+        m = max(1, int(np.ceil(L / step)))
+        out.append(a + np.linspace(0, 1, m + 1)[1:, None] * (b - a))
+    return np.vstack(out)
+
+
+def grid_walk(scene, lo, hi, floor_z: float, cam_z: float, seed: int,
+              speed_mps: float = 0.5, rate_hz: float = 2.0,
+              path_target_m: float = 74.75, close_loop: bool = False,
+              n_waypoints: int = 12, min_clearance_m: float = 0.30,
+              body_clearance_m: float = 0.20, pref_clearance_m: float = 0.60, max_laps: int = 12,
+              min_span_m: float = 2.0, min_frames: int = 32, max_frames: int = 1000,
+              max_yaw_rate_dps: float | None = 45.0, lookahead_m: float = 0.5,
+              res: float = 0.05, chaikin_iters: int = 3, debug: bool = True,
+              return_info: bool = False):
+    """Collision-free constant-speed walk on the free-space grid. Returns (n,4,4) c2w.
+
+    Same contract as ``synthetic_spline`` in path mode: the physical path length
+    ``path_target_m`` is the invariant and the frame count follows from the rate (a
+    loop walk ends exactly at its start, so its length is within a leg of the target).
+    """
+    import open3d as o3d
+    from scipy.sparse.csgraph import dijkstra
+    rng = np.random.default_rng(seed)
+    G = free_space_grid(scene, lo, hi, floor_z, cam_z, res=res,
+                        r_cam=min_clearance_m, r_body=body_clearance_m)
+    M, cells, idx = _grid_graph(G, pref_clearance_m, body_clearance_m)
+    cxy = _cell_xy(G, cells)
+    cclr = G["clr"][cells[:, 0], cells[:, 1]]
+    if debug:
+        print(f"[grid] {G['free'].shape[0]}x{G['free'].shape[1]} cells @ {res} m: "
+              f"walkable {G['n_free']} in the main component ({G['n_free'] * res * res:.1f} m^2; "
+              f"{G['n_components']} component(s), {G['n_free_all']} free in total)")
+
+    room_diag = float(np.hypot(*(cxy.max(0) - cxy.min(0))))
+    span_req = min(min_span_m, 0.35 * room_diag)
+    # Waypoint candidates: cells at least 0.4 m clear (or pref, if smaller), so the
+    # camera does not arrive nose-to-wall at a waypoint and turn round there. Not
+    # `>= pref`: in a furnished room only the middle of the floor is 0.6 m clear, and
+    # the walk shrank to a 2.5 m patch of room_0.
+    good = np.flatnonzero(cclr >= min(pref_clearance_m, 0.40))
+    if len(good) < 4 * n_waypoints:
+        good = np.arange(len(cells))
+    pool_n = max(6 * n_waypoints, 48)
+
+    def _draw(start_node=None):
+        pool = rng.choice(good, size=min(pool_n, len(good)), replace=False)
+        if start_node is not None:
+            pool = np.concatenate([[start_node], pool])
+            seed_i = 0
+        else:
+            seed_i = int(np.argmax(cclr[pool]))           # clearest cell starts the walk
+        P = cxy[pool]
+        chosen = [seed_i]
+        dmin = np.linalg.norm(P - P[seed_i], axis=1)
+        while len(chosen) < min(n_waypoints, len(pool)):
+            k = int(np.argmax(dmin))
+            if dmin[k] <= 0:
+                break
+            chosen.append(k)
+            dmin = np.minimum(dmin, np.linalg.norm(P - P[k], axis=1))
+        return [int(pool[c]) for c in chosen]
+
+    wps = _draw()
+    span = float(np.max(np.linalg.norm(cxy[wps][:, None] - cxy[wps][None], axis=-1)))
+    if span < span_req:
+        raise RuntimeError(f"grid waypoints span only {span:.2f} m (need {span_req:.2f} m)")
+    start = wps[0]
+    d_home = dijkstra(M, indices=start)
+
+    def _leg(a, b):
+        d, pred = dijkstra(M, indices=a, return_predecessors=True)
+        seq, cur = [], b
+        while cur != a and cur >= 0:
+            seq.append(cur); cur = pred[cur]
+        if cur < 0:
+            return None, np.inf
+        seq = seq[::-1]
+        pts = cxy[[a] + seq]
+        return seq, float(np.linalg.norm(np.diff(pts, axis=0), axis=1).sum())
+
+    need = float(path_target_m)
+
+    def _order(cur, todo):
+        """Open TSP order of `todo` starting from `cur` on geodesic distances: nearest
+        neighbour, then 2-opt. A 2-opt tour is a smooth circuit through a room (fewer
+        reversals than plain nearest-neighbour) and still sensible across rooms."""
+        nodes_ = [cur] + list(todo)
+        D = dijkstra(M, indices=nodes_)[:, nodes_]
+        order, left = [0], set(range(1, len(nodes_)))
+        while left:
+            k = min(left, key=lambda j: D[order[-1], j])
+            if not np.isfinite(D[order[-1], k]):
+                break
+            order.append(k); left.remove(k)
+        improved = True
+        while improved:
+            improved = False
+            for i in range(1, len(order) - 1):
+                for j in range(i + 1, len(order)):
+                    a_, b_ = order[i - 1], order[i]
+                    c_ = order[j]
+                    d_ = order[j + 1] if j + 1 < len(order) else None
+                    old = D[a_, b_] + (D[c_, d_] if d_ is not None else 0.0)
+                    new = D[a_, c_] + (D[b_, d_] if d_ is not None else 0.0)
+                    if new < old - 1e-9:
+                        order[i:j + 1] = order[i:j + 1][::-1]
+                        improved = True
+        return [nodes_[k] for k in order[1:]]
+
+    def _leg_len(a, seq):
+        """Length of a leg AFTER shortcutting (what will actually be walked)."""
+        return float(np.linalg.norm(np.diff(_shortcut(G, cxy[[a] + seq], pref_clearance_m),
+                                            axis=0), axis=1).sum())
+
+    max_sets = max(4, 4 * int(max_laps))
+
+    def _tour(target: float):
+        """Waypoint tours (fresh waypoint set each lap) until the walked length reaches
+        `target`. Deterministic for a given seed: re-draws from a fresh RNG."""
+        nonlocal rng
+        rng = np.random.default_rng(seed + 7919)
+        nodes, length, cur, lap = [start], 0.0, start, 0
+        todo, done = _order(start, wps[1:]), False
+        while not done:
+            if not todo:
+                if lap + 1 >= max_sets:
+                    print(f"[grid] WARNING: {max_sets} waypoint sets used at "
+                          f"{length:.1f} m of {target:.1f} m")
+                    break
+                lap += 1
+                todo = _order(cur, [w for w in _draw() if w != cur])
+                if not todo:
+                    continue
+            w = todo.pop(0)
+            seq, _ = _leg(cur, w)
+            if seq is None or not seq:
+                continue
+            L = _leg_len(cur, seq)
+            # d_home is the cost-weighted geodesic way back (>= its walked length), so a
+            # loop turns home slightly early rather than overshooting the target.
+            if close_loop and length + L + d_home[w] >= target:
+                done = True
+            nodes += seq; length += L; cur = w
+            if not close_loop and length >= target:
+                done = True
+        if close_loop and cur != start:
+            seq, L = _leg(cur, start)
+            nodes += seq; length += L
+        return nodes, lap
+
+    def _smooth(nodes):
+        raw = cxy[nodes]
+        sc = _shortcut(G, raw, pref_clearance_m)
+        sm = _chaikin_safe(G, sc, chaikin_iters, body_clearance_m)
+        return raw, sc, _densify(sm, res * 0.5), int(chaikin_iters)
+
+    # The cell path is longer than the smoothed one (8-connected zig-zag, cut corners),
+    # so size the tour by the SMOOTHED length: rescale the raw target until it fits.
+    spacing = speed_mps / max(rate_hz, 1e-6)
+    target_raw = need * 1.03
+    for _attempt in range(4):
+        nodes, lap = _tour(target_raw)
+        raw, sc, path, used_iters = _smooth(nodes)
+        total = float(np.linalg.norm(np.diff(path, axis=0), axis=1).sum())
+        ok = (total >= need * 0.97) if close_loop else (total >= need)
+        if ok or lap + 1 >= max_sets:
+            break
+        target_raw *= 1.03 * need / max(total, 1e-6)
+    seg = np.linalg.norm(np.diff(path, axis=0), axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    total = float(cum[-1])
+    walk = total if close_loop else min(total, need)
+    n = int(walk / spacing) + 1
+    n = min(n, int(max_frames))
+    if n < min_frames:
+        raise RuntimeError(f"grid walk too short: {walk:.1f} m -> {n} frames (< {min_frames})")
+    tt = np.minimum(np.arange(n) * spacing, walk)
+    xy = np.column_stack([np.interp(tt, cum, path[:, 0]), np.interp(tt, cum, path[:, 1])])
+    eyes = np.column_stack([xy, np.full(n, cam_z)])
+    la = max(1, int(round(lookahead_m / spacing)))
+    yaw = rate_limited_yaw(eyes, rate_hz, max_yaw_rate_dps, lookahead=la)
+    poses = poses_from_yaw(eyes, yaw)
+
+    # Exact re-check against the mesh (not the grid): clearance and segment crossings.
+    chk = check_poses(scene, poses)
+    steps = np.degrees(np.abs(np.diff(yaw))) if n > 1 else np.zeros(1)
+    if debug:
+        print(f"[grid] path {total:.1f} m (target {need:.1f} m{', closed loop' if close_loop else ''}), "
+              f"{lap + 1} lap(s), {len(sc)} legs after shortcut, chaikin x{used_iters}; "
+              f"walked {walk:.1f} m at {spacing:.3f} m -> {n} frames; "
+              f"min clearance {chk['clear_min']:.2f} m, crossings {chk['n_cross']}, "
+              f"yaw step median {np.median(steps):.1f} / max {steps.max():.1f} deg")
+    if chk["n_cross"] or chk["clear_min"] < 0.5 * min_clearance_m:
+        raise RuntimeError(f"grid walk failed the mesh re-check: min clearance "
+                           f"{chk['clear_min']:.2f} m, {chk['n_cross']} crossing(s)")
+    if return_info:
+        return poses, dict(G=G, raw=raw, shortcut=sc, path=path, waypoints=cxy[wps], laps=lap + 1)
+    return poses
+
+
+def check_poses(scene, poses) -> dict:
+    """Exact mesh check of camera centres: min clearance, and how many frame-to-frame
+    segments pass THROUGH a surface."""
+    import open3d as o3d
+    c = np.asarray(poses)[:, :3, 3].astype(np.float32)
+    clear = scene.compute_distance(o3d.core.Tensor(c)).numpy()
+    n_cross = 0
+    if len(c) > 1:
+        d = c[1:] - c[:-1]
+        L = np.linalg.norm(d, axis=1)
+        u = d / np.maximum(L[:, None], 1e-9)
+        t = scene.cast_rays(o3d.core.Tensor(np.concatenate([c[:-1], u], 1).astype(np.float32)))["t_hit"].numpy()
+        n_cross = int((np.isfinite(t) & (t < L) & (L > 1e-6)).sum())
+    return dict(clear_min=float(clear.min()), clear_p5=float(np.percentile(clear, 5)),
+                n_cross=n_cross)
+
+
+def insert_dwells(poses: np.ndarray, rate_hz: float, n_stops: int, dwell_s: float,
+                  max_frames: int) -> np.ndarray:
+    """Stop-and-go from any moving trajectory: duplicate the pose at ``n_stops`` evenly
+    spaced interior frames for ``dwell_s`` seconds each."""
+    dwell_frames = max(1, int(round(dwell_s * rate_hz)))
+    n = len(poses)
+    if n < 3 or n_stops < 1:
+        return poses
+    stop_idx = sorted({int(round(x)) for x in np.linspace(0, n - 1, n_stops + 2)[1:-1]})
+    out = []
+    for i in range(n):
+        out.append(poses[i])
+        if i in stop_idx:
+            out.extend(poses[i].copy() for _ in range(dwell_frames))
+    return np.array(out[:int(max_frames)])
+
+
+def fit_floor_plane(scene, lo, hi, n_side: int = 48, tol_m: float = 0.03,
+                    min_headroom_m: float = 1.5, seed: int = 0):
+    """Floor plane (unit normal n with n_z > 0, point p0) from the LOWEST standable
+    surface in each column of an n_side x n_side grid (upward-facing, with headroom),
+    RANSAC + SVD refine. Returns (n, p0, inlier_fraction) or None.
+
+    Why: Replica room_2 is tilted 8.7 deg relative to its mesh Z axis (the other five
+    are 0.1-1.5 deg). A level camera then sees a sloping floor, its height above the
+    floor drifts by ~0.6 m along the walk (PRISM anchors metric scale on that height),
+    and only a 1 m strip of the floor is within tolerance of a single floor_z.
+    """
+    g = np.stack(np.meshgrid(np.linspace(lo[0], hi[0], n_side),
+                             np.linspace(lo[1], hi[1], n_side)), -1).reshape(-1, 2)
+    z_top = float(hi[2]) + 0.5
+    cols = _column_surfaces(scene, g, z_top)
+    P = []
+    for (x, y), col in zip(g, cols):
+        zs = [z for z, _ in col]
+        stand = [z for k, (z, nz) in enumerate(col)
+                 if nz > 0.9 and ((zs[k - 1] if k > 0 else z_top) - z) >= min_headroom_m]
+        if stand:
+            P.append((x, y, min(stand)))
+    P = np.asarray(P, float)
+    if len(P) < 20:
+        return None
+    rng = np.random.default_rng(seed)
+    best = (0, None)
+    for _ in range(600):
+        s = P[rng.choice(len(P), 3, replace=False)]
+        n = np.cross(s[1] - s[0], s[2] - s[0])
+        nn = np.linalg.norm(n)
+        if nn < 1e-6:
+            continue
+        n /= nn
+        if abs(n[2]) < 0.8:          # not a floor candidate (> ~37 deg)
+            continue
+        inl = np.abs((P - s[0]) @ n) < tol_m
+        if inl.sum() > best[0]:
+            best = (int(inl.sum()), inl)
+    if best[1] is None:
+        return None
+    Q = P[best[1]]
+    c = Q.mean(0)
+    n = np.linalg.svd(Q - c)[2][2]
+    n = n * np.sign(n[2])
+    return n, c, best[0] / len(P)
+
+
+def levelling_rotation(n) -> np.ndarray:
+    """Rotation matrix taking unit vector n onto +Z (Rodrigues)."""
+    n = np.asarray(n, float) / np.linalg.norm(n)
+    z = np.array([0.0, 0.0, 1.0])
+    v = np.cross(n, z)
+    s, c = np.linalg.norm(v), float(n @ z)
+    if s < 1e-12:
+        return np.eye(3)
+    K = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]]) / s
+    ang = np.arctan2(s, c)
+    return np.eye(3) + np.sin(ang) * K + (1 - np.cos(ang)) * (K @ K)

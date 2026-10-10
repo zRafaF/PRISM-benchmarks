@@ -84,9 +84,17 @@ def main():
     # room -> ~12 frames), clamp to a single batch window over all frames so a map is
     # still produced instead of nothing.
     n = len(frames)
-    ws = min(int(eng["window_size"]), n)
-    ov = min(int(eng["overlap"]), max(0, ws - 1))
-    if ws < int(eng["window_size"]):
+    # Window sweep (rerun-v3 pilot): PRISM_WINDOW / PRISM_OVERLAP override the engine
+    # window per arm via run_env, like PRISM_VOXEL_SIZE. Runners read config.yaml
+    # directly (no overlay), so an arm cannot change cfg["engine"] any other way.
+    win_cfg = int(_os.environ.get("PRISM_WINDOW", eng["window_size"]))
+    ov_cfg = int(_os.environ.get("PRISM_OVERLAP", eng["overlap"]))
+    if (win_cfg, ov_cfg) != (int(eng["window_size"]), int(eng["overlap"])):
+        print(f"[prism_runner] SWEEP override: window={win_cfg} overlap={ov_cfg} "
+              f"(cfg {eng['window_size']}/{eng['overlap']})")
+    ws = min(win_cfg, n)
+    ov = min(ov_cfg, max(0, ws - 1))
+    if ws < win_cfg:
         print(f"[prism_runner] short sequence ({n} frames) -> single batch window={ws} overlap={ov}")
     per_window = []
     t_prev = time.perf_counter()

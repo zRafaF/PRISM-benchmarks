@@ -97,7 +97,7 @@ def resolve_trajs(cfg: dict, cli_traj: str) -> list[str]:
 
     concrete = []
     for prefix, rates in families:
-        for r in rates:
+        for r in list(rates) + _derived_rates(tj, rates):
             for si in range(nseed):
                 concrete.append(f"{prefix}_{r}hz" + (f"_s{si}" if nseed > 1 else ""))
 
@@ -109,6 +109,52 @@ def resolve_trajs(cfg: dict, cli_traj: str) -> list[str]:
         return [c for c in concrete if c.startswith(cli_traj + "_")
                 or (cli_traj == "smooth" and c.startswith("synthetic_"))]
     return [cli_traj]                                  # a single concrete id or dataset_path
+
+
+def _derived_rates(tj: dict, rates) -> list:
+    """Rates in `trajectories.derive_rates_hz` that are an integer stride of a rendered
+    rate and not rendered themselves (see derived_source)."""
+    out = []
+    for d in tj.get("derive_rates_hz") or []:
+        if any(abs(float(d) - float(r)) < 1e-9 for r in rates):
+            continue
+        if any(float(r) > float(d) and abs(float(r) / float(d) - round(float(r) / float(d))) < 1e-6
+               for r in rates):
+            out.append(d)
+    return out
+
+
+def derived_source(cfg: dict, traj: str):
+    """(base_traj, stride) when `traj` is not rendered but cut from a denser render of
+    the SAME walk by keeping every stride-th frame, else None.
+
+    `trajectories.derive_rates_hz: [5.0, 2.0]` with `rates_hz: [10.0]` renders the walk
+    once at 10 Hz and derives synthetic_5.0hz (stride 2) and synthetic_2.0hz (stride 5).
+    The path is fixed in metres and the yaw limit in deg/s, so a strided 10 Hz walk is
+    the walk a 2 Hz render would produce — at a fifth of the render cost for the rate
+    study. The highest rendered rate with an integer ratio is the source."""
+    import re
+    tj = cfg["trajectories"]
+    m = re.match(r"^(?P<kind>[a-z]+)_(?P<rate>[0-9]*\.?[0-9]+)hz(?P<seed>_s\d+)?$", traj)
+    if not m:
+        return None
+    kind, rate, sfx = m.group("kind"), float(m.group("rate")), m.group("seed") or ""
+    if kind == "synthetic":
+        rates = tj.get("rates_hz", [2.0])
+    else:
+        kc = (tj.get("extra_kinds") or {}).get(kind) or {}
+        rates = kc.get("rates_hz", tj.get("rates_hz", [2.0]))
+    if any(abs(rate - float(r)) < 1e-9 for r in rates):
+        return None
+    if not any(abs(rate - float(d)) < 1e-9 for d in (tj.get("derive_rates_hz") or [])):
+        return None
+    cands = [float(r) for r in rates
+             if float(r) > rate and abs(float(r) / rate - round(float(r) / rate)) < 1e-6]
+    if not cands:
+        return None
+    base = max(cands)
+    base_id = f"{kind}_{[r for r in rates if abs(float(r) - base) < 1e-9][0]}hz{sfx}"
+    return base_id, int(round(base / rate))
 
 
 def traj_rate_hz(traj: str, default: float = 2.0) -> float:

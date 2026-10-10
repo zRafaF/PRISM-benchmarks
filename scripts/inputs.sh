@@ -56,11 +56,19 @@ pack)
   DS="$(active_ds)"; SC="$(frozen_scenes)"
   [ -n "$SC" ] || { echo "!! no frozen scenes — run 'make split' first"; exit 1; }
   mkdir -p "$DIR"
+  # Only the trajectories of the config in force (overlay included): a scene dir can
+  # also hold other tags' sequences (rerun-v2 next to pilot-v3), which must not ship.
+  TJ="$($RUN -c "from bench.config import load_config, resolve_trajs; print(' '.join(resolve_trajs(load_config('config.yaml'), 'all')))")"
   for sc in $SC; do
     [ -d "$EXP/$DS/$sc" ] || { echo "!! $EXP/$DS/$sc missing — 'make render export' first"; exit 1; }
-    echo ">> packing $sc"
+    TD=()
+    for tj in $TJ; do
+      [ -d "$EXP/$DS/$sc/$tj" ] || { echo "!! $EXP/$DS/$sc/$tj missing — render it first"; exit 1; }
+      TD+=("$EXP/$DS/$sc/$tj")
+    done
+    echo ">> packing $sc (${#TD[@]} trajectories)"
     tar -cf "$DIR/$sc.tar" --exclude='*/depth' --exclude='*/depth/*' --exclude='gt_mesh.ply' \
-        -C . "$EXP/$DS/$sc"
+        -C . "${TD[@]}"
   done
   cp config.local.yaml "$DIR/config.local.yaml"
   $RUN - "$DIR" "$DS" "$SC" <<'PY'

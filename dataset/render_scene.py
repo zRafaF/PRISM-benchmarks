@@ -25,8 +25,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench import cameras
-from bench.config import (REPO_ROOT, common_args, export_dir, load_config,
-                          resolve_scenes, resolve_trajs, traj_rate_hz,
+from bench.config import (REPO_ROOT, common_args, derived_source, export_dir,
+                          load_config, resolve_scenes, resolve_trajs, traj_rate_hz,
                           traj_kind, traj_seed)
 import trajectories as traj_mod
 
@@ -211,34 +211,149 @@ def _cache_texture(mesh, mesh_path: Path):
         print(f"[render] texture load skipped ({e}); falling back to shaded grey")
 
 
-def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path):
-    import open3d as o3d
-    import imageio.v2 as imageio
+def make_trajectory(cfg: dict, mesh, raycast, floor_z: float, traj: str,
+                    dataset: str = "replica", scene: str = "", debug: bool = True) -> np.ndarray:
+    """The camera poses `render_scene` renders for one traj id (no rendering).
 
+    Shared by the renderer, dataset/check_scenes.py and scripts/traj_audit.py so the
+    pre-flight checks exactly what will be rendered. `trajectories.synthetic_spline
+    .planner` picks the generator: `grid` (rerun-v3, collision-free by construction,
+    see trajectories.grid_walk) or `spline` (rerun-v2 and earlier: Catmull-Rom through
+    free waypoints, NOT checked between them — crosses walls in multi-room scenes).
+    """
+    kind = traj_kind(traj)   # synthetic | stopgo | loop | dataset_path (or 'dataset')
+    if kind not in ("synthetic", "stopgo", "loop"):
+        src = _load_dataset_poses(cfg, dataset, scene)
+        return traj_mod.resample_path(src, cfg["trajectories"]["n_frames"])
+    tj = cfg["trajectories"]
+    sp = tj["synthetic_spline"]
+    extra = tj.get("extra_kinds") or {}
+    n = tj["n_frames"]
+    cam_z = floor_z + cfg["camera"]["camera_height_m"]
+    rate = traj_rate_hz(traj, default=2.0)
+    seed = traj_seed(cfg, traj)                      # per-run seed (variance study)
+    speed = sp.get("speed_mps", 0.5)
+    ref_rate = float(tj.get("reference_rate_hz", 2.0))
+    hard_cap = int(tj.get("max_frames_hard", 1000))
+    path_target = (n - 1) * speed / max(ref_rate, 1e-6)
+    yaw_rate = float(sp.get("max_yaw_rate_dps", 45.0))
+    planner = sp.get("planner", "spline")
+    if debug:
+        print(f"[traj] kind={kind} rate={rate}Hz seed={seed} planner={planner}")
+    if planner == "grid":
+        # The loop family gets its own waypoint draw. With the same seed, a loop walk
+        # is the synthetic walk plus a final leg home (identical for ~90% of frames),
+        # and the two families would again be near-duplicates (rerun-v2: within 5 mm).
+        if kind == "loop":
+            seed = int(seed) + 100003
+        aabb = mesh.get_axis_aligned_bounding_box()
+        lo, hi = aabb.get_min_bound(), aabb.get_max_bound()
+        sg = extra.get("stopgo", {}) if kind == "stopgo" else {}
+        poses = traj_mod.grid_walk(
+            raycast, lo, hi, floor_z, cam_z, seed=seed, speed_mps=speed, rate_hz=rate,
+            path_target_m=path_target, close_loop=(kind == "loop"),
+            n_waypoints=int(sp.get("n_waypoints", 12)),
+            min_clearance_m=float(sp["min_clearance_m"]),
+            body_clearance_m=float(sp.get("body_clearance_m", 0.20)),
+            pref_clearance_m=float(sp.get("pref_clearance_m", 0.6)),
+            max_laps=int(sp.get("max_laps", 12)),
+            min_span_m=float(sp.get("min_span_m", 2.0)),
+            min_frames=int(sp.get("min_frames", 32)), max_frames=hard_cap,
+            max_yaw_rate_dps=yaw_rate,
+            lookahead_m=float(sp.get("lookahead_m", 0.5)),
+            res=float(sp.get("grid_res_m", 0.05)), debug=debug)
+        if kind == "stopgo":
+            poses = traj_mod.insert_dwells(poses, rate, int(sg.get("n_stops", 2)),
+                                           float(sg.get("dwell_s", 5.0)), hard_cap)
+        return poses
+    # ── legacy spline planner ──
+    # More waypoints = a longer circuit that covers more of the room. This is the
+    # FIRST lever for reaching the frame target (see synthetic_spline) and it costs
+    # nothing in realism, unlike laps (revisits) or a slower walk (shorter baseline).
+    wps = traj_mod.free_space_waypoints(
+        mesh, n_waypoints=int(sp.get("n_waypoints", 12)),
+        min_clearance_m=sp["min_clearance_m"], seed=seed,
+        probe_z=cam_z, floor_z=floor_z,
+        min_span_m=float(sp.get("min_span_m", 3.0)), debug=debug)
+    if kind == "stopgo":
+        sg = extra.get("stopgo", {})
+        return traj_mod.stop_and_go(wps, camera_height=cam_z, speed_mps=speed,
+                                    rate_hz=rate, max_frames=n,
+                                    n_stops=int(sg.get("n_stops", 2)),
+                                    dwell_s=float(sg.get("dwell_s", 5.0)),
+                                    max_yaw_rate_dps=yaw_rate)
+    # The PATH is what is held constant across rates, not the frame count.
+    return traj_mod.synthetic_spline(
+        wps, camera_height=cam_z, speed_mps=speed, rate_hz=rate,
+        max_frames=hard_cap, close_loop=(kind == "loop"),
+        path_target_m=path_target,
+        max_laps=int(sp.get("max_laps", 12)),
+        min_speed_mps=float(sp.get("min_speed_mps", 0.15)),
+        min_frames=int(sp.get("min_frames", 32)),
+        max_yaw_rate_dps=yaw_rate)
+
+
+def prepare_mesh(cfg: dict, dataset: str, mesh_path: Path, debug: bool = True):
+    """Load a scene mesh and bring it into the benchmark world frame: Z-up, and the
+    floor LEVEL. Shared by the renderer, check_scenes and traj_audit, so the pre-flight
+    checks the exact geometry that is rendered (and written out as gt_mesh.ply).
+
+    Levelling (rerun-v3): after the coarse up-axis swap, fit the floor plane and rotate
+    it to horizontal when it is tilted by more than `level_floor_min_deg` (default
+    0.2). Replica room_2 is tilted 8.7 deg; the others 0.1-1.5 deg. Set
+    datasets.<ds>.level_floor: false to reproduce rerun-v2 geometry.
+    """
+    import open3d as o3d
     mesh = _load_mesh_legacy(mesh_path)     # robust to quad/polygon PLYs (Replica)
     a0 = mesh.get_axis_aligned_bounding_box()
-    print(f"[mesh] {mesh_path}")
-    print(f"[mesh] verts={len(mesh.vertices)} tris={len(mesh.triangles)} "
-          f"has_vertex_colors={mesh.has_vertex_colors()}")
-    print(f"[mesh] pre-rotate AABB lo={np.round(a0.get_min_bound(),2)} "
-          f"hi={np.round(a0.get_max_bound(),2)}")
-
+    if debug:
+        print(f"[mesh] {mesh_path}")
+        print(f"[mesh] verts={len(mesh.vertices)} tris={len(mesh.triangles)} "
+              f"has_vertex_colors={mesh.has_vertex_colors()}")
+        print(f"[mesh] pre-rotate AABB lo={np.round(a0.get_min_bound(),2)} "
+              f"hi={np.round(a0.get_max_bound(),2)}")
     # Normalise to a Z-up world (our camera model, floor logic and PRISM engine all
     # assume Z-up). up_axis="auto" picks the shortest AABB extent as the up axis
     # (room height < footprint) — robust across datasets and per-scene frames.
-    up_axis = cfg["datasets"][dataset].get("up_axis", "auto")
+    dcfg = cfg["datasets"][dataset]
+    up_axis = dcfg.get("up_axis", "auto")
     ext = np.asarray(a0.get_extent())
     if up_axis == "auto":
         up_axis = "xyz"[int(np.argmin(ext))]
-        print(f"[mesh] auto up_axis -> '{up_axis}' (extents X/Y/Z = {np.round(ext,2)})")
+        if debug:
+            print(f"[mesh] auto up_axis -> '{up_axis}' (extents X/Y/Z = {np.round(ext,2)})")
     if up_axis == "y":       # Y -> Z  (rotate +90° about X)
         mesh.rotate(o3d.geometry.get_rotation_matrix_from_axis_angle([np.pi / 2, 0, 0]), (0, 0, 0))
     elif up_axis == "x":     # X -> Z  (rotate -90° about Y)
         mesh.rotate(o3d.geometry.get_rotation_matrix_from_axis_angle([0, -np.pi / 2, 0]), (0, 0, 0))
-    else:
+    elif debug:
         print("[mesh] up_axis=z — no rotation needed")
 
+    if dcfg.get("level_floor", True):
+        rc = o3d.t.geometry.RaycastingScene()
+        rc.add_triangles(o3d.t.geometry.TriangleMesh.from_legacy(mesh))
+        bb = mesh.get_axis_aligned_bounding_box()
+        fit = traj_mod.fit_floor_plane(rc, bb.get_min_bound(), bb.get_max_bound())
+        if fit is None:
+            print("[mesh] WARNING: floor plane fit failed — not levelled")
+        else:
+            n, p0, frac = fit
+            tilt = float(np.degrees(np.arccos(np.clip(n[2], -1, 1))))
+            if tilt > float(dcfg.get("level_floor_min_deg", 0.2)):
+                mesh.rotate(traj_mod.levelling_rotation(n), p0)
+            if debug:
+                print(f"[mesh] floor tilt {tilt:.2f} deg (normal {np.round(n, 3)}, "
+                      f"{100 * frac:.0f}% of columns on the plane) -> "
+                      f"{'levelled' if tilt > float(dcfg.get('level_floor_min_deg', 0.2)) else 'left as is'}")
     mesh.compute_vertex_normals()
+    return mesh
+
+
+def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path):
+    import open3d as o3d
+    import imageio.v2 as imageio
+
+    mesh = prepare_mesh(cfg, dataset, mesh_path)
     mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
 
     _cache_texture(mesh, mesh_path)         # for textured meshes without vertex colours
@@ -274,45 +389,7 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
               f"Using the raycast value.")
     print(f"[mesh] room extent XYZ = {np.round(hi-lo,2)} m")
 
-    kind = traj_kind(traj)   # synthetic | stopgo | loop | dataset_path (or 'dataset')
-    if kind in ("synthetic", "stopgo", "loop"):
-        sp = cfg["trajectories"]["synthetic_spline"]
-        extra = (cfg["trajectories"].get("extra_kinds") or {})
-        rate = traj_rate_hz(traj, default=2.0)
-        seed = traj_seed(cfg, traj)                      # per-run seed (variance study)
-        print(f"[traj] kind={kind} rate={rate}Hz seed={seed}")
-        # More waypoints = a longer circuit that covers more of the room. This is the
-        # FIRST lever for reaching the frame target (see synthetic_spline) and it costs
-        # nothing in realism, unlike laps (revisits) or a slower walk (shorter baseline).
-        wps = traj_mod.free_space_waypoints(
-            mesh, n_waypoints=int(sp.get("n_waypoints", 12)),
-            min_clearance_m=sp["min_clearance_m"], seed=seed,
-            probe_z=cam_z, floor_z=floor_z,
-            min_span_m=float(sp.get("min_span_m", 3.0)))
-        speed = sp.get("speed_mps", 0.5)
-        if kind == "stopgo":
-            sg = extra.get("stopgo", {})
-            poses = traj_mod.stop_and_go(wps, camera_height=cam_z, speed_mps=speed,
-                                         rate_hz=rate, max_frames=n,
-                                         n_stops=int(sg.get("n_stops", 2)),
-                                         dwell_s=float(sg.get("dwell_s", 5.0)),
-                                         max_yaw_rate_dps=float(sp.get("max_yaw_rate_dps", 45.0)))
-        else:
-            # The PATH is what is held constant across rates, not the frame count.
-            ref_rate = float(cfg["trajectories"].get("reference_rate_hz", 2.0))
-            hard_cap = int(cfg["trajectories"].get("max_frames_hard", 1000))
-            path_target = (n - 1) * speed / max(ref_rate, 1e-6)
-            poses = traj_mod.synthetic_spline(
-                wps, camera_height=cam_z, speed_mps=speed, rate_hz=rate,
-                max_frames=hard_cap, close_loop=(kind == "loop"),
-                path_target_m=path_target,
-                max_laps=int(sp.get("max_laps", 12)),
-                min_speed_mps=float(sp.get("min_speed_mps", 0.15)),
-                min_frames=int(sp.get("min_frames", 32)),
-                max_yaw_rate_dps=float(sp.get("max_yaw_rate_dps", 45.0)))
-    else:  # dataset_path — loaded by the dataset-specific downloader/importer
-        src = _load_dataset_poses(cfg, dataset, scene)
-        poses = traj_mod.resample_path(src, n)
+    poses = make_trajectory(cfg, mesh, raycast, floor_z, traj, dataset=dataset, scene=scene)
 
     cam_pos = poses[:, :3, 3]
     print(f"[traj] {traj}: {len(poses)} poses  cam_pos "
@@ -386,6 +463,60 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     print(f"[render] {dataset}/{scene}/{traj}: {len(poses)} frames (pano + pinhole variants)")
 
 
+def derive_strided(cfg: dict, dataset: str, scene: str, base: str, traj: str, stride: int):
+    """Cut `traj` from the rendered `base` sequence by keeping every `stride`-th frame
+    (frames renumbered from 0, GT poses subsampled the same way). Files are hard-linked
+    when the filesystem allows it, else copied."""
+    import os
+    import shutil
+    src = REPO_ROOT / "dataset" / "exports" / dataset / scene / base
+    dst = REPO_ROOT / "dataset" / "exports" / dataset / scene / traj
+    if not (src / "poses_gt.tum").exists():
+        raise FileNotFoundError(f"derive {traj}: base {src} not rendered")
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.mkdir(parents=True)
+
+    def _put(a: Path, b: Path):
+        b.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(a, b)
+        except OSError:
+            shutil.copy2(a, b)
+
+    lines = [ln for ln in (src / "poses_gt.tum").read_text().splitlines() if ln.strip()]
+    keep = list(range(0, len(lines), stride))
+    out = []
+    for new_i, old_i in enumerate(keep):
+        f = lines[old_i].split()
+        out.append(" ".join([str(new_i)] + f[1:]))
+    (dst / "poses_gt.tum").write_text("\n".join(out) + "\n")
+    for name in ("measured_camera_height.json", "gt_mesh.ply"):
+        if (src / name).exists():
+            _put(src / name, dst / name)
+    cams = [export_dir(dataset, scene, base, "pano", "")]
+    cams += [export_dir(dataset, scene, base, "pinhole", v) for v in cfg["camera"]["pinhole"]["variants"]]
+    for cdir in cams:
+        if not cdir.exists():
+            continue
+        rel = cdir.relative_to(src)
+        odir = dst / rel
+        odir.mkdir(parents=True, exist_ok=True)
+        if (cdir / "intrinsics.json").exists():
+            _put(cdir / "intrinsics.json", odir / "intrinsics.json")
+        for sub in ("rgb", "depth", "mask"):
+            if not (cdir / sub).exists():
+                continue
+            for new_i, old_i in enumerate(keep):
+                a = cdir / sub / f"{old_i:06d}.png"
+                if a.exists():
+                    _put(a, odir / sub / f"{new_i:06d}.png")
+    (dst / "derived_from.json").write_text(json.dumps(
+        {"base": base, "stride": stride, "n_frames": len(keep)}, indent=2))
+    print(f"[render] {dataset}/{scene}/{traj}: derived from {base} (stride {stride}) "
+          f"-> {len(keep)} frames")
+
+
 def _save_frame(dir_: Path, i: int, rgb: np.ndarray, depth: np.ndarray, mask: np.ndarray):
     import imageio.v2 as imageio
     name = f"{i:06d}"
@@ -444,8 +575,20 @@ def main():
             continue
         for scene in scenes:
             mesh_path = _find_mesh(cfg, dataset, scene)
-            for traj in resolve_trajs(cfg, args.traj):
+            trajs = resolve_trajs(cfg, args.traj)
+            derived = [(t, derived_source(cfg, t)) for t in trajs if derived_source(cfg, t)]
+            rendered = set()
+            for traj in trajs:
+                if derived_source(cfg, traj):
+                    continue
                 render_scene(cfg, dataset, scene, traj, mesh_path)
+                rendered.add(traj)
+            for traj, (base, stride) in derived:
+                base_dir = REPO_ROOT / "dataset" / "exports" / dataset / scene / base
+                if base not in rendered and not (base_dir / "poses_gt.tum").exists():
+                    render_scene(cfg, dataset, scene, base, mesh_path)
+                    rendered.add(base)
+                derive_strided(cfg, dataset, scene, base, traj, stride)
 
 
 def _find_mesh(cfg: dict, dataset: str, scene: str) -> Path:

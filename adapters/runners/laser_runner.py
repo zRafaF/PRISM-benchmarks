@@ -62,6 +62,13 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.bfloat16 if (device == "cuda" and torch.cuda.get_device_capability()[0] >= 8) else torch.float16
 
+    # LASER_WINDOW / LASER_OVERLAP: per-arm override (run_env). LASER's own evaluation
+    # (eval_launch.py @ the pinned commit) uses window 20 / overlap 5; the harness
+    # default is the shared streaming window (16/4).
+    import os as _os
+    laser_ws = int(_os.environ.get("LASER_WINDOW", stream["window_size"]))
+    laser_ov = int(_os.environ.get("LASER_OVERLAP", stream["overlap"]))
+    print(f"[laser_runner] window={laser_ws} overlap={laser_ov}")
     from pi3.models.pi3 import Pi3
     from inference_engine import StreamingWindowEngine
     from utils.load_fn import load_and_preprocess_images
@@ -69,7 +76,7 @@ def main():
     model = StreamingWindowEngine(
         Pi3.from_pretrained("yyfz233/Pi3").to(device),
         inference_device=device, dtype=dtype,
-        window_size=int(stream["window_size"]), overlap=int(stream["overlap"]),
+        window_size=laser_ws, overlap=laser_ov,
         cache_root=str(out / "_laser_cache"), depth_refine=True, top_conf_percentile=0.3,
     )
     model.eval()

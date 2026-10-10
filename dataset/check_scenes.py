@@ -41,72 +41,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import open3d as o3d
 
-from bench.config import (REPO_ROOT, load_config, resolve_scenes, resolve_trajs,
-                          traj_kind, traj_rate_hz, traj_seed)
+from bench.config import (REPO_ROOT, derived_source, load_config, resolve_scenes,
+                          resolve_trajs, traj_kind, traj_rate_hz, traj_seed)
 import trajectories as traj_mod
-from render_scene import _load_mesh_legacy           # same loader the renderer uses
-
-
-def _prepared_mesh(cfg, dataset, mesh_path):
-    """Load and Z-up-normalise exactly as render_scene.render_scene does.
-
-    Kept in step with the renderer deliberately: a pre-flight that prepares the mesh
-    differently from the real thing can pass while the real thing fails.
-    """
-    mesh = _load_mesh_legacy(mesh_path)
-    a0 = mesh.get_axis_aligned_bounding_box()
-    up_axis = cfg["datasets"][dataset].get("up_axis", "auto")
-    ext = np.asarray(a0.get_extent())
-    if up_axis == "auto":
-        up_axis = "xyz"[int(np.argmin(ext))]
-    if up_axis == "y":
-        mesh.rotate(o3d.geometry.get_rotation_matrix_from_axis_angle(
-            [np.pi / 2, 0, 0]), (0, 0, 0))
-    elif up_axis == "x":
-        mesh.rotate(o3d.geometry.get_rotation_matrix_from_axis_angle(
-            [0, -np.pi / 2, 0]), (0, 0, 0))
-    mesh.compute_vertex_normals()
-    return mesh, up_axis
+from render_scene import make_trajectory, prepare_mesh   # exactly what the renderer uses
 
 
 def _check_one(cfg, mesh, raycast, lo, hi, floor_z, cam_z, traj) -> dict:
-    """Build one trajectory and describe it. Never raises — records the failure."""
-    sp = cfg["trajectories"]["synthetic_spline"]
-    extra = cfg["trajectories"].get("extra_kinds") or {}
-    n_target = int(cfg["trajectories"]["n_frames"])
+    """Build one trajectory exactly as the renderer will (render_scene.make_trajectory)
+    and describe it. Never raises — records the failure. rerun-v3: also re-checks the
+    poses against the mesh (min clearance, frame-to-frame segments through a surface);
+    a collision fails the pair, so `make inputs` stops before rendering it."""
     kind = traj_kind(traj)
     rate = traj_rate_hz(traj, default=2.0)
     seed = traj_seed(cfg, traj)
     out = {"traj": traj, "kind": kind, "rate_hz": rate, "seed": seed,
            "ok": False, "n_frames": None, "path_span_m": None, "error": None}
     try:
-        wps = traj_mod.free_space_waypoints(
-            mesh, n_waypoints=int(sp.get("n_waypoints", 12)),
-            min_clearance_m=sp["min_clearance_m"], seed=seed,
-            probe_z=cam_z, floor_z=floor_z,
-            min_span_m=float(sp.get("min_span_m", 3.0)), debug=False)
-        if kind == "stopgo":
-            sg = extra.get("stopgo", {})
-            poses = traj_mod.stop_and_go(
-                wps, camera_height=cam_z, speed_mps=sp.get("speed_mps", 0.5),
-                rate_hz=rate, max_frames=n_target,
-                n_stops=int(sg.get("n_stops", 2)), dwell_s=float(sg.get("dwell_s", 5.0)),
-                max_yaw_rate_dps=float(sp.get("max_yaw_rate_dps", 45.0)))
-        else:
-            speed = sp.get("speed_mps", 0.5)
-            ref_rate = float(cfg["trajectories"].get("reference_rate_hz", 2.0))
-            hard_cap = int(cfg["trajectories"].get("max_frames_hard", 1000))
-            poses = traj_mod.synthetic_spline(
-                wps, camera_height=cam_z, speed_mps=speed,
-                rate_hz=rate, max_frames=hard_cap, close_loop=(kind == "loop"),
-                path_target_m=(n_target - 1) * speed / max(ref_rate, 1e-6),
-                max_laps=int(sp.get("max_laps", 12)),
-                min_speed_mps=float(sp.get("min_speed_mps", 0.15)),
-                min_frames=int(sp.get("min_frames", 32)),
-                max_yaw_rate_dps=float(sp.get("max_yaw_rate_dps", 45.0)))
+        poses = make_trajectory(cfg, mesh, raycast, floor_z, traj, debug=False)
         pos = np.asarray(poses)[:, :3, 3]
         span = float(np.linalg.norm(pos.max(0) - pos.min(0)))
-        out.update(ok=True, n_frames=len(poses), path_span_m=round(span, 2))
+        chk = traj_mod.check_poses(raycast, poses)
+        out.update(n_frames=len(poses), path_span_m=round(span, 2),
+                   clear_min_m=round(chk["clear_min"], 3), n_cross=chk["n_cross"])
+        min_c = float(cfg["trajectories"]["synthetic_spline"]["min_clearance_m"])
+        if chk["n_cross"] or chk["clear_min"] < 0.5 * min_c:
+            out["error"] = (f"collision: {chk['n_cross']} segment(s) through a surface, "
+                            f"min clearance {chk['clear_min']:.2f} m")
+        else:
+            out["ok"] = True
     except Exception as exc:                                    # noqa: BLE001
         out["error"] = f"{type(exc).__name__}: {exc}"
     return out
@@ -123,7 +86,8 @@ def main() -> int:
     sp = cfg["trajectories"]["synthetic_spline"]
     n_target = int(cfg["trajectories"]["n_frames"])
     min_frames = args.min_frames or int(sp.get("min_frames", 32))
-    trajs = resolve_trajs(cfg, "all")
+    # Derived (strided) rates are cut from a checked base render, not generated.
+    trajs = [t for t in resolve_trajs(cfg, "all") if not derived_source(cfg, t)]
 
     # Echo the config that is actually in force. A stale config.yaml on the GPU box (or
     # a config.local.yaml overlay) is otherwise invisible, and it is what silently kept
@@ -163,7 +127,7 @@ def main() -> int:
                                "error": "mesh missing", "trajs": []})
                 n_bad += 1
                 continue
-            mesh, up_axis = _prepared_mesh(cfg, dataset, mesh_path)
+            mesh = prepare_mesh(cfg, dataset, mesh_path)
             aabb = mesh.get_axis_aligned_bounding_box()
             lo, hi = aabb.get_min_bound(), aabb.get_max_bound()
             raycast = o3d.t.geometry.RaycastingScene()
@@ -174,7 +138,6 @@ def main() -> int:
                                                   candidates=[floor_p1], debug=True)
             floor_z = float(floor_ray) if floor_ray is not None else floor_p1
             cam_z = floor_z + cfg["camera"]["camera_height_m"]
-            print(f"  up_axis={up_axis}")
             print(f"  floor_z={floor_z:.2f} (raycast "
                   f"{'n/a' if floor_ray is None else f'{floor_ray:.2f}'}, "
                   f"p1 {floor_p1:.2f})  room={np.round(hi - lo, 1)}  cam_z={cam_z:.2f}")
@@ -197,7 +160,8 @@ def main() -> int:
                 else:
                     flag = "" if res["n_frames"] >= n_target else "  (< target)"
                     print(f"  [ok]   {traj:24s} {res['n_frames']:4d} frames, "
-                          f"span {res['path_span_m']:5.2f} m{flag}")
+                          f"span {res['path_span_m']:5.2f} m, min clearance "
+                          f"{res['clear_min_m']:.2f} m{flag}")
             report.append({"dataset": dataset, "scene": scene,
                            "floor_z": floor_z, "floor_z_raycast": floor_ray,
                            "floor_z_p1": floor_p1, "trajs": rows})

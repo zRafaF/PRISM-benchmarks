@@ -143,3 +143,38 @@ Hypotheses from the previous agent (verify, don't assume):
   with each method's published keyframing is the closer match to the published setups.
   Not decided.
 - Copies of the inspected frames: `C:\Dev\ualberta\_inspect\` (not in the repo).
+
+## rerun-v3 (2026-10-10): collision-free trajectories + pilot (uncommitted, for review)
+
+Findings (`scripts/traj_audit.py`, CPU ray casting, outputs in `results/traj_audit/`):
+- H1 confirmed. rerun-v2 apartments: 42 (apartment_0) / 22 (apartment_1) wall crossings
+  over 3 seeds, camera inside geometry at exactly the shared failure frames
+  (apartment_1 s0: 73-74, 141-144, 195-196, 264-267). Cause: the spline planner only
+  checked its waypoints; the curve between them cut through walls. room_0 seeds 1-2
+  passed 0.11 m from furniture (39 flagged frames). The other rooms were clean.
+- `loop_*` == `synthetic_*` to within 5 mm in rerun-v2 (laps made the appended loop
+  waypoints fall past the truncation point): half the matrix was duplicated.
+- Replica room_2 is tilted 8.7 deg w.r.t. its mesh Z (others 0.1-1.5 deg): level
+  camera, sloping floor, camera height above floor varying ~0.6 m along the walk.
+
+Changes:
+- `dataset/trajectories.py::grid_walk` (config `planner: grid`): walkable raster at
+  camera height (floor below, 0.30 m camera clearance, 0.20 m body clearance), Dijkstra
+  legs that keep to corridor centres, line-of-sight shortcut, safe Chaikin, exact mesh
+  re-check (raises on any crossing). Fresh waypoint set per lap, 2-opt tour order.
+  `loop` = walk ends at its start, own seed offset. All 36 sequences: 0 crossings,
+  min clearance >= 0.30 m. `planner: spline` reproduces old inputs.
+- `render_scene.prepare_mesh`: floor levelling (`level_floor`, default on) shared by
+  render / check_scenes / traj_audit; `make_trajectory` shared too.
+- `check_scenes` fails any collision -> `make inputs` stops before rendering.
+- Derived rates: `trajectories.derive_rates_hz` cuts lower rates from a dense render of
+  the same walk (stride), no extra rendering.
+- Runner overrides: `PRISM_WINDOW/PRISM_OVERLAP`, `LASER_WINDOW/LASER_OVERLAP`.
+- `inputs.sh pack` ships only the trajectories of the config in force.
+- Pilot: `config.pilot.yaml` + `scripts/pilot.sh` + `scripts/pilot_report.py`
+  (room_0, office_0, apartment_1; one 30 m walk at 10 Hz -> 5/2 Hz derived; p3_* arms).
+
+Still open: small rooms remain turn-heavy at 2 Hz (office_0 at the 22.5 deg/frame cap,
+room_0 ~16) — physical for 0.5 m/s in a furnished room; the pilot measures whether 5/10 Hz
+fixes it. Whether to keep the loop family. Settings (current): PRISM w16/o4, LASER 16/4
+(its own eval uses 20/5), VGGT-SLAM w32, min_disparity 0, loop closure on.

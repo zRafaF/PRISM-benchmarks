@@ -1,0 +1,60 @@
+# ============================================================================
+# rerun-v3 PILOT — small dense render to test the new trajectories and choose the
+# capture rate and PRISM window before re-rendering the full matrix.
+# ============================================================================
+# Overlay on config.yaml (+ config.local.yaml) via PRISM_CONFIG_OVERLAY; never edit
+# config.yaml for this. Driven by scripts/pilot.sh:
+#   PC : bash scripts/pilot.sh inputs     (audit gate -> render -> export -> pack)
+#        bash scripts/pilot.sh push       (HF: inputs/pilot-v3/)
+#   pod: bash scripts/pilot.sh pod        (fetch -> runs -> report -> HF results/pilot-v3/)
+#
+# What it answers:
+#   1. Do the grid-planner trajectories remove the shared failure frames? (apartment_1)
+#   2. Capture rate: the SAME 30 m walk at 10 / 5 / 2 Hz. Rendered ONCE at 10 Hz; 5 and
+#      2 Hz are every 2nd / 5th frame (trajectories.derive_rates_hz), so the rate is the
+#      only thing that changes.
+#   3. PRISM window/overlap at each rate (window 16 covers 8 s at 2 Hz but 1.6 s at 10 Hz).
+#   4. Baselines in their published regime: VGGT-SLAM's 50 px keyframing and LASER's
+#      20/5 window, which only make sense on dense input.
+# ============================================================================
+
+datasets:
+  seeds: [1234]                  # one seed -> traj ids without _sN (synthetic_10.0hz, ...)
+  replica:
+    # room_0: furnished living room (curvy path, 15-19 deg/frame at 2 Hz)
+    # office_0: smallest scene (yaw-rate-capped at 2 Hz)
+    # apartment_1: multi-room — every method failed at the same frames in rerun-v2
+    scenes: [room_0, office_0, apartment_1]
+
+trajectories:
+  n_frames: 121                  # at the 2 Hz reference: path = 120 x 0.25 m = 30 m
+  reference_rate_hz: 2.0
+  rates_hz: [10.0]               # rendered: 601 frames per scene
+  derive_rates_hz: [5.0, 2.0]    # cut from the 10 Hz render: 301 and 121 frames
+  extra_kinds:
+    loop: {rates_hz: []}         # no loop family in the pilot
+
+# Pilot arms. Named p3_* so they never collide with rerun-v2 results on the pod, and
+# BENCH_METHODS scopes the HF checkpoint/pack to them. Runners read config.yaml
+# directly, so every arm sets what it changes through run_env.
+ablations:
+  # ── defaults (the rerun-v2 settings) ──
+  - {name: p3_prism,        camera: pano,    env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: pilot, runner: prism,    align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_WINDOW: "16", PRISM_OVERLAP: "4"}}
+  - {name: p3_vggtslam,     camera: pinhole, env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: pilot, runner: vggtslam, run_env: {VGGTSLAM_MIN_DISPARITY: "0"}}
+  - {name: p3_laser,        camera: pinhole, env: submodules/LASER,      mode: stream, metric: false, role: pilot, runner: laser,    run_env: {LASER_WINDOW: "16", LASER_OVERLAP: "4"}}
+  # ── baselines in their published settings (meaningful on the dense 10 Hz input) ──
+  - {name: p3_vggtslam_kf50, camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: pilot, runner: vggtslam, run_env: {VGGTSLAM_MIN_DISPARITY: "50"}}
+  - {name: p3_laser_w20o5,  camera: pinhole, env: submodules/LASER,      mode: stream, metric: false, role: pilot, runner: laser,    run_env: {LASER_WINDOW: "20", LASER_OVERLAP: "5"}}
+  # ── PRISM window / overlap sweep ──
+  # VRAM at w16 was 13.9 GB; PanoVGGT adds ~0.16 GB/frame, so w64 is ~22 GB (< 32 GB).
+  - {name: p3_prism_w24o8,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: pilot, runner: prism, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_WINDOW: "24", PRISM_OVERLAP: "8"}}
+  - {name: p3_prism_w32o8,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: pilot, runner: prism, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_WINDOW: "32", PRISM_OVERLAP: "8"}}
+  - {name: p3_prism_w32o16, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: pilot, runner: prism, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_WINDOW: "32", PRISM_OVERLAP: "16"}}
+  - {name: p3_prism_w48o16, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: pilot, runner: prism, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_WINDOW: "48", PRISM_OVERLAP: "16"}}
+  - {name: p3_prism_w64o16, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: pilot, runner: prism, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_WINDOW: "64", PRISM_OVERLAP: "16"}}
+
+baselines:
+  run: false
+
+report:
+  label: "PILOT rerun-v3 — not for citation"

@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bench.config import common_args, export_dir, load_config, resolve_scenes, resolve_trajs
+from bench.config import (common_args, export_dir, load_config, resolve_scenes,
+                          resolve_trajs, traj_rate_hz)
 
 
 def _camera_models(cfg: dict) -> list[tuple[str, str]]:
@@ -49,7 +50,7 @@ def main():
                         "camera_model": camera_model, "variant": variant,
                         "n_frames": n,
                         "camera_height_m": cam_h,
-                        "fps_nominal": 2.0,
+                        "fps_nominal": traj_rate_hz(traj),
                         "seed": cfg["datasets"]["seed"],
                         "engine_echo": cfg["engine"],
                         "streaming": cfg["streaming"],
