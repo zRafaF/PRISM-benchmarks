@@ -18,6 +18,7 @@ upper bound (flagged in every report caption).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -351,6 +352,22 @@ def prepare_mesh(cfg: dict, dataset: str, mesh_path: Path, debug: bool = True):
     return mesh
 
 
+def _render_fingerprint(cfg: dict, traj: str, poses, mesh_path: Path) -> str:
+    """Hash of everything that determines a rendered sequence's pixels: the poses, the
+    camera models (incl. which pinhole variants apply to this traj), max_depth, the mesh
+    file. Used to skip sequences that are already rendered (render resume)."""
+    import hashlib
+    h = hashlib.sha256()
+    h.update(np.round(np.asarray(poses, dtype=np.float64), 5).tobytes())
+    variants = {k: v for k, v in cfg["camera"]["pinhole"]["variants"].items()
+                if variant_applies(cfg, k, traj)}
+    h.update(json.dumps({"pano": cfg["camera"]["pano"], "pinhole": variants,
+                         "max_depth": cfg["engine"]["max_depth"],
+                         "mesh": str(Path(mesh_path).name), "mesh_bytes": Path(mesh_path).stat().st_size},
+                        sort_keys=True, default=str).encode())
+    return h.hexdigest()
+
+
 def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path):
     import open3d as o3d
     import imageio.v2 as imageio
@@ -400,6 +417,22 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
 
     # GT lives in the trajectory dir (eval reads .../<dataset>/<scene>/<traj>/).
     out_root = REPO_ROOT / "dataset" / "exports" / dataset / scene / traj
+
+    # Resume: skip a sequence that was already rendered completely with exactly these
+    # poses and camera settings (render_done.json is written only after the last frame).
+    # Anything else — older renders, other poses, an interrupted render — is redone.
+    fp = _render_fingerprint(cfg, traj, poses, mesh_path)
+    done = out_root / "render_done.json"
+    if done.exists() and os.environ.get("RENDER_FORCE", "0") != "1":
+        try:
+            prev = json.loads(done.read_text())
+        except Exception:
+            prev = {}
+        n_pano = len(list((out_root / "pano" / "rgb").glob("*.png"))) if (out_root / "pano" / "rgb").exists() else 0
+        if prev.get("fingerprint") == fp and n_pano == len(poses):
+            print(f"[render] {dataset}/{scene}/{traj}: already rendered with these poses — skip "
+                  f"(RENDER_FORCE=1 to redo)")
+            return
     if out_root.exists():
         # Start clean: a re-render can produce fewer frames than the last one, and
         # export_inputs counts the PNGs on disk — stale frames would leak into n_frames.
@@ -467,6 +500,7 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
                                              cfg["engine"]["max_depth"])
             optical = cameras.radial_to_optical_z(radial, pin_dirs, intr.width, intr.height)
             _save_frame(vdir, i, rgb, optical, mask)
+    done.write_text(json.dumps({"fingerprint": fp, "n_frames": len(poses)}, indent=2))
     print(f"[render] {dataset}/{scene}/{traj}: {len(poses)} frames (pano + pinhole variants)")
 
 
