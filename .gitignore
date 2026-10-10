@@ -53,3 +53,4 @@ Thumbs.db
 uv.lock
 # make pod: env handed to the tmux pipeline (contains HF_TOKEN)
 .pod.env
+results_archive/

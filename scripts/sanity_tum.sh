@@ -29,6 +29,18 @@ TUM="$ROOT/dataset/raw/tum"
 ALL="360 desk desk2 floor plant room rpy teddy xyz"
 SEQS="${SANITY_SEQS:-$ALL}"
 PARTS="${SANITY_PARTS:-A B}"
+if [ "${1:-}" = "push" ]; then
+  # Publish the check (summary, both pipelines' poses and logs, provenance) to the HF
+  # dataset under sanity/tum_vggtslam/ — clouds excluded (large, not needed to verify).
+  _benv() { sed -n "s/^$1[[:space:]]*[?:]*=[[:space:]]*//p" bench.env 2>/dev/null | head -1; }
+  REPO="${INPUTS_HF_REPO:-$(_benv INPUTS_HF_REPO)}"
+  [ -f results/_sanity_tum/summary.csv ] || { echo "!! no results/_sanity_tum/summary.csv — run make sanity-tum"; exit 1; }
+  [ -f results/_sanity_tum/theirs_logs/rgbd_dataset_freiburg1_room_run1_w32.txt ] || \
+    { mkdir -p results/_sanity_tum/theirs_logs; cp submodules/VGGT-SLAM/logs/rgbd_dataset_freiburg1_*_run1_w32.txt results/_sanity_tum/theirs_logs/ 2>/dev/null || true; }
+  ${HF_CLI:-uvx --from 'huggingface_hub[cli]>=0.34' hf} upload "$REPO" results/_sanity_tum sanity/tum_vggtslam \
+      --repo-type dataset --exclude "*.ply" "*.pcd" "*_points*" --commit-message "VGGT-SLAM TUM sanity check (D29)"
+  exit 0
+fi
 OUT="$ROOT/results/_sanity_tum"
 mkdir -p "$TUM" "$OUT" logs
 exec > >(tee -a "logs/sanity_tum_$(date +%Y%m%d_%H%M%S).log") 2>&1
@@ -69,6 +81,7 @@ PY
   rm -f "$VS/logs/tum_results_w32.txt"
   ( cd "$VS" && PATH="$VS/.venv/bin:$SHIM:$PATH" bash "$SCRIPT" 32 )
   cp "$VS/logs/tum_results_w32.txt" "$OUT/theirs_tum_results_w32.csv"
+  mkdir -p "$OUT/theirs_logs" && cp "$VS"/logs/rgbd_dataset_freiburg1_*_run1_w32.txt "$OUT/theirs_logs/" 2>/dev/null || true
 fi
 
 if [[ " $PARTS " == *" B "* ]]; then
@@ -85,3 +98,9 @@ fi
 
 echo "== summary"
 $RUN scripts/sanity_tum_eval.py --out "$OUT" --seqs "$SEQS"
+{ echo "date: $(date -Is)"; echo "host: $(hostname)"
+  echo "benchmarks: $(git rev-parse HEAD)$(git diff --quiet || echo ' DIRTY')"
+  echo "VGGT-SLAM: $(git -C "$VS" rev-parse HEAD)"
+  command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
+} > "$OUT/provenance.txt"
+echo ">> publish with: make sanity-tum-push"

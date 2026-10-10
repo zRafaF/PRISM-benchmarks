@@ -6,8 +6,15 @@ for the paper: `paper_findings.md`.
 
 ## Order of a run
 1. PC: `make inputs && make inputs-push` (resumes per camera; only missing renders).
-2. Pod (inside `tmux`): `make sanity-tum` once per environment (VGGT-SLAM on TUM, D29),
-   then `make pod` (prep -> env check -> data -> precheck -> bench -> pack -> HF).
+2. Pod (inside `tmux`):
+   - `make sanity-tum` once per environment (VGGT-SLAM on TUM, D29), then
+     `make sanity-tum-push` (publishes it to HF `sanity/tum_vggtslam/`);
+   - a new tag (campaign) on a pod that ran an older one: `make pod-clean` — moves
+     `results/` to `results_archive/<old tag>_<time>/`, deletes the fetched inputs and the
+     data/precheck stage flags, stamps `results/.tag`. The bench stage refuses to run on a
+     `results/` stamped with another tag (old runs share method names and trajectory ids,
+     so they would be skipped as "done", and stale frames would be read);
+   - `make pod` (prep -> env check -> data -> precheck -> bench -> pack -> HF).
 3. PC: `make results-fetch results-merge eval-all publication`.
 
 ## Working conventions (from the rerun-v2/v3 sessions)

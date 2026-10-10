@@ -328,6 +328,8 @@ textured handheld video; our sequences are a robot walk at 0.5 m/s through
 low-texture rooms, where the pilot showed denser input does not help it.
 *Paper:* "We verified our VGGT-SLAM integration on TUM RGB-D fr1: 4.1 cm mean ATE through
 our harness, identical to the authors' evaluation script on the same build."
+Published for traceability on the HF dataset under `sanity/tum_vggtslam/` (summary,
+both pipelines' poses and logs, provenance; `make sanity-tum-push`).
 
 ## D30 — Public, gated Hugging Face dataset for traceability *(DECIDED 2026-10-10)*
 Inputs and results (`DoninhaD/prism-bench-inputs`) are made public so every paper

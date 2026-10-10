@@ -136,6 +136,15 @@ stage_precheck() {
 
 stage_bench() {
   [ -f logs/.data_ready ] || { echo "!! run the data stage first"; exit 1; }
+  # Never mix campaigns: results/ must be stamped with this run's tag (make pod-clean).
+  local tag="${INPUTS_TAG:-rerun-v2}"
+  if [ -f results/.tag ] && [ "$(cat results/.tag)" != "$tag" ]; then
+    echo "!! results/ belongs to tag '$(cat results/.tag)', this run is '$tag' — run 'make pod-clean' first"; exit 1
+  fi
+  if [ ! -f results/.tag ] && ls -d results/*/*/*/*/*/ >/dev/null 2>&1; then
+    echo "!! results/ holds runs with no tag stamp (an earlier campaign?) — run 'make pod-clean' first"; exit 1
+  fi
+  mkdir -p results && echo "$tag" > results/.tag
   say "bench: resume from the HF checkpoint, if any (finished runs are skipped)"
   bash scripts/results.sh sync-down || true
   say "bench: method matrix, sequential on one GPU (SKIP_EVAL=1, SKIP_RENDER=1)"

@@ -36,7 +36,7 @@ PYCHK    ?= python3
         pod pod-status pod-stop env-check replica replica-full inputs-pack inputs-push inputs-fetch \
         inputs-verify results-pack results-push results-fetch results-merge eval-all \
         inputs precheck progress watch \
-        traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report sanity-tum lost
+        traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report sanity-tum lost sanity-tum-push pod-clean
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -641,6 +641,11 @@ pilot-report: setup
 # lost       : tracking-continuity metrics (tracked %, loss events, distance to failure; D25)
 sanity-tum: setup
 	bash scripts/sanity_tum.sh
+sanity-tum-push:
+	bash scripts/sanity_tum.sh push
+# pod-clean : archive results/ and drop inputs/stage flags so a new tag starts uncontaminated
+pod-clean:
+	bash scripts/pod_clean.sh
 lost: setup
 	$(ORCH_RUN) scripts/lost_metrics.py --plot
 
