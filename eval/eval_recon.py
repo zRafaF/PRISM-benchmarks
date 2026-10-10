@@ -88,6 +88,14 @@ def _statistical_outlier_pct(pts, nb=20, std_ratio=2.0, sample=200000):
 
 def _gt_cloud(dataset, scene, traj, n_sample=400000):
     import open3d as o3d
+    # Real data (360Loc, D31) has no mesh: its GT is a point cloud fused from the
+    # dataset's depth maps (gt_cloud.ply), randomly subsampled to the same budget.
+    cloud_p = _export_base(dataset, scene, traj) / "gt_cloud.ply"
+    if cloud_p.exists():
+        pts = np.asarray(o3d.io.read_point_cloud(str(cloud_p)).points)
+        if len(pts) > n_sample:
+            pts = pts[np.random.default_rng(0).choice(len(pts), n_sample, replace=False)]
+        return pts
     mesh_p = _export_base(dataset, scene, traj) / "gt_mesh.ply"
     mesh = o3d.io.read_triangle_mesh(str(mesh_p))
     pcd = mesh.sample_points_uniformly(number_of_points=n_sample)
@@ -225,7 +233,8 @@ def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
     # The co-visibility mask comes from the ordinary pinhole trajectory, never from a
     # cube-face variant (4 images per timestep, D28): synthetic_fov first.
     pin_variants = sorted((p for p in (_export_base(dataset, scene, traj) / "pinhole").glob("*")
-                           if p.is_dir() and not (p / "faces.json").exists()),
+                           if p.is_dir() and not (p / "faces.json").exists()
+                           and (p / "depth").exists()),     # the mask needs GT depth
                           key=lambda p: (p.name != "synthetic_fov", p.name))
     # Cloud size / compactness (on the saved cloud; voxel-deduped identically for all).
     out = {"threshold_m": thr,

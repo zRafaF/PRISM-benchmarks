@@ -68,7 +68,7 @@ pack)
     done
     echo ">> packing $sc (${#TD[@]} trajectories)"
     tar -cf "$DIR/$sc.tar" --exclude='*/depth' --exclude='*/depth/*' --exclude='gt_mesh.ply' \
-        -C . "${TD[@]}"
+        --exclude='gt_cloud.ply' -C . "${TD[@]}"
   done
   cp config.local.yaml "$DIR/config.local.yaml"
   $RUN - "$DIR" "$DS" "$SC" <<'PY'

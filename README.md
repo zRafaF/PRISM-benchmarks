@@ -164,14 +164,14 @@ sequences, camera height, nadir mask).
 
 ```bash
 # PC
-make real-download          # scene zips from the 360Loc authors' server (hall: 7.1 GB)
+make real-download          # 360Loc atrium (indoor, static; 7.9 GB) from the authors' server
 make real-list              # sequences in each scene
 make real-inputs            # import -> pano + pinhole + cube views resampled from the real panorama -> pack
 make real-push              # imported frames -> HF (REAL_HF_REPO=<repo> for a separate/private repo)
 # pod (a fresh one, or one whose Replica run has finished)
 make real-pod               # PRISM, VGGT-SLAM, LASER, both cube variants -> table + HF results/real360-v1/
 # PC
-make real-fetch             # merge + print the table (ATE, metric scale, tracked %, loss events, fps)
+make real-fetch             # merge, score reconstruction vs the GT map, print the table
 ```
 
 ---

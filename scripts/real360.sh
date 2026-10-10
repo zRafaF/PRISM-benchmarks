@@ -93,6 +93,8 @@ pod)
 fetch)
   bash scripts/results.sh fetch
   bash scripts/results.sh merge
+  say "reconstruction scores vs the GT map (needs this PC's exports: gt_cloud.ply, pinhole depth)"
+  $RUN eval/eval_recon.py --config config.yaml || echo "!! eval_recon failed — trajectory metrics below are still valid"
   $RUN scripts/real360_report.py ;;
 report)
   $RUN scripts/real360_report.py ;;

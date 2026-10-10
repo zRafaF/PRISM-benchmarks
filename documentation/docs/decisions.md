@@ -429,6 +429,20 @@ First look at the real data (hall, 2026-10-10):
   the same blacked-out pixels as PRISM. Validated on a synthetic stand-in with random
   per-frame grip rotations: a pinhole rendered directly at the written GT pose matches
   the imported pinhole to 2.5-3.1/255 mean abs. difference.
+Scene choice and scoring (Rafael, 2026-10-10): **atrium only** — indoor and essentially
+static, so PRISM's indoor settings (max_depth 4.5 m, floor-based scale) apply and every
+run is scored against one fixed map. Dropped: hall (outdoor), concourse (crowded: moving
+people, no single static map), piatrium (half outdoor).
+How the comparison works without a released map: (1) trajectories vs the lidar GT poses
+(ATE, loss metrics, PRISM's metric scale) need no map; (2) for reconstruction, the
+importer rebuilds the GT map by fusing the reference sequence's 360 depth maps (rendered
+by the authors from their lidar map) with the GT poses — every 4th pixel, <= 10 m,
+2 cm voxels — into `_gt_map.ply` / `gt_cloud.ply`, and resamples the depth into the
+pinhole view for the co-visibility mask. `eval_recon.py` then scores every method's
+cloud against that map exactly as on Replica (Sim(3)/ICP alignment, F@5 cm in the mask).
+Stand-in check: fused map 10 mm median from the true surface (1024 px fake panoramas,
+cm-quantised depth), pinhole depth within 5 mm of a direct render, a perfect prediction
+scores F = 1.000.
 Unverified until the real data is downloaded: the folder layout of `mapping/` (use
 `make real-list`), frame spacing, and the presence/format of the point cloud.
 

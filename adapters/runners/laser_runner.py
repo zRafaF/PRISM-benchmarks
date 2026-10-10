@@ -106,12 +106,26 @@ def main():
     poses[:, :3, :] = extr[:, :3, :]            # c2w (pad 3x4 -> 4x4)
     _io.write_tum(out / "poses.tum", list(range(S)), poses)
 
-    pw, cw = [], []
-    for i in range(S):
-        d = np.squeeze(depth[i])
-        w, c = _unproject(d, intr[i], poses[i], images[i])
-        pw.append(w); cw.append(c)
-    pts, cols = fuse_pointmaps(pw, cw, cfg["engine"]["voxel_size"])
+    # Fuse in chunks: unprojecting every frame first and fusing once held all pixels of
+    # all frames in host RAM — fine for 300 pinhole frames, but the cube-face runs have
+    # 4x the images (1,200 on an apartment) and the kernel killed the process. Chunked
+    # voxel dedup gives the same cloud (one point per occupied voxel) in bounded memory.
+    vox = cfg["engine"]["voxel_size"]
+    pts = np.zeros((0, 3), np.float32)
+    cols = None
+    CH = 32
+    for s0 in range(0, S, CH):
+        pw, cw = [], []
+        for i in range(s0, min(S, s0 + CH)):
+            d = np.squeeze(depth[i])
+            w, c = _unproject(d, intr[i], poses[i], images[i])
+            pw.append(w.astype(np.float32)); cw.append(c.astype(np.float32))
+        p_, c_ = fuse_pointmaps(pw, cw, vox)
+        del pw, cw
+        if cols is None:
+            pts, cols = p_, c_
+        else:
+            pts, cols = fuse_pointmaps([pts, p_], [cols, c_], vox)
     _io.write_cloud(out / "cloud.ply", pts, cols)
     cube = _io.collapse_cube_faces(Path(args.in_dir), out)     # D28: per-timestep poses
     (out / "arm_config.json").write_text(json.dumps(

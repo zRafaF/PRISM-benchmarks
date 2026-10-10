@@ -18,18 +18,21 @@ datasets:
   loc360:
     kind: real_pano
     root: dataset/raw/360loc     # <root>/<scene>/... as unzipped from 360Loc
-    # 360Loc has 4 scenes, one zip each (make real-download fetches the ones listed):
-    #   atrium    indoor, highly symmetric / repetitive          7.9 GB
-    #   concourse indoor, large space with many moving people    4.4 GB
-    #   hall      OUTDOOR courtyard between dormitory buildings  7.1 GB (downloaded first)
-    #   piatrium  indoor atrium + outdoor piazza                 7.1 GB (not used)
-    # Paper: the two indoor scenes, plus hall as the outdoor case.
-    scenes: [atrium, concourse, hall]
+    # 360Loc has 4 scenes (one zip each). Only ATRIUM is used: indoor and essentially
+    # static, so PRISM's indoor settings (max_depth 4.5 m, floor-based scale) apply and
+    # every sequence can be scored against one fixed map. Excluded: hall (outdoor
+    # courtyard), concourse (indoor but crowded: moving people, no single static map),
+    # piatrium (half outdoor).
+    scenes: [atrium]
     # traj id -> sequence folder inside the scene (relative path; `list` shows them).
-    # `mapping` = the daytime reference sequence (540 images in hall). If the scene
+    # `mapping` = the daytime reference sequence (581 images in atrium). If the scene
     # stores it in sub-folders, point at the one you want, e.g. mapping/<name>.
-    # More sequences per scene (longer, different routes; GT in each folder) can be added,
-    # e.g. `day1: query_360/daytime_360_1` — and to trajectories.sequences below.
+    # Only the reference sequence ships 360 depth maps, from which the GT map is built
+    # (gt_map below). More daytime sequences of the same scene (query_360/daytime_360_1,
+    # _2: other routes, same map coordinates) can be added as e.g. `day1:
+    # query_360/daytime_360_1` and to trajectories.sequences — import `ref` first so the
+    # GT map exists; their reconstruction is then scored against that map, but without
+    # depth maps of their own they get no co-visibility mask (full-360 score only).
     sequences:
       ref: mapping
     # Frames used: the longest continuous segment (a jump > max_step_m, default
@@ -40,7 +43,7 @@ datasets:
     max_step_m: null
     # Camera height above the floor (PRISM's metric anchor). null = from the dataset's
     # 360 depth maps (straight-down depth), else a point cloud; set a number to override.
-    # hall: ~1.9 m (the rig is held above the operator's head).
+    # (hall measured ~1.9 m: the rig is held above the operator's head.)
     camera_height_m: null
     # 360Loc depth maps are 16-bit PNG in centimetres (checked: two frames' depth clouds
     # align under the GT poses at 0.01, not at 0.005 or 0.02). Used for the camera height.
@@ -53,6 +56,13 @@ datasets:
     # align_heading: always at the back). Blacked out in the panorama before any view is
     # resampled, and invalid in every mask — same pixels lost for every method.
     # Sectors in degrees from the back direction; latitudes in degrees (0 = horizon).
+    # GT reference map for the reconstruction scores: the 360Loc depth maps are rendered
+    # from the authors' lidar map, so fusing them with the GT poses rebuilds that map
+    # (every pixel_step-th pixel, up to max_range_m from each camera, voxel_m dedup).
+    gt_map:
+      pixel_step: 4
+      max_range_m: 10.0
+      voxel_m: 0.02
     operator_mask:
       back_halfwidth_deg: 55     # head + torso: back +-55 deg, below top_lat_deg
       top_lat_deg: -8

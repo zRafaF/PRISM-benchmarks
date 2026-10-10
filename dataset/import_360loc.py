@@ -241,6 +241,17 @@ def operator_mask(H: int, W: int, m: dict) -> np.ndarray:
     return out
 
 
+def _sample_nearest(img: np.ndarray, dirs: np.ndarray, out_hw) -> np.ndarray:
+    """Nearest-neighbour lookup (for depth: never blend across a depth edge)."""
+    H, W = img.shape[:2]
+    x, y, z = dirs[:, 0], dirs[:, 1], dirs[:, 2]
+    lon = np.arctan2(x, z)
+    lat = np.arcsin(np.clip(-y / np.linalg.norm(dirs, axis=1), -1, 1))
+    u = np.rint((lon + np.pi) / (2 * np.pi) * W - 0.5).astype(int) % W
+    v = np.clip(np.rint((np.pi / 2 - lat) / np.pi * H - 0.5).astype(int), 0, H - 1)
+    return img[v, u].reshape(out_hw)
+
+
 def _sample(pano: np.ndarray, dirs: np.ndarray, out_hw) -> np.ndarray:
     """Bilinear lookup of camera-frame ray directions in an equirect image (our / 360Loc
     convention), horizontally wrapped."""
@@ -297,7 +308,38 @@ def _frame(args):
             fn = f"{len(rots) * i + k:06d}.png" if v["faces"] else nm
             imageio.imwrite(Path(v["dir"]) / "rgb" / fn, img)
             imageio.imwrite(Path(v["dir"]) / "mask" / fn, np.where(msk > 127, 255, 0).astype(np.uint8))
-    return i
+
+    # GT depth (if the sequence has 360Loc depth maps): pinhole depth for the co-visibility
+    # mask of the reconstruction scores, and this frame's share of the GT reference map.
+    pts = None
+    dd = j.get("depth_dir")
+    if dd:
+        dp = Path(dd) / (Path(src).stem + ".png")
+        if dp.exists():
+            depth = imageio.imread(dp).astype(np.float32) * float(j["depth_scale"])   # metres, radial
+            # (a) map points, from the ORIGINAL (un-rotated) depth and pose
+            stp = int(j["map_step"])
+            ds_ = depth[::stp, ::stp]
+            dirs = cameras.equirect_rays_cam(ds_.shape[1], ds_.shape[0])
+            r = ds_.reshape(-1)
+            ok = (r > 0.1) & (r < float(j["map_range"]))
+            T = np.asarray(j["P_orig"][i])
+            pw_ = (dirs[ok] * r[ok, None]) @ T[:3, :3].T + T[:3, 3]
+            vk = np.floor(pw_ / float(j["map_voxel"])).astype(np.int64)
+            _, first = np.unique(vk, axis=0, return_index=True)
+            pts = pw_[first].astype(np.float32)
+            # (b) depth for the ordinary pinhole views (cube faces are not used for masks)
+            if shift:
+                depth = np.roll(depth, -shift, axis=1)
+            for v in j["views"]:
+                if v["faces"]:
+                    continue
+                rad = _sample_nearest(depth, v["dirs"], (v["h"], v["w"]))
+                zc = (v["dirs"][:, 2] / np.linalg.norm(v["dirs"], axis=1)).reshape(v["h"], v["w"])
+                mm = np.clip(rad * zc * 1000.0, 0, 65535).astype(np.uint16)
+                (Path(v["dir"]) / "depth").mkdir(exist_ok=True)
+                imageio.imwrite(Path(v["dir"]) / "depth" / nm, mm)
+    return i, pts
 
 
 def import_sequence(cfg, ds: str, scene: str, traj: str, seq_rel: str, workers: int):
@@ -355,6 +397,7 @@ def import_sequence(cfg, ds: str, scene: str, traj: str, seq_rel: str, workers: 
     # columns of the source image so pixels and GT agree exactly.
     from PIL import Image
     W_src = Image.open(imgs[0]).size[0]
+    P_orig = P.copy()                       # depth maps live in the original camera frames
     if dcfg.get("align_heading", True):
         yaw = heading_yaw(P, int(dcfg.get("heading_smooth_frames", 5)))
         shifts = np.rint(yaw / (2 * np.pi) * W_src).astype(int) % W_src
@@ -425,20 +468,61 @@ def import_sequence(cfg, ds: str, scene: str, traj: str, seq_rel: str, workers: 
         (vdir / "intrinsics.json").write_text(json.dumps(intr.to_json(), indent=2))
         views.append({"dir": str(vdir), "w": intr.width, "h": intr.height, "faces": faces,
                       "dirs": cameras.pinhole_rays_cam(intr).astype(np.float32)})
+    gm = dcfg.get("gt_map") or {}
+    has_depth = (seq_dir / "depth").exists()
     job = {"pano_dir": str(pdir), "pano_wh": (pw, ph), "pano_mask": pmask, "views": views,
-           "shifts": shifts.tolist(), "op_mask": op_full, "valid_full": valid_full}
+           "shifts": shifts.tolist(), "op_mask": op_full, "valid_full": valid_full,
+           "depth_dir": str(seq_dir / "depth") if has_depth else None,
+           "depth_scale": float(dcfg.get("depth_scale", 0.01)), "P_orig": P_orig.tolist(),
+           "map_step": int(gm.get("pixel_step", 4)), "map_range": float(gm.get("max_range_m", 10.0)),
+           "map_voxel": float(gm.get("voxel_m", 0.02))}
     work = list(enumerate(map(str, imgs)))
+    vox = float(job["map_voxel"])
+    acc, merged = [], np.zeros((0, 3), np.float32)
+
+    def _merge(arrs, base):
+        a = np.concatenate([base] + arrs) if arrs else base
+        if not len(a):
+            return a
+        k = np.floor(a / vox).astype(np.int64)
+        _, first = np.unique(k, axis=0, return_index=True)
+        return a[first]
+
+    def _take(res, n):
+        nonlocal acc, merged
+        if res[1] is not None:
+            acc.append(res[1])
+        if len(acc) >= 40:
+            merged = _merge(acc, merged); acc = []
+        if n % 50 == 0 or n == len(work):
+            print(f"[360loc]   {n}/{len(work)} frames")
+
     if workers > 1:
         with ProcessPoolExecutor(workers, initializer=_init, initargs=(job,)) as ex:
-            for n, _ in enumerate(ex.map(_frame, work, chunksize=4), 1):
-                if n % 50 == 0 or n == len(work):
-                    print(f"[360loc]   {n}/{len(work)} frames")
+            for n, res in enumerate(ex.map(_frame, work, chunksize=4), 1):
+                _take(res, n)
     else:
         _init(job)
         for n, w in enumerate(work, 1):
-            _frame(w)
-            if n % 50 == 0 or n == len(work):
-                print(f"[360loc]   {n}/{len(work)} frames")
+            _take(_frame(w), n)
+    merged = _merge(acc, merged)
+
+    # GT reference map (decisions D31): the 360Loc depth maps are rendered from the
+    # authors' lidar map, so fusing them with the GT poses rebuilds that map where the
+    # reference sequence saw it. Built from the first sequence that has depth maps and
+    # cached per scene; every sequence of the scene is scored against the same map.
+    scene_map = ROOT / "dataset" / "exports" / ds / scene / "_gt_map.ply"
+    import open3d as o3d
+    if len(merged):
+        pc = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(merged.astype(np.float64)))
+        o3d.io.write_point_cloud(str(scene_map), pc)
+        print(f"[360loc] GT map: {len(merged)} points ({vox} m voxels, <= {job['map_range']} m "
+              f"from each camera) -> {scene_map.relative_to(ROOT)}")
+    if scene_map.exists():
+        shutil.copy2(scene_map, out / "gt_cloud.ply")
+    else:
+        print(f"[360loc] NOTE: no GT map for {scene} yet (no depth maps in this sequence; import "
+              f"the reference sequence first) — reconstruction cannot be scored for {traj}")
     (out / "source.json").write_text(json.dumps({
         "dataset": "360Loc (Huang et al., CVPR 2024)", "scene": scene,
         "sequence": str(seq_dir.relative_to(scene_dir)),
