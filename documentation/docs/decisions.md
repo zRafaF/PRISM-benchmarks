@@ -281,22 +281,33 @@ no RTX 5090 (sm_120) kernels, so it needs a rebuild on a newer PyTorch. Revisit 
 reviewer asks.
 
 ## D28 — Baselines on the 360 deg data as cube faces *(DECIDED 2026-10-10, mandatory)*
-The control that separates the 360 deg input from the engine. Variant `cube4`: the same
-capture rendered as 4 square 90 deg pinhole faces per timestep (front, right, back,
-left — the horizontal ring PanoVGGT/PRISM and Pi3 cubemaps use), 512x512, interleaved
-in one folder (image 4t+k = face k of timestep t; `faces.json` stores the face
-rotations). Arms `vggtslam_cube` (submap 64 images = 16 timesteps) and `laser_cube`
-(window 32 / overlap 8 images = 8 / 2 timesteps; boundaries on timestep boundaries),
-seed 0. Each face is a frame to the method; per-face poses are collapsed to one pose per
-timestep (front face) and the runners record rig consistency (how much the 4 faces'
-implied body orientations / centres disagree — a free diagnostic of how well a pinhole
-method exploits the rig). `n_frames` counts timesteps, so fps compares with PRISM per
-360 deg capture (the timing comparison: 4x the images per timestep).
+The control that separates the 360 deg input from the engine: the same captures given to
+the pinhole baselines as 4 square pinhole faces per timestep (front, right, back, left —
+the horizontal ring of a cubemap; PanoVGGT also uses cubemaps with Pi3), 512x512,
+interleaved in one folder (image 4t+k = face k of timestep t; `faces.json` stores face
+rotations and width). Seed 0. Two variants, both run by every `camera: cube` arm:
+- `cube4` — `face_overlap_deg: 0`: plain 90 deg cubemap. The faces of one timestep touch
+  only at the seams, so they can be linked only through neighbouring timesteps.
+- `cube4_o20` — `face_overlap_deg: 20`: 110 deg faces, neighbours share 20 deg, so the
+  faces of a timestep can be matched directly — the fairest chance for a pinhole method.
+  Comparing the two shows whether the seams are what limits them.
+Arms `vggtslam_cube` (submap 64 images = 16 timesteps) and `laser_cube` (window 32 /
+overlap 8 images = 8 / 2 timesteps; boundaries on timestep boundaries). Each face is a
+frame to the method; per-face poses are collapsed to one pose per timestep (front face),
+and the runners record rig consistency (how much the faces' implied body orientations /
+centres disagree — a diagnostic of how well a pinhole method exploits the rig).
+`n_frames` counts timesteps, so fps compares with PRISM per 360 deg capture (4x the
+images per timestep: the timing comparison).
 Caveats to state: the methods do not know the faces share an optical centre (no rig
-constraint), VGGT-SLAM's 1-frame submap overlap can split a timestep's faces; the
-window sizes are image budgets chosen to fit 32 GB, not tuned.
-*Paper:* "To separate the panoramic input from the engine, the pinhole baselines are
-also given the same 360 deg captures as four 90 deg cube faces per timestep."
+constraint); VGGT-SLAM's 1-frame submap overlap can split a timestep's faces; the window
+sizes are image budgets chosen to fit 32 GB, not tuned.
+Run order: the first rerun-v3 pod run has `cube4` (90 deg) only — the inputs were
+rendered before the overlap variant existed. `cube4_o20` is added afterwards: the
+renderer resumes per camera, so only that variant is rendered (seed 0), then the cube
+arms run on it.
+*Paper:* "To separate the panoramic input from the engine, the pinhole baselines are also
+given the same 360 deg captures as four pinhole views per timestep, both as a plain
+cubemap (90 deg faces) and with 20 deg overlap between neighbouring views (110 deg)."
 
 ## D29 — VGGT-SLAM sanity check on TUM *(DECIDED 2026-10-10)*
 `scripts/sanity_tum.sh` (`make sanity-tum`): VGGT-SLAM on the 9 TUM fr1 sequences of
@@ -305,6 +316,52 @@ its own evaluation, published settings (w=32, min_disparity 50, loop closure on)
 (B) the same sequences through our runner (`scripts/tum_to_export.py`) — checks the
 harness. Run it first on the pod; if A does not match the paper or B does not match A,
 fix that before the matrix.
+**Result (2026-10-10, RTX 5090 pod):** PASSED. Mean ATE over the 9 fr1 sequences:
+A (their script) 4.1 cm, B (our runner) 4.1 cm; per sequence identical within 0.1 cm
+(360 5.0, desk 2.7, desk2 2.9, floor 10.0/9.9, plant 2.5, room 6.4, rpy 2.6, teddy
+3.5/3.6, xyz 1.4). That is at or below the 1.0 paper's ~5.3 cm (SL(4), w=32), as
+expected for the pinned 2.0 code. The install and our harness reproduce VGGT-SLAM on
+its own data, so its errors on the Replica renders (22-164 cm, D22) are the method in
+that setting, not the benchmark. Note for the paper: on TUM (30 fps) its 50 px
+keyframing keeps 7-14% of frames (54/613 desk ... 186/1362 room) — dense, slow,
+textured handheld video; our sequences are a robot walk at 0.5 m/s through
+low-texture rooms, where the pilot showed denser input does not help it.
+*Paper:* "We verified our VGGT-SLAM integration on TUM RGB-D fr1: 4.1 cm mean ATE through
+our harness, identical to the authors' evaluation script on the same build."
+
+## D30 — Public, gated Hugging Face dataset for traceability *(DECIDED 2026-10-10)*
+Inputs and results (`DoninhaD/prism-bench-inputs`) are made public so every paper
+number traces back to its frames, poses and logs. Replica's terms
+(https://github.com/facebookresearch/Replica-Dataset/blob/main/LICENSE) allow using,
+modifying and publishing the data for non-commercial research or education, but sharing
+only with people who first agree to be bound by the terms — and the results packs
+contain copies of the Replica meshes. So the repo is public **and gated**: visitors
+accept the Replica terms before downloading. Card: `documentation/hf/README.md`;
+`scripts/hf_publish.py` uploads it, enables gating, then flips the repo public.
+(Not legal advice; the PanoVGGT weights bucket is a separate repo.)
+
+## D31 — A small real 360 deg dataset for the harness *(PROPOSED 2026-10-10)*
+Need: real equirectangular sequences with GT poses, indoor, small enough to add quickly
+(not KITTI-360). Candidates checked:
+- **360Loc** (CVPR 2024; https://huajianup.github.io/research/360Loc/, data via
+  https://github.com/HuajianUP/360Loc) — **recommended.** 4 campus scenes (atrium,
+  concourse, hall: indoor; piatrium: indoor + outdoor piazza), 360 deg equirectangular
+  6144x3072, 18 sequences (reference 491-632 images per scene; day and night queries up
+  to ~1,200), GT from lidar SLAM + lidar bundle adjustment (cm level), reference point
+  cloud + TSDF mesh + depth for the reference images (so reconstruction can be scored
+  too), poses in COLMAP convention (`name x y z qw qx qy qz`). Its own tools generate
+  pinhole and fisheye views from the 360 images — the same "same data, other camera"
+  control as our cube faces. To check when adding: whether images are a continuous,
+  ordered stream and their spacing; camera height above the floor (needed for PRISM's
+  metric scale — measurable from GT poses + mesh); no licence is stated, so link to the
+  source instead of re-hosting.
+- Hilti-Trimble-Oxford 2026 (https://hilti-trimble-challenge.com/dataset-2026) — 30
+  sequences x ~180 s, Insta360 ONE RS 1-inch at 30 Hz, lidar-inertial GT, construction
+  site (robot-like). Raw dual-fisheye (stitching needed) and much larger: a second step.
+- ORBIT / ORBIT++ (360 deg video SfM) — rejected: pseudo-GT from SfM, perspective crops.
+Plan: one indoor 360Loc scene (hall or atrium reference sequence) through a
+`dataset/import_360loc.py` that writes our export layout (pano downscaled to 1036x518,
+cube faces from the pano, GT poses), then the normal adapters.
 
 ## Conflict note (brief vs. 05)
 05 marked the ScanNet-render pipeline "build deferred" and prioritised perf + lab

@@ -86,16 +86,28 @@ camera:
       real_intrinsics:       # reuse the dataset's own perspective K when it has one
         use_dataset_k: true
       # rerun-v3 (decisions D28): the SAME 360 deg capture given to the pinhole baselines
-      # as 4 square 90 deg cube faces per timestep (front/right/back/left), interleaved
+      # as 4 square cube faces per timestep (front/right/back/left), interleaved
       # 4t+k in one folder. Answers "is it the 360 deg data or the engine?" and gives the
       # pinhole methods the view behind them. Methods with `camera: cube` read it; their
       # per-face poses are collapsed to one pose per timestep (front face). Rendered for
       # seed 0 only (like the other limited-seed arms) — 4 x 512^2 px per timestep.
+      # Two cube variants (D28). face_overlap_deg = overlap between neighbouring faces;
+      # face width = 360/cube_faces + face_overlap_deg.
+      #   cube4     : 0  -> 90 deg faces, a plain cubemap (faces of one timestep touch only
+      #               at the seams; linked only through the previous/next timestep)
+      #   cube4_o20 : 20 -> 110 deg faces (neighbours share 20 deg; can be matched directly)
+      # Every `camera: cube` arm runs on both; results land in .../<traj>/<variant>/.
       cube4:
         cube_faces: 4
         width: 512
         height: 512
-        fov_deg: 90
+        face_overlap_deg: 0
+        seeds: [0]
+      cube4_o20:
+        cube_faces: 4
+        width: 512
+        height: 512
+        face_overlap_deg: 20
         seeds: [0]
   camera_height_m: 1.7       # PRISM metric-scale anchor (known robot camera height)
 

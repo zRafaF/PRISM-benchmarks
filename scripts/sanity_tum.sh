@@ -33,13 +33,20 @@ OUT="$ROOT/results/_sanity_tum"
 mkdir -p "$TUM" "$OUT" logs
 exec > >(tee -a "logs/sanity_tum_$(date +%Y%m%d_%H%M%S).log") 2>&1
 
-echo "== download TUM fr1 ($SEQS)"
+echo "== download TUM fr1 ($SEQS) — ~5 GB from cvg.cit.tum.de, all in parallel"
+pids=()
 for s in $SEQS; do
   d="rgbd_dataset_freiburg1_$s"
-  [ -f "$TUM/$d/groundtruth.txt" ] && continue
-  wget -q -c "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/$d.tgz" -O "$TUM/$d.tgz"
-  tar -xzf "$TUM/$d.tgz" -C "$TUM" && rm -f "$TUM/$d.tgz"
+  [ -f "$TUM/$d/groundtruth.txt" ] && { echo "   $d: present"; continue; }
+  ( wget -c -nv "https://cvg.cit.tum.de/rgbd/dataset/freiburg1/$d.tgz" -O "$TUM/$d.tgz" \
+      && tar -xzf "$TUM/$d.tgz" -C "$TUM" && rm -f "$TUM/$d.tgz" && echo "   $d: done" ) &
+  pids+=($!)
 done
+# progress while waiting: bytes downloaded so far
+while [ -n "$(jobs -rp)" ]; do
+  sleep 30; echo "   ... $(du -sh "$TUM" 2>/dev/null | cut -f1) downloaded/extracted"
+done
+for p in "${pids[@]+"${pids[@]}"}"; do wait "$p" || echo "!! a download failed — re-run (wget -c resumes)"; done
 
 # evo_ape for VGGT-SLAM's own scorer, isolated from every method env.
 SHIM="$ROOT/logs/.evo_shim"; mkdir -p "$SHIM"

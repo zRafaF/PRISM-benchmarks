@@ -352,20 +352,77 @@ def prepare_mesh(cfg: dict, dataset: str, mesh_path: Path, debug: bool = True):
     return mesh
 
 
-def _render_fingerprint(cfg: dict, traj: str, poses, mesh_path: Path) -> str:
-    """Hash of everything that determines a rendered sequence's pixels: the poses, the
-    camera models (incl. which pinhole variants apply to this traj), max_depth, the mesh
-    file. Used to skip sequences that are already rendered (render resume)."""
-    import hashlib
-    h = hashlib.sha256()
-    h.update(np.round(np.asarray(poses, dtype=np.float64), 5).tobytes())
-    variants = {k: v for k, v in cfg["camera"]["pinhole"]["variants"].items()
-                if variant_applies(cfg, k, traj)}
-    h.update(json.dumps({"pano": cfg["camera"]["pano"], "pinhole": variants,
-                         "max_depth": cfg["engine"]["max_depth"],
-                         "mesh": str(Path(mesh_path).name), "mesh_bytes": Path(mesh_path).stat().st_size},
-                        sort_keys=True, default=str).encode())
-    return h.hexdigest()
+def _variant_intrinsics(cfg: dict, vcfg: dict, dataset: str, scene: str):
+    """PinholeIntrinsics for a (non-cube) pinhole variant, or None (no dataset K)."""
+    if vcfg.get("use_dataset_k"):
+        return _dataset_intrinsics(cfg, dataset, scene)
+    return cameras.PinholeIntrinsics.from_fov(vcfg["width"], vcfg["height"], vcfg["fov_deg"])
+
+
+def _cube_fov(vcfg: dict) -> float:
+    return 360.0 / int(vcfg.get("cube_faces", 4)) + float(vcfg.get("face_overlap_deg", 0.0))
+
+
+def _resume_plan(cfg, out_root: Path, traj: str, poses, dataset: str, scene: str):
+    """What is still to render for a finished sequence: None = the poses differ (full
+    re-render); else {"pano": ok?, "variants": [names to (re)render]}. Checks the files
+    on disk against the config (intrinsics, cube face width, frame counts), so renders
+    made before this check existed are recognised too."""
+    gt = out_root / "poses_gt.tum"
+    if not gt.exists():
+        return None
+    try:
+        old = np.array([[float(x) for x in ln.split()[1:8]]
+                        for ln in gt.read_text().splitlines() if ln.strip()])
+    except Exception:
+        return None
+    from scipy.spatial.transform import Rotation
+    new = np.array([list(T[:3, 3]) + list(Rotation.from_matrix(T[:3, :3]).as_quat())
+                    for T in poses])
+    if old.shape != new.shape:
+        return None
+    q_ok = np.minimum(np.abs(old[:, 3:] - new[:, 3:]).max(1), np.abs(old[:, 3:] + new[:, 3:]).max(1))
+    if np.abs(old[:, :3] - new[:, :3]).max() > 1e-4 or q_ok.max() > 1e-4:
+        return None
+    n = len(poses)
+
+    def _count(d: Path) -> int:
+        return len(list((d / "rgb").glob("*.png"))) if (d / "rgb").exists() else 0
+
+    def _intr_ok(d: Path, want: dict) -> bool:
+        try:
+            got = json.loads((d / "intrinsics.json").read_text())
+        except Exception:
+            return False
+        return all(abs(float(got.get(k, -1)) - float(v)) < 1e-6 * max(1.0, abs(float(v)))
+                   for k, v in want.items() if isinstance(v, (int, float)))
+
+    pdir = export_dir(dataset, scene, traj, "pano", "")
+    pano_ok = (_count(pdir) == n and _intr_ok(pdir, {"width": cfg["camera"]["pano"]["width"],
+                                                     "height": cfg["camera"]["pano"]["height"]}))
+    todo = []
+    for vname, vcfg in cfg["camera"]["pinhole"]["variants"].items():
+        if not variant_applies(cfg, vname, traj):
+            continue
+        vd = export_dir(dataset, scene, traj, "pinhole", vname)
+        if is_cube_variant(vcfg):
+            nf, size = int(vcfg.get("cube_faces", 4)), int(vcfg.get("width", 512))
+            want = cameras.PinholeIntrinsics.from_fov(size, size, _cube_fov(vcfg)).to_json()
+            try:
+                fj = json.loads((vd / "faces.json").read_text())
+                faces_ok = (int(fj["n_faces"]) == nf
+                            and abs(float(fj.get("fov_deg", 90.0)) - _cube_fov(vcfg)) < 1e-6)
+            except Exception:
+                faces_ok = False
+            if not (faces_ok and _count(vd) == n * nf and _intr_ok(vd, want)):
+                todo.append(vname)
+            continue
+        intr = _variant_intrinsics(cfg, vcfg, dataset, scene)
+        if intr is None:
+            continue
+        if not (_count(vd) == n and _intr_ok(vd, intr.to_json())):
+            todo.append(vname)
+    return {"pano": pano_ok, "variants": todo}
 
 
 def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path):
@@ -418,77 +475,88 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
     # GT lives in the trajectory dir (eval reads .../<dataset>/<scene>/<traj>/).
     out_root = REPO_ROOT / "dataset" / "exports" / dataset / scene / traj
 
-    # Resume: skip a sequence that was already rendered completely with exactly these
-    # poses and camera settings (render_done.json is written only after the last frame).
-    # Anything else — older renders, other poses, an interrupted render — is redone.
-    fp = _render_fingerprint(cfg, traj, poses, mesh_path)
+    # Resume, per camera (content-based). A finished sequence (render_done.json is
+    # written only after its last frame) with the SAME poses keeps every camera whose
+    # files on disk already match the config (intrinsics + frame count); only missing or
+    # changed cameras are rendered — e.g. adding a cube-face variant renders just that
+    # variant. Different poses, an unfinished render or RENDER_FORCE=1 -> full re-render.
     done = out_root / "render_done.json"
-    if done.exists() and os.environ.get("RENDER_FORCE", "0") != "1":
-        try:
-            prev = json.loads(done.read_text())
-        except Exception:
-            prev = {}
-        n_pano = len(list((out_root / "pano" / "rgb").glob("*.png"))) if (out_root / "pano" / "rgb").exists() else 0
-        if prev.get("fingerprint") == fp and n_pano == len(poses):
-            print(f"[render] {dataset}/{scene}/{traj}: already rendered with these poses — skip "
-                  f"(RENDER_FORCE=1 to redo)")
-            return
-    if out_root.exists():
-        # Start clean: a re-render can produce fewer frames than the last one, and
-        # export_inputs counts the PNGs on disk — stale frames would leak into n_frames.
-        import shutil
-        shutil.rmtree(out_root)
-    out_root.mkdir(parents=True, exist_ok=True)
+    plan = _resume_plan(cfg, out_root, traj, poses, dataset, scene) \
+        if (done.exists() and os.environ.get("RENDER_FORCE", "0") != "1") else None
+    if plan is not None and plan["pano"] and not plan["variants"]:
+        print(f"[render] {dataset}/{scene}/{traj}: already rendered with these poses and "
+              f"cameras — skip (RENDER_FORCE=1 to redo)")
+        return
+    import shutil
+    if plan is None:
+        if out_root.exists():
+            # Start clean: a re-render can produce fewer frames than the last one, and
+            # export_inputs counts the PNGs on disk — stale frames would leak into n_frames.
+            shutil.rmtree(out_root)
+        out_root.mkdir(parents=True, exist_ok=True)
+        todo_pano = True
+        todo_vars = [v for v in cfg["camera"]["pinhole"]["variants"] if variant_applies(cfg, v, traj)]
+    else:
+        todo_pano = not plan["pano"]
+        todo_vars = plan["variants"]
+        print(f"[render] {dataset}/{scene}/{traj}: resuming — same poses; rendering "
+              f"{(['pano'] if todo_pano else []) + todo_vars}")
+        if todo_pano and (out_root / "pano").exists():
+            shutil.rmtree(out_root / "pano")
+        for v in todo_vars:
+            vd = export_dir(dataset, scene, traj, "pinhole", v)
+            if vd.exists():
+                shutil.rmtree(vd)
+        done.unlink()                      # the sequence is incomplete until we finish
 
-    # Measure the TRUE camera height at the first pose by casting a ray straight
-    # down to the floor. This is what PRISM's floor-RANSAC should recover, so we
-    # feed it as camera_height (fixes the "started over a sofa -> wrong scale" bug).
-    p0 = poses[0][:3, 3]
-    floor_frac, gz = traj_mod.clean_floor_patch(raycast, float(p0[0]), float(p0[1]),
-                                                float(p0[2]), floor_z)
-    measured_h = float(p0[2] - gz) if gz is not None else float(ch)
-    print(f"[traj] first-pose cylinder floor: frac_on_floor={floor_frac:.2f} "
-          f"ground_z={gz if gz is None else round(gz,2)} "
-          f"-> measured camera_height={measured_h:.3f} m (fed to PRISM)")
-    (out_root / "measured_camera_height.json").write_text(
-        json.dumps({"camera_height_m": measured_h}, indent=2))
+    if plan is None:
+        # Measure the TRUE camera height at the first pose by casting a ray straight
+        # down to the floor. This is what PRISM's floor-RANSAC should recover, so we
+        # feed it as camera_height (fixes the "started over a sofa -> wrong scale" bug).
+        p0 = poses[0][:3, 3]
+        floor_frac, gz = traj_mod.clean_floor_patch(raycast, float(p0[0]), float(p0[1]),
+                                                    float(p0[2]), floor_z)
+        measured_h = float(p0[2] - gz) if gz is not None else float(ch)
+        print(f"[traj] first-pose cylinder floor: frac_on_floor={floor_frac:.2f} "
+              f"ground_z={gz if gz is None else round(gz,2)} "
+              f"-> measured camera_height={measured_h:.3f} m (fed to PRISM)")
+        (out_root / "measured_camera_height.json").write_text(
+            json.dumps({"camera_height_m": measured_h}, indent=2))
 
-    # GT poses (TUM) + GT mesh copy
-    _write_tum(out_root / "poses_gt.tum", poses)
-    o3d.io.write_triangle_mesh(str(out_root / "gt_mesh.ply"), mesh)
+        # GT poses (TUM) + GT mesh copy
+        _write_tum(out_root / "poses_gt.tum", poses)
+        o3d.io.write_triangle_mesh(str(out_root / "gt_mesh.ply"), mesh)
 
     # ── PANO ──
-    pw, ph = cfg["camera"]["pano"]["width"], cfg["camera"]["pano"]["height"]
-    pano_dirs = cameras.equirect_rays_cam(pw, ph)
-    pdir = export_dir(dataset, scene, traj, "pano", "")
-    (pdir).mkdir(parents=True, exist_ok=True)
-    with open(pdir / "intrinsics.json", "w") as f:
-        json.dump({"projection": "equirect", "width": pw, "height": ph}, f, indent=2)
-    for i, T in enumerate(poses):
-        o, d = cameras.rays_to_world(pano_dirs, T)
-        radial, rgb, mask = _render_rays(raycast, mesh_t, o, d, pw, ph, cfg["engine"]["max_depth"])
-        _save_frame(pdir, i, rgb, radial, mask)
-        if i in (0, n // 2, n - 1):
-            valid = radial > 0
-            drng = (f"{radial[valid].min():.2f}-{radial[valid].max():.2f}m"
-                    if valid.any() else "NO HITS")
-            print(f"[pano] frame {i}: cam={np.round(T[:3,3],2)} "
-                  f"valid={100*valid.mean():.0f}% depth={drng}")
+    if todo_pano:
+        pw, ph = cfg["camera"]["pano"]["width"], cfg["camera"]["pano"]["height"]
+        pano_dirs = cameras.equirect_rays_cam(pw, ph)
+        pdir = export_dir(dataset, scene, traj, "pano", "")
+        (pdir).mkdir(parents=True, exist_ok=True)
+        with open(pdir / "intrinsics.json", "w") as f:
+            json.dump({"projection": "equirect", "width": pw, "height": ph}, f, indent=2)
+        for i, T in enumerate(poses):
+            o, d = cameras.rays_to_world(pano_dirs, T)
+            radial, rgb, mask = _render_rays(raycast, mesh_t, o, d, pw, ph, cfg["engine"]["max_depth"])
+            _save_frame(pdir, i, rgb, radial, mask)
+            if i in (0, n // 2, n - 1):
+                valid = radial > 0
+                drng = (f"{radial[valid].min():.2f}-{radial[valid].max():.2f}m"
+                        if valid.any() else "NO HITS")
+                print(f"[pano] frame {i}: cam={np.round(T[:3,3],2)} "
+                      f"valid={100*valid.mean():.0f}% depth={drng}")
 
     # ── PINHOLE (both intrinsics variants) ──
     for vname, vcfg in cfg["camera"]["pinhole"]["variants"].items():
-        if not variant_applies(cfg, vname, traj):
-            continue                       # e.g. cube faces: seed 0 only
+        if vname not in todo_vars:
+            continue                       # not for this traj (e.g. cube: seed 0) or already done
         if is_cube_variant(vcfg):
             _render_cube_faces(cfg, raycast, mesh_t, poses, dataset, scene, traj, vname, vcfg)
             continue
-        if vcfg.get("use_dataset_k"):
-            intr = _dataset_intrinsics(cfg, dataset, scene)
-            if intr is None:
-                print(f"[render] {dataset}/{scene}: no dataset K for '{vname}', skipping")
-                continue
-        else:
-            intr = cameras.PinholeIntrinsics.from_fov(vcfg["width"], vcfg["height"], vcfg["fov_deg"])
+        intr = _variant_intrinsics(cfg, vcfg, dataset, scene)
+        if intr is None:
+            print(f"[render] {dataset}/{scene}: no dataset K for '{vname}', skipping")
+            continue
         pin_dirs = cameras.pinhole_rays_cam(intr)
         vdir = export_dir(dataset, scene, traj, "pinhole", vname)
         vdir.mkdir(parents=True, exist_ok=True)
@@ -500,7 +568,7 @@ def render_scene(cfg: dict, dataset: str, scene: str, traj: str, mesh_path: Path
                                              cfg["engine"]["max_depth"])
             optical = cameras.radial_to_optical_z(radial, pin_dirs, intr.width, intr.height)
             _save_frame(vdir, i, rgb, optical, mask)
-    done.write_text(json.dumps({"fingerprint": fp, "n_frames": len(poses)}, indent=2))
+    done.write_text(json.dumps({"n_frames": len(poses)}, indent=2))
     print(f"[render] {dataset}/{scene}/{traj}: {len(poses)} frames (pano + pinhole variants)")
 
 
@@ -518,7 +586,8 @@ def cube_face_rotations(n_faces: int = 4) -> list:
 
 
 def _render_cube_faces(cfg, raycast, mesh_t, poses, dataset, scene, traj, vname, vcfg):
-    """The 360 deg view as n square 90 deg pinhole faces per timestep (decisions D28).
+    """The 360 deg view as n square pinhole faces per timestep (decisions D28); each face
+    is 360/n + face_overlap_deg wide (config: 20 -> 110 deg, neighbours share 20 deg).
 
     Images are interleaved: file 4t+k is face k of timestep t, so a pinhole method fed
     the folder in order sees each timestep's faces back to back. faces.json records the
@@ -527,7 +596,11 @@ def _render_cube_faces(cfg, raycast, mesh_t, poses, dataset, scene, traj, vname,
     four, and floor/ceiling faces are near-textureless in these scenes."""
     nf = int(vcfg.get("cube_faces", 4))
     size = int(vcfg.get("width", 512))
-    intr = cameras.PinholeIntrinsics.from_fov(size, size, float(vcfg.get("fov_deg", 90)))
+    fov = 360.0 / nf + float(vcfg.get("face_overlap_deg", 0.0))
+    if not (0 < fov < 180):
+        raise ValueError(f"cube face width {fov} deg out of range (cube_faces={nf}, "
+                         f"face_overlap_deg={vcfg.get('face_overlap_deg')})")
+    intr = cameras.PinholeIntrinsics.from_fov(size, size, fov)
     dirs = cameras.pinhole_rays_cam(intr)
     Rf = cube_face_rotations(nf)
     vdir = export_dir(dataset, scene, traj, "pinhole", vname)
@@ -535,6 +608,7 @@ def _render_cube_faces(cfg, raycast, mesh_t, poses, dataset, scene, traj, vname,
     (vdir / "intrinsics.json").write_text(json.dumps(intr.to_json(), indent=2))
     (vdir / "faces.json").write_text(json.dumps({
         "n_faces": nf, "order": ["front", "right", "back", "left"][:nf],
+        "fov_deg": fov, "face_overlap_deg": float(vcfg.get("face_overlap_deg", 0.0)),
         "interleave": "image index = n_faces * timestep + face",
         "R_body_face": [r.tolist() for r in Rf]}, indent=2))
     for i, T in enumerate(poses):

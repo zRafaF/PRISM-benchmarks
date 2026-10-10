@@ -64,7 +64,7 @@ stage_prep() {
     SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
     retry $SUDO apt-get update -qq
     $SUDO apt-get install -y -qq wget pigz unzip tmux git curl zstd lsb-release \
-        build-essential cmake git-lfs python3-dev \
+        build-essential cmake git-lfs python3-dev bc \
         libegl1 libgl1 libgomp1 libglib2.0-0 >/dev/null   # open3d (VGGT-SLAM, eval) needs libEGL/libGL
   fi
   command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
