@@ -110,8 +110,13 @@ def main():
     t0 = time.perf_counter()
     # Capture stdout so submap / loop-closure / timing lines can be parsed, while still
     # echoing everything to our own stdout (the adapter tees it to run.log).
+    # torch.hub must not depend on GitHub being up when DINOv2 is already cached
+    # (_hubpatch/sitecustomize.py; a GitHub 504 failed 3 runs on 2026-10-10).
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(Path(__file__).parent / "_hubpatch") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, bufsize=1)
+                            text=True, bufsize=1, env=env)
     captured = []
     for line in proc.stdout:
         captured.append(line)

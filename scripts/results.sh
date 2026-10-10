@@ -25,8 +25,13 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Same defaults as pod.sh / inputs.sh: bench.env, so a plain shell (not only the pod
+# pipeline) pushes to the right repo and tag instead of failing or using an old tag.
+_benv() { sed -n "s/^$1[[:space:]]*[?:]*=[[:space:]]*//p" bench.env 2>/dev/null | head -1; }
+INPUTS_TAG="${INPUTS_TAG:-$(_benv INPUTS_TAG)}"
 TAG="${RESULTS_TAG:-${INPUTS_TAG:-rerun-v2}}"
-REPO_ID="${RESULTS_HF_REPO:-${INPUTS_HF_REPO:-}}"
+REPO_ID="${RESULTS_HF_REPO:-${INPUTS_HF_REPO:-$(_benv RESULTS_HF_REPO)}}"
+REPO_ID="${REPO_ID:-$(_benv INPUTS_HF_REPO)}"
 HF="${HF_CLI:-uvx --from huggingface_hub[cli]>=0.34 hf}"
 OUTD=results/bundles
 SHARD_ID="$(echo "${SHARD:-all}" | sed 's#/#of#')"
