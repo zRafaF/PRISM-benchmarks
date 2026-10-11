@@ -97,6 +97,11 @@ print(' '.join(t for t in resolve_trajs(c,'all') if offline_seed_ok(c, t)))")"
     export BENCH_METHODS="$ARMS"
     say "$3 — data: fetch inputs/$INPUTS_TAG"
     bash scripts/inputs.sh fetch
+    # The Replica scene split is frozen in config.local.yaml, which arrives WITH the
+    # inputs: read the scene list only now (offline-v3 read it before the fetch, got an
+    # empty list and ran no Replica sequence).
+    SCENES="$(cfgq "d=c['datasets'][c['datasets']['active'][0]]; print(' '.join(d['scenes']))")"
+    [ -n "$SCENES" ] || { echo "!! $3: no scenes in the config — refusing to continue"; exit 1; }
     say "$3 — runs: $ARMS on $SCENES / $TRAJS"
     for tj in $TRAJS; do for sc in $SCENES; do for a in $ARMS; do run_one "$a" "$sc" "$tj"; done; done; done
   }

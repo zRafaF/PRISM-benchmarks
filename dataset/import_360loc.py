@@ -17,8 +17,10 @@ Writes, per sequence (traj id):
     pano/{rgb,mask}/NNNNNN.png + intrinsics.json        (resized equirect)
     pinhole/<variant>/{rgb,mask}/... + intrinsics.json  (synthetic_fov, cube variants;
                                                         cube faces interleaved 4t+k + faces.json)
-No depth and no GT mesh (trajectory / continuity evaluation only); `export_inputs.py`
-then writes meta.json as for rendered scenes.
+No GT mesh: the reconstruction GT is a map fused from the dataset's depth maps under the
+GT poses (gt_cloud.ply), and the pinhole/cube views get depth resampled from the same
+depth maps (for the co-visibility mask). `export_inputs.py` then writes meta.json as for
+rendered scenes.
 
 Two corrections for handheld 360Loc captures (decisions D31):
   * HEADING. The 360 images are gyro-levelled but their image centre is not the walking

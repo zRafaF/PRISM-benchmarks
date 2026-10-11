@@ -117,10 +117,20 @@ def run_method(name: str):
                             import shutil
                             shutil.rmtree(rp.dir())   # never mix a stale half-run's files in
                         rp.dir().mkdir(parents=True, exist_ok=True)
+                        # The runner gets the RESOLVED config (config.yaml + config.local.yaml
+                        # + PRISM_CONFIG_OVERLAY), written next to the run. Runners used to
+                        # read config.yaml directly, so an overlay's runner-side keys were
+                        # silently ignored (offline-v3: baselines.max_frames: null had no
+                        # effect, the 200-frame cap of config.yaml applied). It also records
+                        # exactly which settings produced the run.
+                        import yaml as _yaml
+                        rcfg = rp.dir() / "config_resolved.yaml"
+                        rcfg.write_text(_yaml.safe_dump(
+                            {k: v for k, v in cfg.items()}, sort_keys=False))
                         cmd = [str(py), str(runner),
                                "--in", str(in_dir),
                                "--out", str(rp.dir()),
-                               "--config", str(REPO_ROOT / args.config)]
+                               "--config", str(rcfg)]
                         print(f"[{name}] {dataset}/{scene}/{traj}/{variant or mcfg['camera']}")
                         result = PerfResult(method=name)
                         attempts += 1

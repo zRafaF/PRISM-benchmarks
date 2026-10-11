@@ -560,6 +560,9 @@ results-pack:
 	bash scripts/results.sh pack
 results-push:
 	bash scripts/results.sh push
+# README methodology figures (inputs + metric definitions only) -> documentation/figures/
+readme-figures: setup
+	$(ORCH_RUN) scripts/readme_figures.py
 # PC, after scoring: per-run scores + clean report + tables + figures -> HF scored/ (no clouds)
 results-publish:
 	bash scripts/results.sh publish

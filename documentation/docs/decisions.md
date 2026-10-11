@@ -489,3 +489,14 @@ the subsampling are both reported. Expected from 2026-08 peaks (PanoVGGT 50 GB, 
 both subsampled on the atrium. MapAnything dropped. Run: `make offline-pod`
 (installs only the PRISM-VGGT and Pi3 envs; results tag offline-v3); PC:
 `make offline-fetch`. The 2026-08 offline runs (old walks) are not reused (D33).
+
+**D34 addendum (2026-10-11): offline-v3 is incomplete — rerun.** Two bugs: (1) runners
+read `config.yaml` directly, so the offline overlay's `max_frames: null` never reached
+them and the 200-frame cap applied (apartments 300 -> 200, atrium 581 -> 200; the pod
+labelled them "full length" because no OOM fallback fired); (2) offline.sh read the
+Replica scene list before the inputs (with the frozen split in config.local.yaml)
+arrived, so the Replica pass ran nothing. Fixed: `adapters/base.py` hands every runner
+the resolved config (`config_resolved.yaml` in the run dir); offline.sh reads scenes
+after the fetch and refuses an empty list. The streaming results are unaffected: none of
+their overlays set runner-side keys (PRISM's 4 cm voxels on 360Loc come from an env var).
+
