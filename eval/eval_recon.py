@@ -231,6 +231,39 @@ def _ply_vertex_count(p: Path) -> int | None:
     return None
 
 
+def _ply_subsample(p: Path, n: int, seed: int = 0):
+    """Uniform random n vertices of a binary little-endian PLY via memmap (x,y,z float/
+    double, optional uchar red/green/blue) -> (pts (n,3) float64, cols (n,3) in [0,1] or None)."""
+    tm = {"float": "<f4", "float32": "<f4", "double": "<f8", "float64": "<f8",
+          "uchar": "u1", "uint8": "u1", "int": "<i4", "int32": "<i4"}
+    props, nv, inv = [], 0, False
+    with open(p, "rb") as f:
+        while True:
+            ln = f.readline().decode("ascii", "ignore").strip()
+            if ln.startswith("element"):
+                inv = ln.startswith("element vertex")
+                if inv:
+                    nv = int(ln.split()[-1])
+            elif ln.startswith("property") and inv:
+                _, t, name = ln.split()[:3]
+                props.append((name, tm[t]))
+            elif ln == "end_header":
+                break
+        off = f.tell()
+    mm = np.memmap(p, dtype=np.dtype(props), mode="r", offset=off, shape=(nv,))
+    rng = np.random.default_rng(seed)
+    if nv <= 4 * n:                       # exact: a permutation of <= 80 M indices is fine
+        idx = np.sort(rng.choice(nv, n, replace=False))
+    else:                                 # avoid a 300 M permutation; draws collide rarely
+        idx = np.unique(rng.integers(0, nv, int(n * 1.15)))
+        idx = np.sort(rng.choice(idx, min(n, len(idx)), replace=False))
+    a = mm[idx]
+    pts = np.stack([a["x"], a["y"], a["z"]], 1).astype(np.float64)
+    cols = (np.stack([a["red"], a["green"], a["blue"]], 1).astype(np.float64) / 255.0
+            if "red" in a.dtype.names else None)
+    return pts, cols
+
+
 def _recon_fresh(cloud: Path) -> bool:
     """recon.json exists and was computed from this exact cloud.ply. The run must also
     still be valid (a completed run) and, with SAVE_ALIGNED=1, have its aligned copy."""
@@ -260,7 +293,23 @@ def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
         (cloud.parent / "recon.json").unlink(missing_ok=True)
         print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}: NOT SCORED — {bad}")
         return False
-    pcd_in = o3d.io.read_point_cloud(str(cloud))
+    # Very large clouds (LASER on 2,324 real cube-face images: 150–320 M points, 2–5 GB)
+    # do not fit the scorer's memory. Above EVAL_MAX_POINTS (default 20 M) a fixed-seed
+    # uniform random subset is scored — the same rule for every method. Accuracy and
+    # precision are unbiased under uniform subsampling; completeness/recall are
+    # measured against a GT sample of a few hundred thousand points, so 20 M predicted
+    # points still cover every 5 cm neighbourhood a dense cloud covers.
+    import os as _os
+    n_raw = _ply_vertex_count(cloud) or 0
+    cap = int(_os.environ.get("EVAL_MAX_POINTS", 20_000_000))
+    if n_raw > cap:
+        sub_pts, sub_cols = _ply_subsample(cloud, cap)
+        pcd_in = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(sub_pts))
+        if sub_cols is not None:
+            pcd_in.colors = o3d.utility.Vector3dVector(sub_cols)
+        print(f"[eval_recon]   {n_raw:,} pts > EVAL_MAX_POINTS — scoring a random {cap:,}")
+    else:
+        pcd_in = o3d.io.read_point_cloud(str(cloud))
     pred_pts = np.asarray(pcd_in.points)
     print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}")
     print(f"[eval_recon]   pred cloud: {len(pred_pts)} pts "
@@ -296,7 +345,8 @@ def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
                           key=lambda p: (p.name != "synthetic_fov", p.name))
     # Cloud size / compactness (on the saved cloud; voxel-deduped identically for all).
     out = {"threshold_m": thr,
-           "point_count": int(len(pred_pts)),
+           "point_count": int(n_raw or len(pred_pts)),
+           "point_count_scored": int(len(pred_pts)),
            "map_size_mb": round(cloud.stat().st_size / 1e6, 2),
            "sor_outlier_pct": _statistical_outlier_pct(pred_pts)}
     print(f"[eval_recon]   statistical-outlier (fluffiness) = {out['sor_outlier_pct']*100:.1f}%")

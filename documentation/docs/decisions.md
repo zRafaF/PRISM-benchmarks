@@ -475,3 +475,17 @@ paths, lengths and renders, some through walls); their numbers are not comparabl
 rerun-v3 and are not cited. PanoVGGT's peak VRAM grows ~0.18 GB/frame (23 GB at 63
 frames, 40 GB at 156): 121-frame rooms need ~33 GB (just over the 5090), 300-frame
 apartments ~65 GB — an 80 GB A100/H100 is enough; no RTX PRO 6000 needed.
+
+## D34 — Offline references: PanoVGGT + Pi3, Replica seed 0 + real atrium *(DECIDED 2026-10-11)*
+Two full-batch references, run once per map: PanoVGGT (PRISM's own backbone, 360 deg —
+"what the streaming engine adds") and Pi3 (pinhole feed-forward, LASER's backbone).
+Sequences: the 6 rerun-v3 Replica walks (seed 0) and the 360Loc atrium — 14 runs, on a
+96 GB RTX PRO 6000. Every frame is tried first (121 / 300 / 581 — the frames PRISM
+sees). A sequence that does not fit (OOM or host-RAM kill) is recorded
+(`logs/offline_oom/`, `arm_config.json`: `full_length_oom`, `frames_used`) and rerun
+uniformly subsampled to 200 frames (OFFLINE_FALLBACK_FRAMES) — the capacity limit and
+the subsampling are both reported. Expected from 2026-08 peaks (PanoVGGT 50 GB, Pi3
+93 GB at 200 frames): PanoVGGT full length on rooms/apartments, Pi3 full only on rooms;
+both subsampled on the atrium. MapAnything dropped. Run: `make offline-pod`
+(installs only the PRISM-VGGT and Pi3 envs; results tag offline-v3); PC:
+`make offline-fetch`. The 2026-08 offline runs (old walks) are not reused (D33).

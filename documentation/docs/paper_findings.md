@@ -152,3 +152,72 @@ disadvantages them; one scoring bug (a failed run scored) was found and fixed.
   methods' real streaming regime.
 - **State in the paper.** Baselines are scored on their native raw clouds; PRISM's
   TSDF caps depth at 4.5 m and carves floaters. Same Sim(3)+ICP alignment for all.
+
+## 9. Real 360 deg data: 360Loc atrium (581 frames, 285 m, one sequence; 2026-10-11)
+Scored on the PC. ATE = Sim(3)-aligned RMSE vs the dataset's lidar poses. Drift = median
+error over 10 m segments, as a fraction of 10 m. Recon F@5cm vs the GT map fused from the
+dataset's depth maps.
+
+| Method | ATE | Drift /10 m | Tracked % | Losses | Metric scale | F@5cm (acc) |
+|---|---|---|---|---|---|---|
+| PRISM (pano) | 2.0 m | 5.7 % | 99.3 | 2 | 1.01 | 0.12 (0.75 m) |
+| LASER pinhole | 1.6 m | 7.5 % | 99.5 | 1 | — | 0.02 (1.4 m) |
+| LASER cube 90 / 110 deg | 19.5 / 8.5 m | 98 / 36 % | 34 / 63 | 67 / 63 | — | 0.01 / 0.02 |
+| VGGT-SLAM pinhole | 14.4 m | 55 % | 70 | 27 | — | 0.004 |
+| VGGT-SLAM cube 90 / 110 deg | 3.4 / 2.1 m | 24 / 13 % | 51 / 45 | 68 / 63 | — | 0.02 / 0.02 |
+
+- **PRISM and LASER pinhole are on par here:** both track ~99 % of the walk and drift
+  smoothly (no loop closure, one big loop); LASER has the lower ATE, PRISM the lower
+  local drift. PRISM's scale is metric to 1 % (camera-height prior, see §10).
+- **The large synthetic margin does not carry over in full.** On Replica PRISM is 8x
+  better than LASER on ATE; on real atrium it is not better on ATE. Likely causes, to
+  state: Replica panoramas are perfect renders (no stitching seams, exposure changes,
+  motion blur, operator), and the Replica rooms are small enough that every panorama
+  sees the whole room. The atrium is large (61 x 52 m), textured and frames are 0.49 m
+  apart — conditions in which the pinhole LASER also keeps track.
+- **Cube faces hurt the baselines on real data** (opposite of Replica): LASER on cube
+  faces loses track (rig disagreement 2 deg median, p95 9 deg; 2,324 images); VGGT-SLAM
+  on cube faces does better than its pinhole run (2.1 m vs 14.4 m) but loses track
+  half the time. Stitched real panoramas resampled to cube faces carry the
+  seams/exposure into every face.
+- **Reconstruction F@5cm is not informative on a 285 m walk with metres of drift**
+  (every method < 0.15); report accuracy and a coarser threshold, or score per local
+  segment, instead of headline F@5cm.
+- **Figures:** `results/_deepdive/real/real_traj.png` (aligned trajectories over a
+  GT-map slice, coloured by error), `real_err_vs_dist.png`.
+- **Trajectory parity is not map parity.** Same alignment (trajectory Sim(3), no ICP),
+  points vs the GT map: PRISM median 0.36 m, 38 % of points within 25 cm, 0 % of points
+  more than 10 m from any camera; LASER median 4.1 m, 5 % within 25 cm, 51 % more than
+  10 m from any camera (unbounded raw depth); within 4.5 m of a camera LASER is still
+  at 1.2 m vs PRISM 0.35 m; VGGT-SLAM cube 110 deg 1.4 m. LASER's cloud is stacked
+  per-window layers that disagree slightly in pose/scale — invisible to ATE (one global
+  Sim(3) on camera centres) but obvious in the map. PRISM's TSDF fuses those layers into
+  one surface and caps depth. Figure: `results/_deepdive/real/real_cloud_slices.png`.
+- **Qualitative (inspected in a viewer).** PRISM's atrium map keeps the correct
+  shape and looks clean; its only defect is a smooth warp towards the end of the loop
+  (accumulated drift, no loop closure). LASER's map is a stack of slightly misaligned
+  copies of the same structure — messy even where its trajectory is good.
+- One sequence only: a sanity check of the harness on real data, not a statistic.
+
+## 10. "Is PRISM too good?" audit (2026-10-11)
+- **No training-set leakage.** PanoVGGT (PRISM's backbone) is trained on Matterport3D,
+  Stanford2D3D, Structured3D and PanoCity (paper, CVPR 2026) — not Replica, not 360Loc.
+  The baselines' backbones (VGGT for VGGT-SLAM, Pi3 for LASER) were trained on large
+  mixes that, to our knowledge, include Replica/Habitat renders — if anything this
+  favours the baselines. (Verify the exact VGGT / Pi3 lists before writing it.)
+- **No GT poses or GT depth reach any method.** The runners read only rgb/, the
+  intrinsics, and (PRISM) `camera_height_m`.
+- **Camera-height prior (disclose).** PRISM's metric anchor is the camera height above
+  the floor, taken from the dataset (Replica: scene geometry; 360Loc: nadir depth,
+  1.96 m). ATE and F are Sim(3)-normalised for every method, so the prior does not
+  enter them directly, but PRISM's internal metric scale sets its TSDF voxel (2 cm) and
+  max depth (4.5 m), so it can affect PRISM's map quality. To do: a sensitivity run
+  with the height perturbed +-10 % on 2–3 sequences.
+- **Evaluation never favours PRISM.** Same Sim(3)+ICP for all; the co-visibility mask is
+  the pinhole frustum, so PRISM's 360 deg map outside it is discarded (full-360 F is
+  reported separately). Failed runs are failures (D32).
+- **Where PRISM's advantage comes from (honest framing).** (1) 360 deg input — confirmed
+  by the cube-face control on Replica, where LASER gets 2–3x closer on the same pixels;
+  (2) clean synthetic panoramas and small rooms (the real atrium narrows the gap);
+  (3) TSDF fusion with depth cap and carving gives clean clouds, while baselines are
+  scored on raw clouds. Optional ablation: cap the baselines' depth at 4.5 m too.

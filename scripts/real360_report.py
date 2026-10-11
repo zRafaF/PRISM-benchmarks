@@ -36,6 +36,11 @@ def main() -> int:
     ds = cfg["datasets"]["active"][0]
     metric = {m["name"]: bool(m.get("metric")) for m in cfg.get("methods", []) + cfg.get("ablations", [])}
     arms = list(metric)
+    # also arms run under another overlay (the offline references: panovggt, pi3)
+    for d in sorted((ROOT / "results").glob(f"*/{ds}")):
+        if d.parent.name not in arms:
+            arms.append(d.parent.name)
+            metric.setdefault(d.parent.name, d.parent.name == "pi3")   # Pi3X: approx. metric
     rows = []
     for sc in cfg["datasets"][ds].get("scenes") or []:
         for tj in resolve_trajs(cfg, "all"):

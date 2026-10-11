@@ -46,8 +46,10 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
     # run profile (the smoke test's tiny matrix) can override the per-machine
     # config.local.yaml without moving, backing up or clobbering it — that overlay
     # holds the frozen scene list from `make split`, and losing it is expensive.
-    extra = os.environ.get("PRISM_CONFIG_OVERLAY", "").strip()
-    if extra:
+    # Several overlays may be given comma-separated; they merge in order (later wins),
+    # e.g. "config.real360.yaml,config.offline.yaml" = the real dataset + offline arms.
+    extras = [e.strip() for e in os.environ.get("PRISM_CONFIG_OVERLAY", "").split(",") if e.strip()]
+    for extra in extras:
         ep = Path(extra)
         if not ep.is_absolute():
             ep = REPO_ROOT / ep
@@ -55,7 +57,8 @@ def load_config(path: str | Path = "config.yaml") -> dict[str, Any]:
             raise SystemExit(f"[config] PRISM_CONFIG_OVERLAY={extra} not found at {ep}")
         with open(ep, "r", encoding="utf-8") as f:
             cfg = _deep_merge(cfg, yaml.safe_load(f) or {})
-        cfg.setdefault("_provenance", {})["overlay"] = ep.name
+    if extras:
+        cfg.setdefault("_provenance", {})["overlay"] = ",".join(Path(e).name for e in extras)
     return cfg
 
 

@@ -51,7 +51,7 @@ def main():
     seq = _io.load_sequence(args.in_dir)
     rgb = seq["rgb"]
     n_total = len(rgb)
-    cap = (cfg.get("baselines") or {}).get("max_frames")
+    cap = os.environ.get("OFFLINE_MAX_FRAMES") or (cfg.get("baselines") or {}).get("max_frames")
     idxs = list(range(n_total))
     if cap and n_total > cap:
         idxs = np.linspace(0, n_total - 1, int(cap)).astype(int).tolist()

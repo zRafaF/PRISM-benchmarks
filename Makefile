@@ -37,7 +37,7 @@ PYCHK    ?= python3
         inputs-verify results-pack results-push results-fetch results-merge eval-all \
         inputs precheck progress watch \
         traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report sanity-tum lost sanity-tum-push pod-clean \
-        real-download real-list real-inputs real-push real-pod real-watch real-fetch real-report
+        real-download real-list real-inputs real-push real-pod real-watch real-fetch real-report offline-pod offline-watch offline-fetch
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -665,6 +665,19 @@ real-pod:
 	  tmux new -d -s real 'bash scripts/real360.sh pod; exec bash'; \
 	  echo ">> real-data run in tmux session 'real' — attach: tmux attach -t real   |   log: tail -f \$$(ls -t logs/real360_*_pod.log | head -1)"; \
 	else bash scripts/real360.sh pod; fi
+# OFFLINE references (PanoVGGT + Pi3 full batch; Replica seed 0 + real atrium) on a 96 GB pod.
+# Installs only the PRISM-VGGT and Pi3 envs. Detached tmux session 'offline'.
+offline-pod:
+	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|REAL_HF_REPO|REAL_TAG|OFFLINE_TAG|OFFLINE_FALLBACK_FRAMES|POD_[A-Z_]+)=' \
+	  | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" > .pod.env; chmod 600 .pod.env
+	@if tmux has-session -t offline 2>/dev/null; then echo "!! tmux session 'offline' exists — tmux attach -t offline"; exit 1; fi
+	@tmux new -d -s offline 'bash scripts/offline.sh pod; exec bash'
+	@echo ">> offline run in tmux session 'offline' — progress: make offline-watch   |   raw: tmux attach -t offline"
+offline-watch:
+	@if command -v uv >/dev/null 2>&1; then PRISM_CONFIG_OVERLAY=config.offline.yaml $(ORCH_RUN) scripts/progress.py --watch 15; \
+	else echo ">> uv not installed yet (prep is starting) — showing the log"; tail -f logs/pod_latest.log; fi
+offline-fetch: setup
+	bash scripts/offline.sh fetch
 # Progress of `make real-pod` (stage, runs done / 5, last log lines). Ctrl-C leaves it.
 real-watch: setup
 	@PRISM_CONFIG_OVERLAY=config.real360.yaml $(ORCH_RUN) scripts/progress.py --watch 15
