@@ -181,9 +181,20 @@ def main():
     # sorted() so the traversal order is reproducible; Path.glob returns raw
     # directory order, which made the 2026-08-09 crash cut an arbitrary — and
     # therefore unexplainable — subset of methods out of the results.
-    clouds = sorted((REPO_ROOT / "results").glob("*/*/*/*/*/cloud.ply"))
-    print(f"[eval_recon] {len(clouds)} cloud(s) to evaluate")
+    import os as _os
+    # EVAL_GLOB narrows the pass (e.g. "laser_cube/replica/apartment_0/*/*");
+    # EVAL_FORCE=1 re-scores everything. Otherwise a run whose recon.json was made
+    # from the current cloud.ply (same point count and file size) is skipped — the
+    # full pass takes hours and most runs don't change between passes.
+    pat = _os.environ.get("EVAL_GLOB", "*/*/*/*/*").rstrip("/") + "/cloud.ply"
+    clouds = sorted((REPO_ROOT / "results").glob(pat))
+    force = _os.environ.get("EVAL_FORCE") == "1"
+    print(f"[eval_recon] {len(clouds)} cloud(s) found ({pat})")
+    n_fresh = 0
     for cloud in clouds:
+        if not force and _recon_fresh(cloud):
+            n_fresh += 1
+            continue
         try:
             res = _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean)
         except Exception as exc:                      # noqa: BLE001 — see below
@@ -199,6 +210,7 @@ def main():
             n_ok += 1
         else:
             n_skip += 1
+    print(f"\n[eval_recon] {n_fresh} up to date (EVAL_FORCE=1 to redo)")
     print(f"\n[eval_recon] SUMMARY: {n_ok} evaluated, {n_skip} skipped "
           f"(empty cloud), {n_err} errored")
     if n_err:
@@ -208,11 +220,48 @@ def main():
     return 0
 
 
+def _ply_vertex_count(p: Path) -> int | None:
+    with open(p, "rb") as f:
+        for _ in range(40):
+            ln = f.readline()
+            if ln.startswith(b"element vertex"):
+                return int(ln.split()[-1])
+            if ln.startswith(b"end_header"):
+                break
+    return None
+
+
+def _recon_fresh(cloud: Path) -> bool:
+    """recon.json exists and was computed from this exact cloud.ply. The run must also
+    still be valid (a completed run) and, with SAVE_ALIGNED=1, have its aligned copy."""
+    import os as _os
+    rj = cloud.parent / "recon.json"
+    if not rj.exists():
+        return False
+    if _os.environ.get("SAVE_ALIGNED") == "1" and not (cloud.parent / "cloud_aligned.ply").exists():
+        return False
+    try:
+        r = json.loads(rj.read_text())
+    except ValueError:
+        return False
+    return (r.get("point_count") == _ply_vertex_count(cloud)
+            and r.get("map_size_mb") == round(cloud.stat().st_size / 1e6, 2))
+
+
 def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
     """Evaluate a single cloud. Returns False if there was nothing to score."""
     import open3d as o3d
     method, dataset, scene, traj, variant = _run_meta(cloud.parent)
-    pred_pts = np.asarray(o3d.io.read_point_cloud(str(cloud)).points)
+    from eval.eval_traj import run_invalid
+    _ptum = cloud.parent / "poses.tum"
+    _np = sum(1 for _ in open(_ptum) if _.strip()) if _ptum.exists() else 0
+    bad = run_invalid(cloud.parent, _np, _export_base(dataset, scene, traj) / "poses_gt.tum")
+    if bad:
+        (cloud.parent / "recon.json").unlink(missing_ok=True)
+        print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}: NOT SCORED — {bad}")
+        return False
+    pcd_in = o3d.io.read_point_cloud(str(cloud))
+    pred_pts = np.asarray(pcd_in.points)
     print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}")
     print(f"[eval_recon]   pred cloud: {len(pred_pts)} pts "
           f"bbox={np.round(pred_pts.min(0),2)}..{np.round(pred_pts.max(0),2)}"
@@ -229,6 +278,15 @@ def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
     pred_pts, _sim3 = _align_pred_to_gt(pred_pts, pred_tum, gt_tum, correct_scale)
     if icp_cfg.get("enabled", True) and len(pred_pts) and len(gt_pts):
         pred_pts = _icp_refine(pred_pts, gt_pts, icp_cfg.get("max_dist_m", 0.15))
+    # SAVE_ALIGNED=1: also write the cloud in the GT frame, exactly as scored
+    # (cloud_aligned.ply, float32) — the raw cloud.ply is in the method's own frame and
+    # scale, so it does not line up with the GT mesh in a viewer.
+    import os as _os
+    if _os.environ.get("SAVE_ALIGNED") == "1":
+        pa = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pred_pts))
+        if pcd_in.has_colors():
+            pa.colors = pcd_in.colors
+        o3d.io.write_point_cloud(str(cloud.parent / "cloud_aligned.ply"), pa)
 
     # The co-visibility mask comes from the ordinary pinhole trajectory, never from a
     # cube-face variant (4 images per timestep, D28): synthetic_fov first.

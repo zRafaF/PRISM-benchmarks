@@ -37,7 +37,7 @@ PYCHK    ?= python3
         inputs-verify results-pack results-push results-fetch results-merge eval-all \
         inputs precheck progress watch \
         traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report sanity-tum lost sanity-tum-push pod-clean \
-        real-download real-list real-inputs real-push real-pod real-fetch real-report
+        real-download real-list real-inputs real-push real-pod real-watch real-fetch real-report
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -658,11 +658,16 @@ real-push:
 	bash scripts/real360.sh push
 # Runs in a detached tmux session 'real' (survives an SSH drop): tmux attach -t real
 real-pod:
+	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|REAL_TAG|NVBLOX_MODE|POD_[A-Z_]+)=' \
+	  | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" > .pod.env; chmod 600 .pod.env
 	@if command -v tmux >/dev/null 2>&1; then \
 	  if tmux has-session -t real 2>/dev/null; then echo "!! tmux session 'real' exists — tmux attach -t real"; exit 1; fi; \
 	  tmux new -d -s real 'bash scripts/real360.sh pod; exec bash'; \
 	  echo ">> real-data run in tmux session 'real' — attach: tmux attach -t real   |   log: tail -f \$$(ls -t logs/real360_*_pod.log | head -1)"; \
 	else bash scripts/real360.sh pod; fi
+# Progress of `make real-pod` (stage, runs done / 5, last log lines). Ctrl-C leaves it.
+real-watch: setup
+	@PRISM_CONFIG_OVERLAY=config.real360.yaml $(ORCH_RUN) scripts/progress.py --watch 15
 real-fetch:
 	bash scripts/real360.sh fetch
 real-report: setup

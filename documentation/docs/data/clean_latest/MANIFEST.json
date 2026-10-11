@@ -1,31 +1,34 @@
 {
   "generated_by": "eval/export_report_tables.py",
-  "source": "archive:bigrun_2026-07",
-  "n_input_records": 434,
-  "n_seeded_kept": 368,
-  "n_complete_aggregated": 325,
-  "n_incomplete_excluded": 43,
+  "source": "live:results/",
+  "n_input_records": 225,
+  "n_seeded_kept": 96,
+  "n_complete_aggregated": 91,
+  "n_incomplete_excluded": 5,
   "scenes": [
     "apartment_0",
     "apartment_1",
-    "frl_apartment_0",
-    "hotel_0"
+    "office_0",
+    "room_0",
+    "room_1",
+    "room_2"
   ],
   "seeds": [
     "s0",
-    "s1"
+    "s1",
+    "s2"
   ],
   "exclusions_applied": [
     "unseeded traj id \u2014 stale 2-scene experiment (co-tenancy-inflated VRAM 70-100 GB)"
   ],
   "alignment_arms": [
     {
-      "arm": "prism_sim3",
+      "arm": "prism",
       "group": "Sim(3)",
       "dof": 7
     },
     {
-      "arm": "prism",
+      "arm": "prism_sl4",
       "group": "SL(4)",
       "dof": 15
     },
@@ -33,17 +36,27 @@
       "arm": "prism_se3",
       "group": "SE(3)",
       "dof": 6
+    },
+    {
+      "arm": "prism_sim3lock",
+      "group": "Sim(3), scale locked",
+      "dof": 7
+    },
+    {
+      "arm": "prism_sim3cam",
+      "group": "Sim(3), 4 camera centres (pre-v2)",
+      "dof": 7
     }
   ],
   "tables": {
     "streaming_comparison": {
       "status": "ok",
-      "rows": 5,
+      "rows": 6,
       "csv": "streaming_comparison.csv"
     },
     "offline_upper_bound": {
       "status": "ok",
-      "rows": 3,
+      "rows": 0,
       "csv": "offline_upper_bound.csv"
     },
     "alignment_study": {
@@ -58,37 +71,46 @@
     },
     "ate_by_motion": {
       "status": "ok",
-      "rows": 11,
+      "rows": 8,
       "csv": "ate_by_motion.csv"
+    },
+    "voxel_sweep": {
+      "status": "absent",
+      "reason": "voxel_sweep.csv not produced"
+    },
+    "recon_literature": {
+      "status": "ok",
+      "rows": 8,
+      "csv": "recon_literature.csv"
     },
     "per_method_aggregate": {
       "status": "ok",
-      "rows": 11,
+      "rows": 8,
       "csv": "per_method_aggregate.csv"
     },
     "headline_errorbars": {
       "status": "ok",
-      "rows": 11,
+      "rows": 8,
       "csv": "headline_errorbars.csv"
     },
     "seed_repeatability": {
       "status": "ok",
-      "rows": 94,
+      "rows": 62,
       "csv": "seed_repeatability.csv"
     },
     "paired_head_to_head": {
       "status": "ok",
-      "rows": 60,
+      "rows": 42,
       "csv": "paired_head_to_head.csv"
     },
     "completion": {
       "status": "ok",
-      "rows": 11,
+      "rows": 8,
       "csv": "completion.csv"
     },
     "vram_vs_sequence_length": {
       "status": "ok",
-      "rows": 266,
+      "rows": 16,
       "csv": "vram_vs_sequence_length.csv"
     }
   },

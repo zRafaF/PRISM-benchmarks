@@ -24,6 +24,26 @@ def _gt_for(run_dir: Path) -> Path:
     return REPO_ROOT / "dataset" / "exports" / dataset / scene / traj / "poses_gt.tum"
 
 
+def run_invalid(run_dir: Path, n_pred: int, gt: Path) -> str | None:
+    """Reason a run must not be scored, else None. A run whose perf.json says it did not
+    complete is a FAILURE (counted in the completion table), not a datapoint: a killed
+    run can leave poses.tum behind — e.g. a cube-face run killed before its per-face
+    poses were collapsed to one pose per timestep, which then matches the wrong GT
+    frames. More poses than GT frames is always invalid."""
+    pj = run_dir / "perf.json"
+    if pj.exists():
+        try:
+            perf = json.loads(pj.read_text())
+        except ValueError:
+            return "perf.json unreadable"
+        if not perf.get("completed"):
+            return f"run did not complete ({perf.get('failure_kind') or 'incomplete'})"
+    n_gt = sum(1 for _ in open(gt) if _.strip())
+    if n_pred > n_gt:
+        return f"{n_pred} poses > {n_gt} GT frames (cube faces not collapsed?)"
+    return None
+
+
 def eval_one(pred: Path, gt: Path, correct_scale: bool) -> dict:
     from evo.core import metrics, sync
     from evo.tools import file_interface
@@ -73,8 +93,13 @@ def main():
         gt = _gt_for(pred.parent)
         if not gt.exists():
             print(f"[eval_traj] no GT for {pred} — skip"); continue
-        if sum(1 for _ in open(pred) if _.strip()) < 3:
+        n_pred = sum(1 for _ in open(pred) if _.strip())
+        if n_pred < 3:
             print(f"[eval_traj] {pred.parent.relative_to(REPO_ROOT)}: <3 poses — skip"); continue
+        bad = run_invalid(pred.parent, n_pred, gt)
+        if bad:
+            (pred.parent / "ate.json").unlink(missing_ok=True)    # never keep a stale score
+            print(f"[eval_traj] {pred.parent.relative_to(REPO_ROOT)}: NOT SCORED — {bad}"); continue
         try:
             res = eval_one(pred, gt, cs)
             (pred.parent / "ate.json").write_text(json.dumps(res, indent=2))

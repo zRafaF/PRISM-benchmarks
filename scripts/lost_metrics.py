@@ -34,6 +34,7 @@ import argparse
 import csv
 import glob
 import re
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -141,6 +142,12 @@ def main():
         method, ds, scene, traj = parts[-6], parts[-5], parts[-4], parts[-3]
         gt_p = root / "dataset" / "exports" / ds / scene / traj / "poses_gt.tum"
         if not gt_p.exists():
+            continue
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from eval.eval_traj import run_invalid
+        bad = run_invalid(Path(p).parent, sum(1 for _ in open(p) if _.strip()), gt_p)
+        if bad:
+            print(f"[lost] {Path(p).parent}: not scored — {bad}")
             continue
         est, gt = load_tum(p), load_tum(gt_p)
         k = sorted(set(est) & set(gt))

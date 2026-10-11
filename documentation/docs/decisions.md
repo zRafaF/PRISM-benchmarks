@@ -460,3 +460,18 @@ Unverified until the real data is downloaded: the folder layout of `mapping/` (u
 05 marked the ScanNet-render pipeline "build deferred" and prioritised perf + lab
 tape-measure first. Rafael's 2026-07-13 direction supersedes: build the render
 orchestrator now, streaming-only, drop tape-measure, keep rendered-GT metric accuracy.
+
+## D32 — Failed runs are failures, not datapoints *(DECIDED 2026-10-11)*
+A run whose `perf.json` says it did not complete, or whose `poses.tum` has more poses
+than GT frames, is not scored by eval_traj / eval_recon / lost_metrics (stale scores are
+deleted) and counts in the completion table. Trigger: a killed laser_cube run left
+uncollapsed per-face poses that were scored against the wrong frames. eval_recon is now
+incremental (skips runs whose recon.json matches the current cloud; `EVAL_FORCE=1`,
+`EVAL_GLOB=...`), and `SAVE_ALIGNED=1` writes the scored cloud in the GT frame.
+
+## D33 — Offline methods are rerun on the rerun-v3 walks, not reused *(DECIDED 2026-10-11)*
+The 2026-08 PanoVGGT / Pi3 / MapAnything runs used the old spline walks (different
+paths, lengths and renders, some through walls); their numbers are not comparable with
+rerun-v3 and are not cited. PanoVGGT's peak VRAM grows ~0.18 GB/frame (23 GB at 63
+frames, 40 GB at 156): 121-frame rooms need ~33 GB (just over the 5090), 300-frame
+apartments ~65 GB — an 80 GB A100/H100 is enough; no RTX PRO 6000 needed.

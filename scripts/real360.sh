@@ -24,8 +24,13 @@ export INPUTS_HF_REPO="${REAL_HF_REPO:-${INPUTS_HF_REPO:-$(_benv INPUTS_HF_REPO)
 export PATH="$HOME/.local/bin:$PATH"
 RUN="${RUN:-uv run python}"
 mkdir -p logs
-exec > >(tee -a "logs/real360_$(date +%Y%m%d_%H%M%S)_${1:-help}.log") 2>&1
-say() { echo; echo "[$(date +%H:%M:%S)] ===== $* ====="; }
+LOGF="real360_$(date +%Y%m%d_%H%M%S)_${1:-help}.log"
+exec > >(tee -a "logs/$LOGF") 2>&1
+# `pod`: feed `make real-watch` (scripts/progress.py reads logs/pod_stage + pod_latest.log)
+podlog() { [ "${1:-}" = pod ] && ln -sf "$LOGF" logs/pod_latest.log || true; }
+podlog "${1:-}"
+say() { echo; echo "[$(date +%H:%M:%S)] ===== $* ====="; [ "${CMD:-}" = pod ] && echo "$(date +%H:%M) real360: $*" > logs/pod_stage || true; }
+CMD="${1:-}"
 cfgq() { $RUN -c "from bench.config import load_config; c=load_config('config.yaml'); $1"; }
 
 ARMS="$(cfgq "print(' '.join(m['name'] for m in c['methods']))")"
@@ -71,14 +76,19 @@ inputs)
 push)
   bash scripts/inputs.sh push ;;
 pod)
+  say "prep: system packages, method envs, model weights (30-60 min on a fresh pod)"
   if [ ! -f logs/.done_prep ]; then bash scripts/pod.sh prep && touch logs/.done_prep; fi
+  podlog pod
+  say "check: GPU in every method env"
   if [ ! -f logs/.done_check ]; then bash scripts/pod.sh check && touch logs/.done_check; fi
+  podlog pod
   say "data: fetch inputs/$INPUTS_TAG"
   bash scripts/inputs.sh fetch
   say "runs: $ARMS on $SCENES / $TRAJS (finished runs are skipped)"
   for tj in $TRAJS; do
     for a in $ARMS; do
       for sc in $SCENES; do
+        say "run $a on $sc/$tj"
         $RUN adapters/run.py --method "$a" --config config.yaml --scenes "$sc" --traj "$tj" \
           || echo "!! $a $sc $tj failed (see its run.log; continuing)"
       done
