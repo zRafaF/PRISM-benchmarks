@@ -133,7 +133,9 @@ fetch)
   say "score the new runs (trajectory + reconstruction; existing runs are skipped)"
   unset PRISM_CONFIG_OVERLAY RESULTS_DATASET
   $RUN eval/eval_traj.py --config config.yaml
-  for a in panovggt pi3; do EVAL_GLOB="$a/replica/*/*" $RUN eval/eval_recon.py --config config.yaml || true; done
+  $RUN eval/metric_accuracy.py --config config.yaml || true      # Pi3 is metric-capable
+  $RUN eval/collect_perf.py --config config.yaml || true
+  for a in panovggt pi3; do EVAL_GLOB="$a/replica/*/*/*" $RUN eval/eval_recon.py --config config.yaml || true; done
   $RUN eval/aggregate_clean.py --config config.yaml --source live || true
   echo; echo "== Replica (report_clean/aggregate_per_method.csv)"
   grep -iE "^Method|^panovggt|^pi3|^prism,|^laser,|^vggtslam," results/report_clean/aggregate_per_method.csv | cut -c1-200 || true
