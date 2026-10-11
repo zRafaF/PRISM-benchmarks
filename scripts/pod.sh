@@ -68,7 +68,7 @@ stage_prep() {
         libegl1 libgl1 libgomp1 libglib2.0-0 >/dev/null   # open3d (VGGT-SLAM, eval) needs libEGL/libGL
   fi
   command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
-  say "prep: pinned submodules (bench.env: PRISM-VGGT @ prism-v2, baselines @ commits)"
+  say "prep: pinned submodules (commits in bench.env)"
   retry make init
   say "prep: orchestrator env"
   retry make setup
