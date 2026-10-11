@@ -69,6 +69,10 @@ def main():
     import os as _os
     laser_ws = int(_os.environ.get("LASER_WINDOW", stream["window_size"]))
     laser_ov = int(_os.environ.get("LASER_OVERLAP", stream["overlap"]))
+    # LASER_CACHE_ROOT: put the per-window inference cache on another disk (it grows to
+    # tens of GB on long cube-face runs). Deleted when the run ends.
+    cache_dir = (Path(_os.environ["LASER_CACHE_ROOT"]) / f"laser_{_os.getpid()}"
+                 if _os.environ.get("LASER_CACHE_ROOT") else out / "_laser_cache")
     print(f"[laser_runner] window={laser_ws} overlap={laser_ov}")
     from pi3.models.pi3 import Pi3
     from inference_engine import StreamingWindowEngine
@@ -78,7 +82,7 @@ def main():
         Pi3.from_pretrained("yyfz233/Pi3").to(device),
         inference_device=device, dtype=dtype,
         window_size=laser_ws, overlap=laser_ov,
-        cache_root=str(out / "_laser_cache"), depth_refine=True, top_conf_percentile=0.3,
+        cache_root=str(cache_dir), depth_refine=True, top_conf_percentile=0.3,
     )
     model.eval()
 
@@ -135,7 +139,7 @@ def main():
     # to build the outputs above; left in the run dir it filled the pod disk on the
     # cube-face runs (2,324 images) and went into the results pack.
     import shutil
-    shutil.rmtree(out / "_laser_cache", ignore_errors=True)
+    shutil.rmtree(cache_dir, ignore_errors=True)
     print(f"[laser_runner] {S} frames -> {len(poses)} poses, {len(pts)} pts, {wall:.1f}s")
 
 
