@@ -1,0 +1,6 @@
+# LF everywhere: the scripts run in bash (WSL / Linux pods); a Windows checkout with
+# core.autocrlf=true otherwise turns them into CRLF and bash fails ("set: pipefail").
+* text=auto eol=lf
+*.png binary
+*.ply binary
+*.tar binary

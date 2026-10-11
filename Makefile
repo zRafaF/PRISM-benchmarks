@@ -560,6 +560,9 @@ results-pack:
 	bash scripts/results.sh pack
 results-push:
 	bash scripts/results.sh push
+# PC, after scoring: per-run scores + clean report + tables + figures -> HF scored/ (no clouds)
+results-publish:
+	bash scripts/results.sh publish
 results-fetch:
 	bash scripts/results.sh fetch
 results-merge:

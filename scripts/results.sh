@@ -5,6 +5,7 @@
 #   bash scripts/results.sh pack            # results/ + logs + provenance -> results/bundles/pod_*.tar
 #   bash scripts/results.sh push            # upload that tar to RESULTS_HF_REPO (optional)
 #   bash scripts/results.sh fetch           # (offline box) download every pod tar for RESULTS_TAG
+#   bash scripts/results.sh publish         # (PC, after scoring) scores + reports + figures -> HF scored/
 #   bash scripts/results.sh merge F.tar...  # unpack pod tars into results/, refusing collisions
 #   bash scripts/results.sh sync-up         # checkpoint: upload finished run dirs + logs to HF
 #                                           #   (results/<tag>/live/), only new/changed files
@@ -145,6 +146,29 @@ pack)
   [ -f config.local.yaml ] && SCORE+=(config.local.yaml)
   tar -chf "$F" --exclude='_laser_cache' --exclude='_laser_cache/*' "${RUNDIRS[@]}" "${SCORE[@]}" logs
   echo ">> $F  ($(du -h "$F" | cut -f1), ${#RUNDIRS[@]} run dirs + scoring exports)" ;;
+publish)
+  # The SCORED results (PC, after fetch + eval): per-run scores and poses, the clean
+  # report, the paper tables and figures — no clouds. The raw pod packs are already on
+  # HF under results/<tag>/; this adds what the PC computed from them, so a reader can
+  # check every number without re-scoring. -> scored/<stamp>.tar + scored/latest/
+  [ -n "$REPO_ID" ] || { echo "!! set RESULTS_HF_REPO"; exit 1; }
+  mkdir -p "$OUTD"; STAMP="$(date +%Y%m%d_%H%M)"; F="$OUTD/scored_${STAMP}.tar"
+  { ls -d results/*/*/*/*/*/ 2>/dev/null | grep -vE '^results/(report|bundles|figures|_|prism-benchmarks_|p3_)' \
+      | while read -r d; do for f in ate.json recon.json perf.json metric.json arm_config.json poses.tum; do
+          [ -f "$d$f" ] && echo "$d$f"; done; done
+    for d in results/report_clean results/report_tables results/real360 results/lost results/figures; do
+      [ -d "$d" ] && find "$d" -type f; done
+    find results/_deepdive -maxdepth 2 -type f \( -name '*.png' -o -name '*.csv' \) 2>/dev/null
+    for f in config.yaml config.real360.yaml config.offline.yaml bench.env documentation/docs/decisions.md documentation/docs/paper_findings.md; do echo "$f"; done
+  } | sort -u > "$OUTD/scored_${STAMP}.list"
+  tar -cf "$F" -T "$OUTD/scored_${STAMP}.list"
+  echo ">> $F: $(wc -l < "$OUTD/scored_${STAMP}.list") files, $(du -h "$F" | cut -f1)"
+  hf_retry $HF upload "$REPO_ID" "$F" "scored/$(basename "$F")" --repo-type dataset \
+      --commit-message "scored results $STAMP (per-run scores, clean report, tables, figures)"
+  rm -rf "$OUTD/scored_latest" && mkdir -p "$OUTD/scored_latest" && tar -xf "$F" -C "$OUTD/scored_latest" \
+      --wildcards 'results/report_clean/*' 'results/report_tables/*' 'results/real360/*' 'results/lost/*' 'results/_deepdive/*' 2>/dev/null || true
+  hf_retry $HF upload "$REPO_ID" "$OUTD/scored_latest/results" "scored/latest" --repo-type dataset \
+      --commit-message "scored/latest: clean report, tables, figures ($STAMP)" ;;
 push)
   [ -n "$REPO_ID" ] || { echo "!! set RESULTS_HF_REPO"; exit 1; }
   F="$(ls -t "$OUTD"/pod_"${TAG}"_*.tar 2>/dev/null | head -1)"
