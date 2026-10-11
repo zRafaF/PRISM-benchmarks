@@ -33,7 +33,7 @@ else
 fi
 
 # 2. method envs: torch + CUDA
-for m in PRISM-VGGT Pi3 VGGT-SLAM map-anything LASER; do
+for m in PRISM-VGGT Pi3 VGGT-SLAM LASER; do
   py="submodules/$m/.venv/bin/python"
   if [ ! -x "$py" ]; then row "env:$m" FAIL "no venv at $py (make setup-all)"; continue; fi
   if msg=$("$py" -c "import torch; assert torch.cuda.is_available(), 'no CUDA'; \

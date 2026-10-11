@@ -124,7 +124,7 @@ fi
 # ── run every method in its own env ────────────────────────────────────────
 for m in $SMOKE_METHODS; do
   case "$m" in
-    prism|panovggt|pi3|mapanything|vggtslam|laser)
+    prism|panovggt|pi3|vggtslam|laser)
       stage "run $m" make "run-$m" "${MK[@]}" ;;
     *)  # ablation arms go through the generic runner
       stage "run $m (ablation)" \

@@ -61,7 +61,7 @@ provenance() {
     done
     command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
   } > logs/env/provenance.txt
-  for m in PRISM-VGGT Pi3 map-anything LASER; do
+  for m in PRISM-VGGT Pi3 LASER; do
     py="submodules/$m/.venv/bin/python"
     [ -x "$py" ] && uv pip freeze --python "$py" > "logs/env/$(echo "$m" | tr 'A-Z' 'a-z').freeze.txt" 2>/dev/null || true
   done

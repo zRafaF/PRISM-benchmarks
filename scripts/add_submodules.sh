@@ -45,7 +45,6 @@ want() { [ -z "${ONLY:-}" ] || [[ " $ONLY " == *" $1 "* ]]; }
 want PRISM-VGGT   && add_pin PRISM-VGGT  "$PRISM_URL"    "$PRISM_REF"
 want Pi3          && add_pin Pi3         "$PI3_URL"      "$PI3_REF"
 want VGGT-SLAM    && add_pin VGGT-SLAM   "$VGGTSLAM_URL" "$VGGTSLAM_REF"
-want map-anything && add_pin map-anything "$MAPANY_URL"  "$MAPANY_REF"
 want LASER        && add_pin LASER       "$LASER_URL"    "$LASER_REF"
 
 echo ""

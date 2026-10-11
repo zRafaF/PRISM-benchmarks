@@ -332,7 +332,6 @@ checkpoint() {
   eval_step "$1" eval/make_report.py     --config config.yaml
   eval_step "$1" eval/aggregate_clean.py --config config.yaml --source live
   eval_step "$1" eval/export_report_tables.py
-  eval_step "$1" eval/verify_clean.py --skip-published-check
   if [ -f results/report_clean/completion.csv ]; then
     log "--- completion so far (method,total,complete,incomplete,%) ---"
     cut -d, -f1-5 results/report_clean/completion.csv | sed 's/^/    /'

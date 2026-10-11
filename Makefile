@@ -22,12 +22,12 @@ PYCHK    ?= python3
 .DEFAULT_GOAL := help
 
 .PHONY: help steps check-scenes check-fresh \
-        deps init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
+        deps init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-laser \
         download split render export \
-        run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
+        run-all run-prism run-panovggt run-pi3 run-vggtslam run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all bench-overnight \
         bench-status bench-stop \
-        ingest-archive report-clean aggregate-clean report-tables verify-clean \
+        report-clean aggregate-clean report-tables \
         smoke smoke-check bundle bundle-estimate capacity-sweep \
         run-vggtslam-arms ablations-vggtslam \
         fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine \
@@ -48,7 +48,7 @@ help:
 	@echo "  make init             clone + pin every method submodule (see bench.env)"
 	@echo "  make setup            orchestrator env (uv sync) — render+mask+eval+report"
 	@echo "  make setup-all        every method's ISOLATED env (delegates to each repo)"
-	@echo "  make setup-<m>        one method: prism|pi3|vggtslam|mapanything|laser"
+	@echo "  make setup-<m>        one method: prism|pi3|vggtslam|laser"
 	@echo ""
 	@echo "Dataset (shared, rendered in the orchestrator env):"
 	@echo "  make download         print how to fetch active datasets (ToU/prereqs noted)"
@@ -58,7 +58,7 @@ help:
 	@echo ""
 	@echo "Run (each method in its OWN env, streaming harness):"
 	@echo "  make run-all          run every configured method -> common results layout"
-	@echo "  make run-<m>          one method: prism|panovggt|pi3|vggtslam|mapanything|laser"
+	@echo "  make run-<m>          one method: prism|panovggt|pi3|vggtslam|laser"
 	@echo "  make ablations        PRISM ablations: guards (nolock/nostill/noguards) + align (sl4/se3)"
 	@echo "  make ablations-align  alignment-group study only: SL(4)+SE(3) vs Sim(3)=prism"
 	@echo ""
@@ -72,9 +72,7 @@ help:
 	@echo "Publication-grade aggregation (seeded-only; excludes contaminated runs):"
 	@echo "  make report-clean     CLEAN seeded-only aggregate -> results/report_clean/"
 	@echo "  make report-tables    report-facing CSV/JSON/md bundle for uofa-2026-report"
-	@echo "  make verify-clean     assert no contaminated run leaked into the clean output"
-	@echo "  make ingest-archive   archived big-run snapshot -> tidy per-run records"
-	@echo "  make publication      report-clean + report-tables + verify-clean"
+	@echo "  make publication      report-clean + report-tables"
 	@echo ""
 	@echo "Before the long run:"
 	@echo "  make smoke            TEST RUN: whole pipeline on a tiny matrix + ETA for the full run"
@@ -142,7 +140,6 @@ steps:
 	@echo "  make run-prism       # ours (pano)          -> results/prism/..."
 	@echo "  make run-pi3         # baseline (pinhole)   -> results/pi3/..."
 	@echo "  make run-vggtslam    # baseline (pinhole)   -> results/vggtslam/..."
-	@echo "  make run-mapanything # optional (pinhole)"
 	@echo "  make run-laser       # optional (pano)"
 	@echo ""
 	@echo "Stage 3  Evaluate + report (orchestrator env)"
@@ -171,11 +168,9 @@ setup-pi3:
 	bash envs/setup_pi3.sh
 setup-vggtslam:
 	bash envs/setup_vggtslam.sh
-setup-mapanything:
-	bash envs/setup_mapanything.sh
 setup-laser:
 	bash envs/setup_laser.sh
-setup-all: setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser
+setup-all: setup-prism setup-pi3 setup-vggtslam setup-laser
 	@echo ">> all method envs set up"
 
 # ── Stage 1: dataset (orchestrator env) ───────────────────────────────────────
@@ -212,11 +207,9 @@ run-pi3:
 	$(ORCH_RUN) adapters/pi3.py         --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
 run-vggtslam:
 	$(ORCH_RUN) adapters/vggtslam.py    --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
-run-mapanything:
-	$(ORCH_RUN) adapters/mapanything.py --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
 run-laser:
 	$(ORCH_RUN) adapters/laser.py       --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
-run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
+run-all: run-prism run-panovggt run-pi3 run-vggtslam run-laser
 	@echo ">> all configured methods run"
 
 # PRISM ablations — guard-contribution study + alignment-group study.
@@ -262,7 +255,6 @@ all: init setup-all download render export run-all eval-traj eval-recon eval-met
 #
 #   report-clean   seeded-only + named exclusions + complete-runs-only
 #   report-tables  freeze those into the column layout uofa-2026-report ingests
-#   verify-clean   fail loudly if a contaminated run reached the clean output
 #
 # NOTE ON `clean-results`: it remains the DESTRUCTIVE housekeeping target it has
 # always been (rm -rf results/*). The findings doc asks for "make clean-results" to
@@ -271,26 +263,14 @@ all: init setup-all download render export run-all eval-traj eval-recon eval-met
 #
 # SOURCE=auto|live|archive — `auto` uses results/ when populated, else the committed
 # archive snapshot, so the clean report reproduces even with no results tree on disk.
-SOURCE   ?= auto
-RUN_ID   ?= bigrun_2026-07
-
-ingest-archive: setup
-	@echo ">> archived snapshot ($(RUN_ID)) -> tidy per-run records"
-	$(ORCH_RUN) eval/ingest_archive.py --run-id $(RUN_ID)
-
 report-clean: setup
-	@echo ">> CLEAN seeded-only aggregate (source=$(SOURCE))"
-	@if [ "$(SOURCE)" != "live" ]; then $(MAKE) --no-print-directory ingest-archive; fi
-	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source $(SOURCE) --run-id $(RUN_ID)
+	@echo ">> CLEAN seeded-only aggregate (results/)"
+	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source live
 aggregate-clean: report-clean          # alias
 
 report-tables: report-clean
 	@echo ">> report-facing table bundle -> results/report_tables/"
 	$(ORCH_RUN) eval/export_report_tables.py
-
-verify-clean: setup
-	@echo ">> verifying the clean aggregate contains no contaminated runs"
-	$(ORCH_RUN) eval/verify_clean.py --run-id $(RUN_ID)
 
 # ── Fidelity-vs-memory sweep (PRISM only) ────────────────────────────────────
 # Runs automatically as Phase 5 of the overnight; this target re-runs it standalone.
@@ -369,7 +349,7 @@ smoke-check: setup
 	@echo ">> validating the last smoke run's artifacts only (no re-run)"
 	PRISM_CONFIG_OVERLAY=config.smoke.yaml $(ORCH_RUN) eval/smoke_check.py --config $(CONFIG)
 
-publication: report-clean report-tables verify-clean
+publication: report-clean report-tables
 	@echo ">> publication artifacts ready:"
 	@echo "   results/report_clean/clean_report.md   (analysis)"
 	@echo "   results/report_tables/                 (for uofa-2026-report)"

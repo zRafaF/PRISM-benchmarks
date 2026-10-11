@@ -33,13 +33,13 @@ RESULTS = REPO_ROOT / "results"
 SNAP_DIR = RESULTS / "report" / "snapshots"
 
 MAKE_TARGETS = [
-    "init", "setup", "setup-prism", "setup-pi3", "setup-mapanything",
+    "init", "setup", "setup-prism", "setup-pi3",
     "setup-vggtslam", "setup-laser", "download", "split", "render", "export",
-    "run-prism", "run-pi3", "run-mapanything", "run-vggtslam", "run-laser",
+    "run-prism", "run-pi3", "run-vggtslam", "run-laser",
     "eval-traj", "eval-recon", "eval-metric", "perf", "report", "snapshots",
     # Publication path (seeded-only). `report` aggregates EVERYTHING in results/,
     # which is what contaminated the 2026-07 tables; these are the clean ones.
-    "ingest-archive", "report-clean", "report-tables", "verify-clean", "publication",
+    "report-clean", "report-tables", "publication",
     # Fairness arms + the pre-flight test run.
     "run-vggtslam-arms", "smoke", "smoke-check", "bundle",
     "fig-vram", "fig-vram-sweep", "fig-cubemap", "fig-cubemap-export",
@@ -119,7 +119,7 @@ def run_targets(targets, scenes, traj):
     yield acc, str(LOGPATH)
 
 
-METHODS = ["prism", "panovggt", "pi3", "vggtslam", "mapanything", "laser"]
+METHODS = ["prism", "panovggt", "pi3", "vggtslam", "laser"]
 
 
 def _save_pipeline_overlay(scenes, rates_csv, max_frames):

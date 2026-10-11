@@ -12,16 +12,15 @@ docs_dir: docs
 nav:
   - Home: index.md
   - Running the benchmark: running.md
-  - Running on GPU pods (rerun-v2): pods.md
-  - Preliminary results: results.md
-  - Big-run results & analysis: results_bigrun.md
+  - Running on GPU pods: pods.md
+  - Findings for the paper: paper_findings.md
+  - Paper plan: paper_plan.md
   - Report figures: figures.md
   - Architecture: architecture.md
   - Design decisions: decisions.md
   - Adapter contract: adapter_contract.md
   - Datasets: datasets.md
   - Metrics & fairness: metrics.md
-  - Roadmap: roadmap.md
 markdown_extensions:
   - admonition
   - tables

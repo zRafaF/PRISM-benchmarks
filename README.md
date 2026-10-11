@@ -39,7 +39,7 @@ VGGT-SLAM TUM check. Tags: `rerun-v3` (Replica matrix), `real360-v1` (real 360 d
 
 **~96 runs, ~3.5 h on one RTX 5090**, strictly sequential. Why each choice: `documentation/docs/decisions.md`.
 
-Offline methods (`panovggt`, `pi3`, `mapanything`) are **off by default**: they need
+Offline methods (`panovggt`, `pi3`) are **off by default**: they need
 50–93 GB of VRAM at only 200 frames. Turn them on only on a 96 GB card (see Hardware).
 
 ## Hardware
@@ -93,7 +93,7 @@ Optional, to start with no old results on HF (inputs are kept): `make results-hf
 
 ```bash
 apt-get update && apt-get install -y git make tmux
-git clone -b rerun-v2 https://github.com/zRafaF/PRISM-benchmarks.git && cd PRISM-benchmarks
+git clone https://github.com/zRafaF/PRISM-benchmarks.git && cd PRISM-benchmarks
 export HF_TOKEN=hf_xxx
 make sanity-tum && make sanity-tum-push   # once per environment: VGGT-SLAM on TUM, theirs vs ours
 make pod-clean                            # only on a pod that ran an older tag
@@ -141,7 +141,7 @@ To stop: `make pod-stop`. Prefer stopping right after a run finishes (the stoppe
 | `libEGL.so.1` / `vggtslam_reference FAIL` | `apt-get install -y libegl1 libgl1 libgomp1 libglib2.0-0`, then `make pod` |
 | `No space left on device` | pod needs 100 GB disk; quick space: `uv cache clean` |
 | `dns error` during prep | transient; install steps retry 3×, otherwise `make pod` again |
-| `OutOfMemoryError` on panovggt/pi3/mapanything | expected on 32 GB; keep `BENCH_OFFLINE=0` |
+| `OutOfMemoryError` on panovggt/pi3 | expected on 32 GB; keep `BENCH_OFFLINE=0` |
 | pre-check FAIL | paste `logs/precheck.json`; the run log is in `results/<method>/replica/room_0/<traj>/*/run.log` |
 | data stage: private repo not found | `HF_TOKEN` not exported in the shell that ran `make pod` |
 
@@ -180,7 +180,7 @@ make real-fetch             # merge, score reconstruction vs the GT map, print t
 
 | Variable | Default | |
 |---|---|---|
-| `BENCH_OFFLINE` | `0` | `1` = also run panovggt / pi3 / mapanything (96 GB GPU) |
+| `BENCH_OFFLINE` | `0` | `1` = also run panovggt / pi3 (96 GB GPU) |
 | `BENCH_METHODS` | all | e.g. `"prism prism_sl4"` — split methods across pods (each pod a disjoint set) |
 | `CKPT_EVERY_S` | `900` | seconds between HF checkpoints (always between runs) |
 | `PRECHECK_FORCE` | `1` | `0` = reuse runs that already finished |

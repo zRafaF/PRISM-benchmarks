@@ -72,7 +72,7 @@ stage_prep() {
   retry make init
   say "prep: orchestrator env"
   retry make setup
-  for m in prism vggtslam laser pi3 mapanything; do
+  for m in prism vggtslam laser pi3; do
     say "prep: setup-$m"
     retry make "setup-$m"
   done

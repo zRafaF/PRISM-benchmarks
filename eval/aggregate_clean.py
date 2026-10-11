@@ -38,7 +38,7 @@ OUTPUTS (all under results/report_clean/, both machine-readable and markdown)
 
 Usage
     make report-clean                                  # live results/ if present
-    uv run python eval/aggregate_clean.py --source archive --run-id bigrun_2026-07
+    uv run python eval/aggregate_clean.py --source live
 """
 from __future__ import annotations
 
@@ -191,33 +191,6 @@ def load_live_runs() -> list[dict]:
     return runs
 
 
-def load_archive_runs(run_id: str) -> list[dict]:
-    """Read the tidy CSV produced by eval/ingest_archive.py."""
-    p = REPO_ROOT / "documentation" / "docs" / "data" / run_id / "runs_tidy.csv"
-    if not p.exists():
-        raise SystemExit(f"[aggregate_clean] {p} not found — run 'make ingest-archive' first.")
-    out = []
-    with open(p, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            rec = {}
-            for k, v in row.items():
-                if v == "" or v is None:
-                    rec[k] = None
-                elif k in ("method", "dataset", "scene", "traj", "variant",
-                           "gpu_name", "hw_id", "source", "latency_source",
-                           "per_window_source", "failure_kind"):
-                    rec[k] = v
-                elif k == "metric_capable":
-                    rec[k] = v in ("True", "true", "1")
-                else:
-                    try:
-                        rec[k] = float(v)
-                    except ValueError:
-                        rec[k] = v
-            out.append(rec)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Filtering
 # ---------------------------------------------------------------------------
@@ -324,7 +297,7 @@ HEADLINE = ["ate_cm", "masked_f", "full360_f", "map_mb", "outlier_pct",
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--source", choices=["auto", "live", "archive"], default="auto")
+    ap.add_argument("--source", choices=["live"], default="live")
     ap.add_argument("--run-id", default="bigrun_2026-07")
     ap.add_argument("--include-incomplete", action="store_true",
                     help="also aggregate runs that produced no evaluable output "
@@ -336,7 +309,7 @@ def main():
     src = args.source
     if src == "auto":
         src = "live" if any((REPO_ROOT / "results").glob("*/*/*/*/*/perf.json")) else "archive"
-    runs = load_live_runs() if src == "live" else load_archive_runs(args.run_id)
+    runs = load_live_runs()
     if not runs:
         raise SystemExit("[aggregate_clean] no runs found")
 
