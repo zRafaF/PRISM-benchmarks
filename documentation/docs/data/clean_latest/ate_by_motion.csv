@@ -1,9 +1,9 @@
 Method,ATE cm — smooth,ATE cm — stop-and-go,ATE cm — loop
 laser,23.8,—,—
-laser_cube,7.1,—,—
+laser_cube,7.8,—,—
 prism,2.8,—,—
 prism_se3,7.6,—,—
 prism_sl4,3.2,—,—
-vggtslam,75.1,—,—
+vggtslam,76.2,—,—
 vggtslam_cube,25.6,—,—
 vggtslam_noloop,63.8,—,—

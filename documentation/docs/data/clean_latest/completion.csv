@@ -1,9 +1,9 @@
 method,n_total,n_complete,n_failed,n_oom,n_degenerate,n_scale_unlocked,incomplete_pct,incomplete_by_scene,incomplete_by_motion
 laser,18,18,0,0,0,0,0.0,—,—
-laser_cube,12,10,2,0,0,0,16.7,apartment_0:2,smooth:2
+laser_cube,12,12,0,0,0,0,0.0,—,—
 prism,18,18,0,0,0,0,0.0,—,—
 prism_se3,6,6,0,0,0,0,0.0,—,—
 prism_sl4,6,6,0,0,0,0,0.0,—,—
-vggtslam,18,15,3,0,0,0,16.7,"apartment_0:1, apartment_1:1, office_0:1",smooth:3
+vggtslam,18,18,0,0,0,0,0.0,—,—
 vggtslam_cube,12,12,0,0,0,0,0.0,—,—
 vggtslam_noloop,6,6,0,0,0,0,0.0,—,—

@@ -80,7 +80,10 @@ pod)
   if [ ! -f logs/.done_prep ]; then bash scripts/pod.sh prep && touch logs/.done_prep; fi
   podlog pod
   say "check: GPU in every method env"
-  if [ ! -f logs/.done_check ]; then bash scripts/pod.sh check && touch logs/.done_check; fi
+  if [ ! -f logs/.done_check ]; then
+    bash scripts/pod.sh check || { echo "!! env check FAILED — not running anything (see logs/env/). A pod whose every env reports 'no CUDA' / CUDA error 999 has a broken GPU host: start a new pod."; exit 1; }
+    touch logs/.done_check
+  fi
   podlog pod
   say "data: fetch inputs/$INPUTS_TAG"
   bash scripts/inputs.sh fetch

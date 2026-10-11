@@ -3,8 +3,8 @@
   "source": "live:results/",
   "n_input_records": 225,
   "n_seeded_kept": 96,
-  "n_complete_aggregated": 91,
-  "n_incomplete_excluded": 5,
+  "n_complete_aggregated": 96,
+  "n_incomplete_excluded": 0,
   "scenes": [
     "apartment_0",
     "apartment_1",
