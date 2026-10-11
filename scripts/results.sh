@@ -74,6 +74,7 @@ sync-up)
   INC=(); if [ -n "$METHODS" ]; then for m in $METHODS; do INC+=(--include "$m/${RDS:+$RDS/}*"); done
           else INC=(--exclude "bundles/*" --exclude "report*/*" --exclude "figures/*" --exclude "_*/*" --exclude "prism-benchmarks_*/*"); fi
   hf_retry $HF upload "$REPO_ID" results "results/$TAG/live/results" --repo-type dataset "${INC[@]}" \
+      --exclude "*_laser_cache*" \
       --commit-message "checkpoint $(hostname) $(date +%H:%M) [${METHODS:-all}]" >/dev/null
   hf_retry $HF upload "$REPO_ID" logs "results/$TAG/live/logs/$(hostname)" --repo-type dataset \
       --exclude ".done_*" --commit-message "checkpoint logs $(hostname)" >/dev/null
@@ -142,7 +143,7 @@ pack)
     done
   done
   [ -f config.local.yaml ] && SCORE+=(config.local.yaml)
-  tar -chf "$F" "${RUNDIRS[@]}" "${SCORE[@]}" logs
+  tar -chf "$F" --exclude='_laser_cache' --exclude='_laser_cache/*' "${RUNDIRS[@]}" "${SCORE[@]}" logs
   echo ">> $F  ($(du -h "$F" | cut -f1), ${#RUNDIRS[@]} run dirs + scoring exports)" ;;
 push)
   [ -n "$REPO_ID" ] || { echo "!! set RESULTS_HF_REPO"; exit 1; }

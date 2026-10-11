@@ -131,6 +131,11 @@ def main():
     (out / "arm_config.json").write_text(json.dumps(
         {"window_size": laser_ws, "overlap": laser_ov, **(cube or {})}, indent=2))
     _io.write_runner_perf(out, per_window_latency_s=[], latency_end_to_end_s=wall)
+    # LASER's per-window inference cache (depth/images of every window) is only needed
+    # to build the outputs above; left in the run dir it filled the pod disk on the
+    # cube-face runs (2,324 images) and went into the results pack.
+    import shutil
+    shutil.rmtree(out / "_laser_cache", ignore_errors=True)
     print(f"[laser_runner] {S} frames -> {len(poses)} poses, {len(pts)} pts, {wall:.1f}s")
 
 
