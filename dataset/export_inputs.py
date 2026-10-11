@@ -13,7 +13,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bench.config import common_args, export_dir, load_config, resolve_scenes, resolve_trajs
+from bench.config import (common_args, export_dir, load_config, resolve_scenes,
+                          resolve_trajs, traj_rate_hz)
 
 
 def _camera_models(cfg: dict) -> list[tuple[str, str]]:
@@ -43,13 +44,21 @@ def main():
                     d = export_dir(dataset, scene, traj, camera_model, variant)
                     if not (d / "rgb").exists():
                         continue
-                    n = len(list((d / "rgb").glob("*.png")))
+                    n_img = len(list((d / "rgb").glob("*.png")))
+                    # Cube faces (D28): n_frames counts TIMESTEPS (one 360 deg capture),
+                    # so frame rates compare with the panorama; n_images counts faces.
+                    nf = 1
+                    if (d / "faces.json").exists():
+                        nf = int(json.loads((d / "faces.json").read_text())["n_faces"])
+                    n = n_img // nf
                     meta = {
                         "dataset": dataset, "scene": scene, "traj": traj,
                         "camera_model": camera_model, "variant": variant,
                         "n_frames": n,
+                        "n_images": n_img,
+                        "cube_faces": nf if nf > 1 else None,
                         "camera_height_m": cam_h,
-                        "fps_nominal": 2.0,
+                        "fps_nominal": traj_rate_hz(traj),
                         "seed": cfg["datasets"]["seed"],
                         "engine_echo": cfg["engine"],
                         "streaming": cfg["streaming"],

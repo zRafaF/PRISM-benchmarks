@@ -38,7 +38,7 @@ OUTPUTS (all under results/report_clean/, both machine-readable and markdown)
 
 Usage
     make report-clean                                  # live results/ if present
-    uv run python eval/aggregate_clean.py --source archive --run-id bigrun_2026-07
+    uv run python eval/aggregate_clean.py --source live
 """
 from __future__ import annotations
 
@@ -73,8 +73,8 @@ EXCLUSIONS = [
 MOTION = [("smooth", "synthetic_"), ("stop-and-go", "stopgo_"), ("loop", "loop_")]
 
 # Method taxonomy — native mode is never mixed (streaming vs full-batch).
-STREAMING = ["prism", "prism_sim3", "prism_sl4", "prism_se3", "laser", "vggtslam",
-             "vggtslam_noloop", "vggtslam_loop"]
+STREAMING = ["prism", "prism_sim3", "prism_sl4", "prism_se3", "prism_sim3lock",
+             "prism_sim3cam", "laser", "vggtslam", "vggtslam_noloop", "vggtslam_loop"]
 OFFLINE = ["panovggt", "pi3", "mapanything"]
 GUARD_ARMS = ["prism_nolock", "prism_nostill", "prism_noguards"]
 
@@ -103,7 +103,11 @@ ALIGN_ERAS = {
     "archive:bigrun_2026-07": [("prism_sim3", "Sim(3)", 7), ("prism", "SL(4)", 15),
                                ("prism_se3", "SE(3)", 6)],
     "default": [("prism", "Sim(3)", 7), ("prism_sl4", "SL(4)", 15),
-                ("prism_se3", "SE(3)", 6)],
+                ("prism_se3", "SE(3)", 6),
+                # rerun-v2: Sim(3) with its scale frozen after warm-up, and (optional)
+                # the pre-v2 camera-centre fit. Absent arms simply produce empty rows.
+                ("prism_sim3lock", "Sim(3), scale locked", 7),
+                ("prism_sim3cam", "Sim(3), 4 camera centres (pre-v2)", 7)],
 }
 
 
@@ -185,33 +189,6 @@ def load_live_runs() -> list[dict]:
             "source": "live:results/",
         })
     return runs
-
-
-def load_archive_runs(run_id: str) -> list[dict]:
-    """Read the tidy CSV produced by eval/ingest_archive.py."""
-    p = REPO_ROOT / "documentation" / "docs" / "data" / run_id / "runs_tidy.csv"
-    if not p.exists():
-        raise SystemExit(f"[aggregate_clean] {p} not found — run 'make ingest-archive' first.")
-    out = []
-    with open(p, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            rec = {}
-            for k, v in row.items():
-                if v == "" or v is None:
-                    rec[k] = None
-                elif k in ("method", "dataset", "scene", "traj", "variant",
-                           "gpu_name", "hw_id", "source", "latency_source",
-                           "per_window_source", "failure_kind"):
-                    rec[k] = v
-                elif k == "metric_capable":
-                    rec[k] = v in ("True", "true", "1")
-                else:
-                    try:
-                        rec[k] = float(v)
-                    except ValueError:
-                        rec[k] = v
-            out.append(rec)
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +297,7 @@ HEADLINE = ["ate_cm", "masked_f", "full360_f", "map_mb", "outlier_pct",
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--source", choices=["auto", "live", "archive"], default="auto")
+    ap.add_argument("--source", choices=["live"], default="live")
     ap.add_argument("--run-id", default="bigrun_2026-07")
     ap.add_argument("--include-incomplete", action="store_true",
                     help="also aggregate runs that produced no evaluable output "
@@ -332,7 +309,7 @@ def main():
     src = args.source
     if src == "auto":
         src = "live" if any((REPO_ROOT / "results").glob("*/*/*/*/*/perf.json")) else "archive"
-    runs = load_live_runs() if src == "live" else load_archive_runs(args.run_id)
+    runs = load_live_runs()
     if not runs:
         raise SystemExit("[aggregate_clean] no runs found")
 

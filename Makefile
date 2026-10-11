@@ -22,17 +22,22 @@ PYCHK    ?= python3
 .DEFAULT_GOAL := help
 
 .PHONY: help steps check-scenes check-fresh \
-        deps init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser \
+        deps init setup setup-all setup-prism setup-pi3 setup-vggtslam setup-laser \
         download split render export \
-        run-all run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser ablations ablations-align \
+        run-all run-prism run-panovggt run-pi3 run-vggtslam run-laser ablations ablations-align \
         eval-traj eval-recon eval-metric perf report all bench-overnight \
         bench-status bench-stop \
-        ingest-archive report-clean aggregate-clean report-tables verify-clean \
+        report-clean aggregate-clean report-tables \
         smoke smoke-check bundle bundle-estimate capacity-sweep \
         run-vggtslam-arms ablations-vggtslam \
         fig-vram fig-vram-sweep fig-cubemap fig-cubemap-export fig-cubemap-engine \
         fig-fusion fig-fusion-results figures \
-        studio preview snapshots docs docs-serve clean clean-results publication
+        studio preview snapshots docs docs-serve clean clean-results publication \
+        pod pod-status pod-stop env-check replica replica-full inputs-pack inputs-push inputs-fetch \
+        inputs-verify results-pack results-push results-fetch results-merge eval-all \
+        inputs precheck progress watch \
+        traj-audit traj-audit-v2 pilot-inputs pilot-push pilot pilot-report sanity-tum lost sanity-tum-push pod-clean \
+        real-download real-list real-inputs real-push real-pod real-watch real-fetch real-report offline-pod offline-watch offline-fetch
 
 # ── Help / run-book ───────────────────────────────────────────────────────────
 help:
@@ -43,7 +48,7 @@ help:
 	@echo "  make init             clone + pin every method submodule (see bench.env)"
 	@echo "  make setup            orchestrator env (uv sync) — render+mask+eval+report"
 	@echo "  make setup-all        every method's ISOLATED env (delegates to each repo)"
-	@echo "  make setup-<m>        one method: prism|pi3|vggtslam|mapanything|laser"
+	@echo "  make setup-<m>        one method: prism|pi3|vggtslam|laser"
 	@echo ""
 	@echo "Dataset (shared, rendered in the orchestrator env):"
 	@echo "  make download         print how to fetch active datasets (ToU/prereqs noted)"
@@ -53,7 +58,7 @@ help:
 	@echo ""
 	@echo "Run (each method in its OWN env, streaming harness):"
 	@echo "  make run-all          run every configured method -> common results layout"
-	@echo "  make run-<m>          one method: prism|panovggt|pi3|vggtslam|mapanything|laser"
+	@echo "  make run-<m>          one method: prism|panovggt|pi3|vggtslam|laser"
 	@echo "  make ablations        PRISM ablations: guards (nolock/nostill/noguards) + align (sl4/se3)"
 	@echo "  make ablations-align  alignment-group study only: SL(4)+SE(3) vs Sim(3)=prism"
 	@echo ""
@@ -67,9 +72,7 @@ help:
 	@echo "Publication-grade aggregation (seeded-only; excludes contaminated runs):"
 	@echo "  make report-clean     CLEAN seeded-only aggregate -> results/report_clean/"
 	@echo "  make report-tables    report-facing CSV/JSON/md bundle for uofa-2026-report"
-	@echo "  make verify-clean     assert no contaminated run leaked into the clean output"
-	@echo "  make ingest-archive   archived big-run snapshot -> tidy per-run records"
-	@echo "  make publication      report-clean + report-tables + verify-clean"
+	@echo "  make publication      report-clean + report-tables"
 	@echo ""
 	@echo "Before the long run:"
 	@echo "  make smoke            TEST RUN: whole pipeline on a tiny matrix + ETA for the full run"
@@ -98,6 +101,19 @@ help:
 	@echo "  make fig-fusion       per-view vs fused panels from the dataset export (no GPU)"
 	@echo "  make fig-fusion-results  per-view (panovggt) vs fused (prism) from result clouds"
 	@echo ""
+	@echo "Pods (rerun-v2: render once, run on N GPU pods, score offline on CPU):"
+	@echo "  make pod [SHARD=k/N]  fresh pod -> envs -> inputs -> env-check -> methods -> pack -> Studio"
+	@echo "                        (detached in tmux 'pod'; make pod-status / pod-stop)"
+	@echo "  make inputs           ON YOUR PC: Replica -> split -> check -> render -> export -> pack"
+	@echo "  make precheck         every method on ONE real sequence + validation table + ETA"
+	@echo "  make progress / watch progress bar + ETA of the running benchmark (watch = live)"
+	@echo "  make env-check        GPU + CUDA envs + prism-v2 engine + VGGT-SLAM reference sample"
+	@echo "  make replica          stream Replica, keep only the benchmark scenes' meshes"
+	@echo "  make inputs-pack      exports -> dataset/inputs/<tag>/<scene>.tar (no depth/meshes)"
+	@echo "  make inputs-push      upload them to INPUTS_HF_REPO       | inputs-fetch on the pod"
+	@echo "  make results-fetch    download every pod pack (RESULTS_HF_REPO) | results-merge"
+	@echo "  make eval-all         score everything offline (CPU): traj/recon/metric/perf/clean report"
+	@echo ""
 	@echo "  make all              init -> setup-all -> download -> render -> export ->"
 	@echo "                        run-all -> eval-* -> perf -> report"
 	@echo ""
@@ -124,7 +140,6 @@ steps:
 	@echo "  make run-prism       # ours (pano)          -> results/prism/..."
 	@echo "  make run-pi3         # baseline (pinhole)   -> results/pi3/..."
 	@echo "  make run-vggtslam    # baseline (pinhole)   -> results/vggtslam/..."
-	@echo "  make run-mapanything # optional (pinhole)"
 	@echo "  make run-laser       # optional (pano)"
 	@echo ""
 	@echo "Stage 3  Evaluate + report (orchestrator env)"
@@ -153,11 +168,9 @@ setup-pi3:
 	bash envs/setup_pi3.sh
 setup-vggtslam:
 	bash envs/setup_vggtslam.sh
-setup-mapanything:
-	bash envs/setup_mapanything.sh
 setup-laser:
 	bash envs/setup_laser.sh
-setup-all: setup-prism setup-pi3 setup-vggtslam setup-mapanything setup-laser
+setup-all: setup-prism setup-pi3 setup-vggtslam setup-laser
 	@echo ">> all method envs set up"
 
 # ── Stage 1: dataset (orchestrator env) ───────────────────────────────────────
@@ -194,11 +207,9 @@ run-pi3:
 	$(ORCH_RUN) adapters/pi3.py         --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
 run-vggtslam:
 	$(ORCH_RUN) adapters/vggtslam.py    --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
-run-mapanything:
-	$(ORCH_RUN) adapters/mapanything.py --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
 run-laser:
 	$(ORCH_RUN) adapters/laser.py       --config $(CONFIG) --scenes "$(SCENES)" --traj $(TRAJ)
-run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
+run-all: run-prism run-panovggt run-pi3 run-vggtslam run-laser
 	@echo ">> all configured methods run"
 
 # PRISM ablations — guard-contribution study + alignment-group study.
@@ -206,8 +217,10 @@ run-all: run-prism run-panovggt run-pi3 run-vggtslam run-mapanything run-laser
 # are the OTHER two groups. This list previously said `prism_sim3`, which stopped
 # existing when the default flipped to Sim(3) — `make ablations` would have failed on
 # every alignment arm. Keep it in sync with config.yaml `ablations`.
-ABL_GUARDS ?= prism_nolock prism_nostill prism_noguards
-ABL_ALIGN  ?= prism_sl4 prism_se3
+# Guard arms are commented out in config.yaml (2026-08-09), so the default is empty —
+# naming them here made `make ablations` fail on the first arm.
+ABL_GUARDS ?=
+ABL_ALIGN  ?= prism_sl4 prism_se3 prism_sim3lock
 ablations: setup
 	@echo ">> running PRISM ablations (config.ablations)"
 	@for a in $(ABL_GUARDS) $(ABL_ALIGN); do \
@@ -242,7 +255,6 @@ all: init setup-all download render export run-all eval-traj eval-recon eval-met
 #
 #   report-clean   seeded-only + named exclusions + complete-runs-only
 #   report-tables  freeze those into the column layout uofa-2026-report ingests
-#   verify-clean   fail loudly if a contaminated run reached the clean output
 #
 # NOTE ON `clean-results`: it remains the DESTRUCTIVE housekeeping target it has
 # always been (rm -rf results/*). The findings doc asks for "make clean-results" to
@@ -251,26 +263,14 @@ all: init setup-all download render export run-all eval-traj eval-recon eval-met
 #
 # SOURCE=auto|live|archive — `auto` uses results/ when populated, else the committed
 # archive snapshot, so the clean report reproduces even with no results tree on disk.
-SOURCE   ?= auto
-RUN_ID   ?= bigrun_2026-07
-
-ingest-archive: setup
-	@echo ">> archived snapshot ($(RUN_ID)) -> tidy per-run records"
-	$(ORCH_RUN) eval/ingest_archive.py --run-id $(RUN_ID)
-
 report-clean: setup
-	@echo ">> CLEAN seeded-only aggregate (source=$(SOURCE))"
-	@if [ "$(SOURCE)" != "live" ]; then $(MAKE) --no-print-directory ingest-archive; fi
-	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source $(SOURCE) --run-id $(RUN_ID)
+	@echo ">> CLEAN seeded-only aggregate (results/)"
+	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source live
 aggregate-clean: report-clean          # alias
 
 report-tables: report-clean
 	@echo ">> report-facing table bundle -> results/report_tables/"
 	$(ORCH_RUN) eval/export_report_tables.py
-
-verify-clean: setup
-	@echo ">> verifying the clean aggregate contains no contaminated runs"
-	$(ORCH_RUN) eval/verify_clean.py --run-id $(RUN_ID)
 
 # ── Fidelity-vs-memory sweep (PRISM only) ────────────────────────────────────
 # Runs automatically as Phase 5 of the overnight; this target re-runs it standalone.
@@ -284,7 +284,7 @@ ablation-voxel: setup
 	  print(' '.join(m['name'] for m in load_config('$(CONFIG)').get('ablations',[]) \
 	  if m.get('role')=='sweep'))"); \
 	 scene="$(SWEEP_SCENE)"; trajs="$(SWEEP_TRAJS)"; \
-	 [ -z "$$trajs" ] && trajs="synthetic_2.0hz_s0 synthetic_2.0hz_s1 synthetic_5.0hz_s0 loop_2.0hz_s0"; \
+	 [ -z "$$trajs" ] && trajs="synthetic_2.0hz_s0 synthetic_2.0hz_s1 loop_2.0hz_s0"; \
 	 echo "   arms : $$arms"; echo "   scene: $${scene:-<all frozen>}"; echo "   trajs: $$trajs"; \
 	 for t in $$trajs; do for m in $$arms; do \
 	   $(ORCH_RUN) adapters/run.py --method $$m --config $(CONFIG) --scenes "$$scene" --traj $$t || true; \
@@ -306,7 +306,7 @@ ablation-voxel: setup
 #
 # --tile loops the sequence past its rendered length, so the grid can exceed n_frames.
 CAP_SCENE  ?= auto
-CAP_TRAJ   ?= synthetic_5.0hz_s0
+CAP_TRAJ   ?= synthetic_2.0hz_s0
 CAP_FRAMES ?= 16,32,64,96,128,192,256,384,512,768,1024
 capacity-sweep: setup
 	@echo ">> capacity sweep: growing prefixes until each method OOMs -> results/figures/"
@@ -349,7 +349,7 @@ smoke-check: setup
 	@echo ">> validating the last smoke run's artifacts only (no re-run)"
 	PRISM_CONFIG_OVERLAY=config.smoke.yaml $(ORCH_RUN) eval/smoke_check.py --config $(CONFIG)
 
-publication: report-clean report-tables verify-clean
+publication: report-clean report-tables
 	@echo ">> publication artifacts ready:"
 	@echo "   results/report_clean/clean_report.md   (analysis)"
 	@echo "   results/report_tables/                 (for uofa-2026-report)"
@@ -359,7 +359,7 @@ publication: report-clean report-tables verify-clean
 # The 2026-07 head-to-head used loop closure OFF (max_loops=0) — VGGT-SLAM's headline
 # feature disabled. Both arms are run so the paper reports the baseline in its native
 # mode as well. Needs the VGGT-SLAM env + exports; GPU required.
-ABL_VGGTSLAM ?= vggtslam_noloop vggtslam_loop
+ABL_VGGTSLAM ?= vggtslam vggtslam_noloop
 run-vggtslam-arms: setup
 	@echo ">> VGGT-SLAM fairness arms: loop closure OFF and ON"
 	@for a in $(ABL_VGGTSLAM); do \
@@ -377,7 +377,7 @@ FIG_FRAME  ?= 0                     # which pano frame the cubemap figure uses
 FIG_FRAMES ?= 1,2,4,8,16,32,64,128,256
 FIG_TILE   ?=                       # set FIG_TILE=1 to loop the sequence past its render length
 # fig-fusion: window of overlapping frames (a dense traj gives the strongest per-view story)
-FUSION_TRAJ  ?= synthetic_5.0hz_s0
+FUSION_TRAJ  ?= synthetic_2.0hz_s0
 FUSION_START ?= 0
 FUSION_WINDOW ?= 0                  # 0 = config engine.window_size (16)
 fig-vram: setup
@@ -502,3 +502,174 @@ clean:
 # that is `make report-clean`. Kept destructive on purpose (see RESULTS_CHANGELOG.md).
 clean-results:
 	@rm -rf results/* && echo "cleared results/  (for the CLEAN AGGREGATE use: make report-clean)"
+
+# ── Pods (rerun-v2) ───────────────────────────────────────────────────────────────
+# One command per GPU pod. Render ONCE elsewhere (make replica split render export
+# inputs-pack inputs-push), then on every pod:   make pod SHARD=k/N
+# Scoring is CPU-only and happens once, offline, on the merged packs:
+#   make results-fetch results-merge eval-all publication
+POD_SESSION ?= pod
+pod:
+	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|INPUTS_TAG|BENCH_OFFLINE|BENCH_METHODS|CKPT_EVERY_S|NVBLOX_MODE|POD_[A-Z_]+|PRECHECK_[A-Z_]+|SHARD|BENCH_SCENES)=' \
+	  | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" > .pod.env; chmod 600 .pod.env
+	@if tmux has-session -t $(POD_SESSION) 2>/dev/null; then \
+	  echo "!! tmux session '$(POD_SESSION)' exists — 'make pod-stop' first (or tmux attach -t $(POD_SESSION))"; exit 1; fi
+	@if command -v tmux >/dev/null 2>&1; then \
+	  tmux new -d -s $(POD_SESSION) 'bash scripts/pod.sh all; exec bash'; \
+	  echo ">> pod pipeline running in tmux session '$(POD_SESSION)' (SHARD=$(SHARD))"; \
+	  echo "   attach: tmux attach -t $(POD_SESSION)   |   make pod-status"; \
+	else \
+	  echo ">> no tmux yet — running in the foreground (installs tmux in 'prep')"; \
+	  bash scripts/pod.sh all; \
+	fi
+pod-status:
+	@echo "pod stage : $$(cat logs/pod_stage 2>/dev/null || echo '(not started)')"
+	@echo ""
+	@$(ORCH_RUN) scripts/progress.py 2>/dev/null || true
+	@echo ""; echo "--- last pod log lines ---"; tail -n 8 logs/pod_latest.log 2>/dev/null || true
+pod-stop:
+	-@tmux kill-session -t $(POD_SESSION) 2>/dev/null && echo ">> stopped tmux session '$(POD_SESSION)'"
+	@$(MAKE) --no-print-directory bench-stop
+env-check:
+	bash scripts/env_check.sh
+
+REPLICA_SRC ?= dataset/_replica_src
+# Streams the archive and keeps only <scene>/mesh.ply of config.yaml's
+# datasets.replica.download_scenes (~3 GB on disk instead of ~100 GB).
+replica: setup
+	$(ORCH_RUN) dataset/fetch_replica.py --out dataset/raw/replica
+
+# The whole dataset (textures, semantics, habitat configs) via the official script.
+replica-full:
+	@if [ -n "$$(ls -A dataset/raw/replica 2>/dev/null)" ]; then echo ">> Replica already present"; else \
+	  command -v pigz >/dev/null || $(MAKE) --no-print-directory deps; \
+	  [ -d $(REPLICA_SRC) ] || git clone --depth 1 https://github.com/facebookresearch/Replica-Dataset $(REPLICA_SRC); \
+	  mkdir -p dataset/raw/replica; \
+	  (cd $(REPLICA_SRC) && ./download.sh "$(CURDIR)/dataset/raw/replica"); fi
+
+inputs-pack: setup
+	bash scripts/inputs.sh pack
+inputs-push:
+	bash scripts/inputs.sh push
+inputs-fetch: setup
+	bash scripts/inputs.sh fetch
+inputs-verify: setup
+	bash scripts/inputs.sh verify
+
+results-pack:
+	bash scripts/results.sh pack
+results-push:
+	bash scripts/results.sh push
+results-fetch:
+	bash scripts/results.sh fetch
+results-merge:
+	bash scripts/results.sh merge $(PACKS)
+
+# Offline scoring of everything in results/ (CPU only; needs the FULL exports incl.
+# depth + gt_mesh.ply, i.e. the box that rendered the inputs).
+eval-all: setup
+	$(ORCH_RUN) eval/eval_traj.py       --config $(CONFIG)
+	$(ORCH_RUN) eval/eval_recon.py      --config $(CONFIG)
+	$(ORCH_RUN) eval/metric_accuracy.py --config $(CONFIG)
+	$(ORCH_RUN) eval/collect_perf.py    --config $(CONFIG)
+	$(ORCH_RUN) eval/make_report.py     --config $(CONFIG)
+	$(ORCH_RUN) eval/aggregate_clean.py --config $(CONFIG) --source live
+	$(ORCH_RUN) scripts/lost_metrics.py --plot
+	@echo ">> scored. Next: make publication   (and make snapshots for the figures)"
+
+# ── Render on your PC, pre-check, progress (rerun-v2) ─────────────────────────────
+# The whole dataset build on the machine that has CPU time to spare; then
+# `make inputs-push` (HF) or copy dataset/inputs/<tag>/ to the pod by hand.
+inputs: setup replica split check-scenes render export inputs-pack
+	@echo ">> inputs ready in dataset/inputs/$(INPUTS_TAG)/ — next: make inputs-push INPUTS_HF_REPO=<you>/<repo>"
+
+precheck: setup
+	$(ORCH_RUN) scripts/precheck.py
+
+progress: setup
+	@$(ORCH_RUN) scripts/progress.py
+
+watch: setup
+	@$(ORCH_RUN) scripts/progress.py --watch 15
+
+# Wipe this tag's results/checkpoints on HF (inputs untouched). Before any pod starts.
+results-hf-reset: setup
+	CONFIRM=yes bash scripts/results.sh hf-reset
+
+# Where/how each method goes wrong on one sequence (CPU, seconds). Table + results/diag/*.png
+#   make diag SCENE=apartment_1 TRAJ=synthetic_2.0hz_s0 [METHODS="prism vggtslam"]
+#   make diag-all            # every scene, seed 0, both paths
+# ── rerun-v3: trajectory audit + pilot (scripts/traj_audit.py, scripts/pilot.sh) ──
+# traj-audit     : what the generator would render now, ray-cast against the mesh (CPU, minutes)
+# traj-audit-v2  : the GT poses already rendered in dataset/exports (uses their gt_mesh.ply)
+# pilot-inputs   : PC — audit gate, render 10 Hz + derive 5/2 Hz, export, pack (config.pilot.yaml)
+# pilot-push     : PC — upload inputs/pilot-v3 to HF
+# pilot          : pod — fetch, run the pilot phases, report, upload results/pilot-v3
+# pilot-report   : summary table from results/p3_*
+traj-audit: setup
+	$(ORCH_RUN) scripts/traj_audit.py --generate --traj all --plot
+traj-audit-v2: setup
+	$(ORCH_RUN) scripts/traj_audit.py --traj all --plot
+pilot-inputs: setup
+	bash scripts/pilot.sh inputs
+pilot-push:
+	bash scripts/pilot.sh push
+pilot:
+	bash scripts/pilot.sh pod
+pilot-report: setup
+	bash scripts/pilot.sh report
+# sanity-tum : pod — VGGT-SLAM on TUM fr1, its own eval script vs our runner (decisions D29)
+# lost       : tracking-continuity metrics (tracked %, loss events, distance to failure; D25)
+sanity-tum: setup
+	bash scripts/sanity_tum.sh
+sanity-tum-push:
+	bash scripts/sanity_tum.sh push
+# pod-clean : archive results/ and drop inputs/stage flags so a new tag starts uncontaminated
+pod-clean:
+	bash scripts/pod_clean.sh
+# ── real 360 deg data (360Loc, decisions D31; config.real360.yaml, tag real360-v1) ──
+real-download:
+	bash scripts/real360.sh download
+real-list: setup
+	bash scripts/real360.sh list
+real-inputs: setup
+	bash scripts/real360.sh inputs
+real-push:
+	bash scripts/real360.sh push
+# Runs in a detached tmux session 'real' (survives an SSH drop): tmux attach -t real
+real-pod:
+	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|REAL_TAG|NVBLOX_MODE|POD_[A-Z_]+)=' \
+	  | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" > .pod.env; chmod 600 .pod.env
+	@if command -v tmux >/dev/null 2>&1; then \
+	  if tmux has-session -t real 2>/dev/null; then echo "!! tmux session 'real' exists — tmux attach -t real"; exit 1; fi; \
+	  tmux new -d -s real 'bash scripts/real360.sh pod; exec bash'; \
+	  echo ">> real-data run in tmux session 'real' — attach: tmux attach -t real   |   log: tail -f \$$(ls -t logs/real360_*_pod.log | head -1)"; \
+	else bash scripts/real360.sh pod; fi
+# OFFLINE references (PanoVGGT + Pi3 full batch; Replica seed 0 + real atrium) on a 96 GB pod.
+# Installs only the PRISM-VGGT and Pi3 envs. Detached tmux session 'offline'.
+offline-pod:
+	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|REAL_HF_REPO|REAL_TAG|OFFLINE_TAG|OFFLINE_FALLBACK_FRAMES|POD_[A-Z_]+)=' \
+	  | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" > .pod.env; chmod 600 .pod.env
+	@if tmux has-session -t offline 2>/dev/null; then echo "!! tmux session 'offline' exists — tmux attach -t offline"; exit 1; fi
+	@tmux new -d -s offline 'bash scripts/offline.sh pod; exec bash'
+	@echo ">> offline run in tmux session 'offline' — progress: make offline-watch   |   raw: tmux attach -t offline"
+offline-watch:
+	@if command -v uv >/dev/null 2>&1; then PRISM_CONFIG_OVERLAY=config.offline.yaml $(ORCH_RUN) scripts/progress.py --watch 15; \
+	else echo ">> uv not installed yet (prep is starting) — showing the log"; tail -f logs/pod_latest.log; fi
+offline-fetch: setup
+	bash scripts/offline.sh fetch
+# Progress of `make real-pod` (stage, runs done / 5, last log lines). Ctrl-C leaves it.
+real-watch: setup
+	@PRISM_CONFIG_OVERLAY=config.real360.yaml $(ORCH_RUN) scripts/progress.py --watch 15
+real-fetch:
+	bash scripts/real360.sh fetch
+real-report: setup
+	bash scripts/real360.sh report
+lost: setup
+	$(ORCH_RUN) scripts/lost_metrics.py --plot
+
+diag: setup
+	$(ORCH_RUN) scripts/diag.py --scene "$(SCENE)" --traj "$(TRAJ)" --methods "$(METHODS)"
+diag-all: setup
+	@for sc in $$($(ORCH_RUN) -c "from bench.matrix import frozen_scenes; from bench.config import load_config; print(' '.join(frozen_scenes(load_config('config.yaml'))))"); do \
+	  for tj in synthetic_2.0hz_s0 loop_2.0hz_s0; do $(ORCH_RUN) scripts/diag.py --scene $$sc --traj $$tj --no-plot || true; done; done

@@ -11,6 +11,15 @@ venv/
 # Datasets, weights, and run outputs — NEVER commit (brief §9)
 dataset/raw/
 dataset/exports/
+# packed pod inputs (scripts/inputs.sh)
+dataset/inputs/
+# HF downloads (inputs / pod result packs)
+dataset/_hf/
+# Replica-Dataset downloader checkout (make replica)
+dataset/_replica_src/
+# overnight / pod / env-check logs (packed into pod tars)
+logs/
+config.local.yaml.bak.*
 results/
 checkpoints/
 *.pt
@@ -40,3 +49,8 @@ site/
 Thumbs.db
 .idea/
 .vscode/
+# uv lockfile written by `uv sync` on each machine (not pinned in this repo)
+uv.lock
+# make pod: env handed to the tmux pipeline (contains HF_TOKEN)
+.pod.env
+results_archive/

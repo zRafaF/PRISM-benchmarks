@@ -26,7 +26,7 @@ Both emit, into results/figures/ (or --out-dir):
   * vram_scaling.csv   — method, num_frames, peak_vram_gb, status(completed|oom), notes
   * vram_vs_frames.png — the plot (>=150 dpi at final size)
 
-Data hygiene (non-negotiable, see docs/results_bigrun.md):
+Data hygiene (non-negotiable):
   * Seeded runs only (traj ending _s0/_s1); the contaminated aggregate tables are
     never read. Rendered scenes are noise-free (optimistic vs. real capture) — the
     caption keeps that caveat. OOM points are LABELLED, never extrapolated through.
@@ -44,7 +44,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench.config import REPO_ROOT, load_config, traj_rate_hz
 
-DEFAULT_PERF_CSV = REPO_ROOT / "documentation" / "docs" / "data" / "bigrun_2026-07" / "perf.csv"
+DEFAULT_PERF_CSV = REPO_ROOT / "results" / "report" / "perf.csv"   # eval/collect_perf.py
 DEFAULT_OUT = REPO_ROOT / "results" / "figures"
 
 # Display order + style. `kind` drives the visual grammar: batch = solid line +

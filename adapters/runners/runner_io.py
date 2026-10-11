@@ -152,3 +152,81 @@ def write_runner_perf(out_dir: Path, per_window_latency_s=None, latency_end_to_e
          "ckpt_size_mb": ckpt_size_mb,
          "extra": extra or {}}
     (Path(out_dir) / "perf_runner.json").write_text(json.dumps(d, indent=2))
+
+
+# -- cube-face inputs (rerun-v3, decisions D28) ---------------------------------
+# A `cube` input dir holds the 360 deg view as n pinhole cube faces per timestep,
+# interleaved: image 4t+k is face k of timestep t (faces.json gives the order and each
+# face's rotation in the body camera frame). The method sees every face as a frame of
+# its own; afterwards its per-image poses are collapsed back to one pose per timestep.
+
+def _quat_to_mat(q):
+    x, y, z, w = q
+    n = np.sqrt(x * x + y * y + z * z + w * w) or 1.0
+    x, y, z, w = x / n, y / n, z / n, w / n
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def read_tum(path: Path):
+    out = {}
+    for ln in Path(path).read_text().splitlines():
+        v = ln.split()
+        if len(v) < 8 or ln.lstrip().startswith("#"):
+            continue
+        T = np.eye(4)
+        T[:3, :3] = _quat_to_mat([float(a) for a in v[4:8]])
+        T[:3, 3] = [float(a) for a in v[1:4]]
+        out[int(round(float(v[0])))] = T
+    return out
+
+
+def collapse_cube_faces(in_dir: Path, out_dir: Path):
+    """If `in_dir` is a cube-face input, rewrite out_dir/poses.tum to one pose per
+    timestep (the FRONT face, whose camera frame is the body camera frame), keep the
+    per-face poses in poses_faces.tum, and return rig-consistency stats:
+
+      rig_rot_deg_*   how far the 4 faces' implied body orientations disagree
+                      (face pose x R_face^-1 should be identical for all faces)
+      rig_trans_rel_* spread of the 4 face centres (same optical centre in truth),
+                      relative to the median step between timesteps
+
+    Returns None for a normal (non-cube) input."""
+    in_dir, out_dir = Path(in_dir), Path(out_dir)
+    fj = in_dir / "faces.json"
+    pt = out_dir / "poses.tum"
+    if not fj.exists() or not pt.exists():
+        return None
+    faces = json.loads(fj.read_text())
+    nf = int(faces["n_faces"])
+    Rf = [np.asarray(r, float) for r in faces["R_body_face"]]
+    est = read_tum(pt)
+    (out_dir / "poses_faces.tum").write_text(pt.read_text())
+    ts = sorted({i // nf for i in est})
+    keep_t, keep_T, rot_err, tr_spread = [], [], [], []
+    for t in ts:
+        got = {k: est[nf * t + k] for k in range(nf) if (nf * t + k) in est}
+        if 0 not in got:
+            continue
+        keep_t.append(t)
+        keep_T.append(got[0])
+        if len(got) == nf:
+            Rb = [got[k][:3, :3] @ Rf[k].T for k in range(nf)]
+            for k in range(1, nf):
+                c = (np.trace(Rb[0].T @ Rb[k]) - 1) / 2
+                rot_err.append(float(np.degrees(np.arccos(np.clip(c, -1, 1)))))
+            C = np.stack([got[k][:3, 3] for k in range(nf)])
+            tr_spread.append(float(np.linalg.norm(C - C.mean(0), axis=1).max()))
+    write_tum(pt, keep_t, keep_T)
+    P = np.stack([T[:3, 3] for T in keep_T]) if keep_T else np.zeros((0, 3))
+    step = float(np.median(np.linalg.norm(np.diff(P, axis=0), axis=1))) if len(P) > 1 else 0.0
+    rel = [s / step for s in tr_spread] if step > 0 else []
+    stats = {"cube_faces": nf, "n_timesteps_posed": len(keep_t),
+             "n_face_poses": len(est),
+             "rig_rot_deg_median": float(np.median(rot_err)) if rot_err else None,
+             "rig_rot_deg_p95": float(np.percentile(rot_err, 95)) if rot_err else None,
+             "rig_trans_rel_median": float(np.median(rel)) if rel else None}
+    print(f"[cube] {len(est)} face poses -> {len(keep_t)} timestep poses; rig rotation "
+          f"disagreement median {stats['rig_rot_deg_median']} deg")
+    return stats

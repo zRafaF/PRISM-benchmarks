@@ -1,0 +1,34 @@
+# ============================================================================
+# OFFLINE references (decisions D33/D34), full batch (every frame in one forward pass,
+# no streaming): PanoVGGT = the raw PRISM backbone on the panorama ("what the engine
+# adds"); Pi3 = the pinhole feed-forward reference (LASER's backbone). Run on the
+# rerun-v3 Replica walks AND on the real 360Loc atrium (offline.sh merges this file
+# after config.real360.yaml for the second pass). Overlay on config.yaml via
+# PRISM_CONFIG_OVERLAY (scripts/offline.sh sets it). Same inputs (rerun-v3), same
+# trajectories, same scoring; results land in results/panovggt/replica/ next to the
+# streaming runs. Results tag offline-v3 on HF so the pod packs never mix.
+#
+#   pod (80–96 GB GPU, CUDA 12.8 driver):  make offline-pod   then  make offline-watch
+#   PC  (WSL):                             make offline-fetch
+#
+# MapAnything is not run (decided 2026-10-11).
+# ============================================================================
+
+methods:
+  - {name: panovggt, camera: pano,    env: submodules/PRISM-VGGT, mode: batch, metric: false, role: reference}
+  - {name: pi3,      camera: pinhole, env: submodules/Pi3,        mode: batch, metric: true,  role: baseline}
+ablations: []
+
+# One run per scene (seed 0) — a quality reference, not the variance study.
+# max_frames: null = every frame first (121 rooms, 300 apartments, 581 atrium), the same
+# frames PRISM sees. Measured peaks (96 GB card, 2026-08): PanoVGGT ~0.18 GB/frame
+# (50 GB @ 200), Pi3 93 GB @ 200. If the full sequence OOMs, offline.sh records that
+# (logs/offline_oom/, arm_config.json: full_length_oom) and reruns it uniformly
+# subsampled to OFFLINE_FALLBACK_FRAMES (default 200) — both facts go in the paper.
+baselines:
+  run: true
+  max_frames: null
+  seeds: [0]
+
+report:
+  label: "OFFLINE reference (PanoVGGT full batch) — rerun-v3 walks"

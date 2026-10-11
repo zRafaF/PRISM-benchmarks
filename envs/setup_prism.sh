@@ -24,5 +24,14 @@ echo "[prism] delegating to the repo's own setup.sh (nvblox: prebuilt wheel)"
 NVBLOX_MODE="${NVBLOX_MODE:-prebuilt}" bash setup.sh
 
 echo "[prism] benchmark extras (evo/sklearn/tensorboard)"
-uv sync --extra benchmarks
+if [ "${NVBLOX_MODE:-prebuilt}" = "source" ]; then
+    # `uv sync` would reinstall the PREBUILT nvblox wheel from the lockfile over the
+    # source build setup.sh just made (setup.sh warns about exactly this). Add the
+    # extras without touching nvblox.
+    uv pip install --python .venv evo scikit-learn tensorboard
+else
+    uv sync --extra benchmarks
+fi
+mkdir -p "$REPO_ROOT/logs/env"
+echo "nvblox_mode=${NVBLOX_MODE:-prebuilt}" > "$REPO_ROOT/logs/env/prism_nvblox_mode.txt"
 echo "[prism] done (weights at submodules/PRISM-VGGT/checkpoints/model.pt)."

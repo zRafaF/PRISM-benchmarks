@@ -1,0 +1,100 @@
+# ============================================================================
+# REAL 360 deg data — 360Loc (CVPR 2024), decisions D31. Overlay on config.yaml via
+# PRISM_CONFIG_OVERLAY (scripts/real360.sh sets it). Nothing here touches the Replica
+# matrix: separate dataset (`loc360`), separate input/result tag (`real360-v1`), and the
+# Replica render settings / trajectory code are unchanged, so the rerun-v3 inputs stay
+# valid.
+#
+#   PC : bash scripts/real360.sh download   # the scenes below, from the authors' links
+#        bash scripts/real360.sh list       # which sequences a scene contains
+#        bash scripts/real360.sh inputs     # import -> export -> pack (inputs/real360-v1)
+#        bash scripts/real360.sh push
+#   pod: bash scripts/real360.sh pod        # quick check: 5 arms on the sequences below
+# ============================================================================
+
+datasets:
+  active: [loc360]
+  seeds: [1234]                  # one seed: recorded sequences have no random draw
+  loc360:
+    kind: real_pano
+    root: dataset/raw/360loc     # <root>/<scene>/... as unzipped from 360Loc
+    # 360Loc has 4 scenes (one zip each). Only ATRIUM is used: indoor and essentially
+    # static, so PRISM's indoor settings (max_depth 4.5 m, floor-based scale) apply and
+    # every sequence can be scored against one fixed map. Excluded: hall (outdoor
+    # courtyard), concourse (indoor but crowded: moving people, no single static map),
+    # piatrium (half outdoor).
+    scenes: [atrium]
+    # traj id -> sequence folder inside the scene (relative path; `list` shows them).
+    # `mapping` = the daytime reference sequence (581 images in atrium). If the scene
+    # stores it in sub-folders, point at the one you want, e.g. mapping/<name>.
+    # Only the reference sequence ships 360 depth maps, from which the GT map is built
+    # (gt_map below). More daytime sequences of the same scene (query_360/daytime_360_1,
+    # _2: other routes, same map coordinates) can be added as e.g. `day1:
+    # query_360/daytime_360_1` and to trajectories.sequences — import `ref` first so the
+    # GT map exists; their reconstruction is then scored against that map, but without
+    # depth maps of their own they get no co-visibility mask (full-360 score only).
+    sequences:
+      ref: mapping
+    # Frames used: the longest continuous segment (a jump > max_step_m, default
+    # max(1 m, 8 x median step), splits the sequence), every `stride`-th image, at most
+    # `max_frames`. The importer prints the path length and step statistics.
+    stride: 1
+    max_frames: null
+    max_step_m: null
+    # Camera height above the floor (PRISM's metric anchor). null = from the dataset's
+    # 360 depth maps (straight-down depth), else a point cloud; set a number to override.
+    # (hall measured ~1.9 m: the rig is held above the operator's head.)
+    camera_height_m: null
+    # 360Loc depth maps are 16-bit PNG in centimetres (checked: two frames' depth clouds
+    # align under the GT poses at 0.01, not at 0.005 or 0.02). Used for the camera height.
+    depth_scale: 0.01
+    # Rotate each panorama (and its GT) so the image centre looks along the direction of
+    # travel: the pinhole "front" view then looks forward, like a robot camera.
+    align_heading: true
+    heading_smooth_frames: 5
+    # The person holding the rig is in every panorama, behind and below the camera (after
+    # align_heading: always at the back). Blacked out in the panorama before any view is
+    # resampled, and invalid in every mask — same pixels lost for every method.
+    # Sectors in degrees from the back direction; latitudes in degrees (0 = horizon).
+    # GT reference map for the reconstruction scores: the 360Loc depth maps are rendered
+    # from the authors' lidar map, so fusing them with the GT poses rebuilds that map
+    # (every pixel_step-th pixel, up to max_range_m from each camera, voxel_m dedup).
+    gt_map:
+      pixel_step: 4
+      max_range_m: 10.0
+      voxel_m: 0.02
+    operator_mask:
+      back_halfwidth_deg: 55     # head + torso: back +-55 deg, below top_lat_deg
+      top_lat_deg: -8
+      arms_halfwidth_deg: 85     # arms: back +-85 deg, below arms_top_lat_deg
+      arms_top_lat_deg: -35
+      nadir_lat_deg: -65         # everything below -65 deg (hands, rig)
+
+trajectories:
+  rates_hz: []                   # no generated walks: the recorded sequences only
+  extra_kinds: {}
+  sequences: [ref]
+
+# Streaming methods only (the offline ones need the 96 GB card): PRISM, the pinhole
+# baselines, and the same baselines on the 360 deg data as cube faces (cube4 and
+# cube4_o20 — both resampled from the real panorama). Same arm names as the Replica
+# matrix, so tables combine; results live under results/<arm>/loc360/.
+methods:
+  # PRISM_VOXEL_SIZE 0.04 (Replica: 0.02): at 2 cm the nvblox TSDF on atrium reached
+  # 1.04 M blocks by submap 33 of ~48 and the GPU hash table's doubling to 4 M blocks ran
+  # out of memory (34.1 of 34.2 GB). The map grows with the area seen — atrium is a
+  # 275 m walk through a large building, the Replica rooms are a few m^2 — and real,
+  # noisier depth fills more blocks than rendered depth. 4 cm voxels need ~4x fewer
+  # blocks; the reconstruction is still scored at 5 cm (D31).
+  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_VOXEL_SIZE: "0.04"}}
+  - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
+  - {name: laser,       camera: pinhole,  env: submodules/LASER,      mode: stream, metric: false, role: baseline}
+  - {name: vggtslam_cube, camera: cube, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_SUBMAP_SIZE: "64"}}
+  - {name: laser_cube,    camera: cube, env: submodules/LASER,     mode: stream, metric: false, role: baseline, runner: laser,    run_env: {LASER_WINDOW: "32", LASER_OVERLAP: "8"}}
+ablations: []
+
+baselines:
+  run: false
+
+report:
+  label: "REAL 360 (360Loc) — sanity check"

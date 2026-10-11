@@ -18,6 +18,7 @@ Emits the common outputs: poses.tum, cloud.ply, perf_runner.json.
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from pathlib import Path
 
@@ -58,7 +59,7 @@ def main():
     # FULL-BATCH: all frames at once. Optional cap (baselines.max_frames) if a scene is
     # too big for GPU memory — uniformly subsample, keeping the global frame indices as
     # TUM timestamps so eval still associates against GT.
-    cap = (cfg.get("baselines") or {}).get("max_frames")
+    cap = os.environ.get("OFFLINE_MAX_FRAMES") or (cfg.get("baselines") or {}).get("max_frames")
     idxs = list(range(n_total))
     if cap and n_total > cap:
         idxs = np.linspace(0, n_total - 1, int(cap)).astype(int).tolist()

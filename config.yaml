@@ -5,7 +5,7 @@
 # ============================================================================
 
 hardware:
-  hw_id: "RTX PRO 6000"      # stamped into perf tables; we benchmark on the 6000 only
+  hw_id: "RTX 5090"          # label in the perf tables (rerun-v2 runs on one RTX 5090; each run also records the real gpu_name)
   device: cuda
 
 # ── Datasets ────────────────────────────────────────────────────────────────
@@ -39,6 +39,10 @@ datasets:
     # smallest Replica rooms; pinning them makes the difficulty spread a property of
     # the config rather than of the RNG.
     must_include: [room_0, office_0]
+    # What `make replica` downloads (meshes only). It is exactly the split make_split
+    # draws from all 18 Replica scenes (must_include + seed 1234), so fetching only these
+    # freezes the same 6. Change both together if you change the split.
+    download_scenes: [apartment_0, apartment_1, office_0, room_0, room_1, room_2]
     mesh_glob: "*/mesh.ply"
 
   scannetpp:
@@ -81,6 +85,30 @@ camera:
         fov_deg: 90
       real_intrinsics:       # reuse the dataset's own perspective K when it has one
         use_dataset_k: true
+      # rerun-v3 (decisions D28): the SAME 360 deg capture given to the pinhole baselines
+      # as 4 square cube faces per timestep (front/right/back/left), interleaved
+      # 4t+k in one folder. Answers "is it the 360 deg data or the engine?" and gives the
+      # pinhole methods the view behind them. Methods with `camera: cube` read it; their
+      # per-face poses are collapsed to one pose per timestep (front face). Rendered for
+      # seed 0 only (like the other limited-seed arms) — 4 x 512^2 px per timestep.
+      # Two cube variants (D28). face_overlap_deg = overlap between neighbouring faces;
+      # face width = 360/cube_faces + face_overlap_deg.
+      #   cube4     : 0  -> 90 deg faces, a plain cubemap (faces of one timestep touch only
+      #               at the seams; linked only through the previous/next timestep)
+      #   cube4_o20 : 20 -> 110 deg faces (neighbours share 20 deg; can be matched directly)
+      # Every `camera: cube` arm runs on both; results land in .../<traj>/<variant>/.
+      cube4:
+        cube_faces: 4
+        width: 512
+        height: 512
+        face_overlap_deg: 0
+        seeds: [0]
+      cube4_o20:
+        cube_faces: 4
+        width: 512
+        height: 512
+        face_overlap_deg: 20
+        seeds: [0]
   camera_height_m: 1.7       # PRISM metric-scale anchor (known robot camera height)
 
 # ── Trajectories (both variants rendered) ─────────────────────────────────────
@@ -138,10 +166,30 @@ trajectories:
   # Umeyama outright with "Degenerate covariance rank". Nothing about a method was
   # observable there. If the wide-baseline regime is wanted back, get it by raising the
   # walking speed at a fixed rate, not by starving the sequence.
-  rates_hz: [2.0, 5.0]       # SMOOTH baseline gets the rate sweep
+  # rerun-v2: 2 Hz only. The paper reports no rate study (every table and the alignment
+  # study are at 2 Hz), and 5 Hz was ~55% of all frames in the matrix. VRAM-vs-length
+  # comes from `make capacity-sweep` (prefix sweep on one sequence), not from 5 Hz.
+  # Put 5.0 back to restore the rate sweep.
+  rates_hz: [2.0]
   synthetic_spline:
+    # rerun-v3: `grid` = collision-free planner (dataset/trajectories.py::grid_walk).
+    # The rerun-v2 `spline` planner checked only its waypoints; the curve between them
+    # crossed walls 5-16 times per apartment sequence (scripts/traj_audit.py), and every
+    # method lost track at exactly those frames. `spline` is kept only to reproduce
+    # old inputs.
+    planner: grid
     speed_mps: 0.5           # constant walking speed; inter-frame baseline = speed/rate
-    min_clearance_m: 0.30    # collision-free sampling against the mesh occupancy
+    min_clearance_m: 0.30    # hard floor: camera centre / body to any surface (doorways ~0.8 m wide)
+    body_clearance_m: 0.20   # grid planner: horizontal gap to furniture/walls at floor + 1 m
+                             #   (0.30 cut room_0's living room into 4 unreachable pieces)
+    pref_clearance_m: 0.60   # grid planner: paths are pushed to >= this where the room allows
+    lookahead_m: 0.5         # grid planner: heading aims 0.5 m ahead (turns start before corners)
+    # Walk length by scene size (decisions D23): scenes with < 20 m2 of walkable floor
+    # (office_0 4.6, room_1 7.4, room_2 10.8, room_0 14.4) walk 30 m (121 frames at 2 Hz);
+    # the apartments (43-45 m2) keep the n_frames path (74.75 m, 300 frames).
+    small_scene_area_m2: 20.0
+    small_scene_path_m: 30.0
+    grid_res_m: 0.05         # grid planner: free-space raster resolution
     loop: false
     # ── Reaching n_frames (see dataset/trajectories.py::synthetic_spline) ──
     # Sequence length is path_len * rate / speed, so n_frames used to only TRUNCATE.
@@ -165,6 +213,13 @@ trajectories:
                              #   keep the rate axis meaning what it says.
     min_speed_mps: 0.15      # lever 3: slow the walk; changes the baseline, last resort
     min_frames: 32           # hard floor — refuse to emit a stationary "trajectory"
+    # Camera YAW-RATE limit (rerun-v2). Headings used to follow the spline tangent
+    # instantly: 3-7% of 2 Hz steps turned >45 deg in ONE frame (some ~180 deg) and the
+    # last frame snapped to +X. A panorama does not care (yaw = column shift); a 90 deg
+    # pinhole loses all overlap — a bias against every pinhole baseline. 45 deg/s is a
+    # brisk walking turn: <=22.5 deg/step at 2 Hz, <=9 deg at 5 Hz (same physical turn).
+    # Changing this changes the GT of every sequence -> re-render + re-run everything.
+    max_yaw_rate_dps: 45.0
 
   # NEW trajectory families for the big benchmark (each renders as '<kind>_<rate>hz[_sN]').
   # They run at 2 Hz only (the new axis is the MOTION pattern, not the rate) to bound
@@ -180,7 +235,9 @@ trajectories:
   # Re-enable by uncommenting; nothing else needs to change.
   extra_kinds:
     # stopgo: {rates_hz: [2.0], n_stops: 2, dwell_s: 5.0}
-    loop:   {rates_hz: [2.0]}
+    # loop:   {rates_hz: [2.0]}   # DROPPED in rerun-v3 (decisions D21): every walk already
+    #   revisits 40-85% of its frames, so loop closure is exercised in every sequence; in
+    #   rerun-v2 loop_* were the same poses as synthetic_* anyway. Uncomment to restore.
 
 # ── PRISM engine knobs (mirror the live/report config) ────────────────────────
 engine:
@@ -211,25 +268,50 @@ streaming:
 methods:
   # DEPLOYED DEFAULT = Sim(3), set explicitly here rather than inherited from the
   # engine's own default, so the arm's identity is pinned by the benchmark config and
-  # cannot drift if the PRISM repo changes its default. Basis: the alignment study
-  # (SL(4) is better on open paths but loses decisively on loops — ATE 110 vs 102 cm,
-  # F 0.26 vs 0.34, scale 31% vs 20% — and real deployments loop).
+  # cannot drift if the PRISM repo changes its default.
+  # rerun-v2 (PRISM-VGGT branch prism-v2): every alignment group is now fit from the
+  # SAME dense overlap point correspondences, and `prism` is a true 7-DoF Sim(3) with a
+  # per-window scale (PRISM_SCALE_MODE=free). The 2026-07/08 "alignment study" compared
+  # Sim(3) fit from 4 camera centres with its scale frozen against SL(4) fit from dense
+  # points, so its numbers (SL(4) 31% vs Sim(3) 20% scale error on loops) are void.
   # NOTE FOR ANYONE READING OLD RESULTS: in the 2026-07 archive the arm named `prism`
-  # was SL(4). From this config forward `prism` is Sim(3) and SL(4) lives in the
-  # `prism_sl4` ablation arm. eval/aggregate_clean.py carries an era map for this.
-  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours, align_group: sim3, run_env: {PRISM_ALIGN: "sim3"}}
+  # was SL(4). From 2026-08 `prism` is Sim(3) and SL(4) lives in the `prism_sl4`
+  # ablation arm. eval/aggregate_clean.py carries an era map for this.
+  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free"}}
   - {name: panovggt,    camera: pano,     env: submodules/PRISM-VGGT, mode: batch,  metric: false, role: reference}  # raw backbone, full-batch 360° (no PRISM engine) — shows what the engine adds
   - {name: pi3,         camera: pinhole,  env: submodules/Pi3,        mode: batch,  metric: true,  role: baseline}   # Pi3X: approx metric scale
-  - {name: mapanything, camera: pinhole,  env: submodules/map-anything, mode: batch, metric: true, role: baseline}  # feed-forward metric
+  # VGGT-SLAM in its PUBLISHED configuration: w=32, loop closure ON (see `vggtslam:`
+  # below). The loop-closure-OFF arm is `vggtslam_noloop` in ablations.
   - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
   - {name: laser,       camera: pinhole,  env: submodules/LASER,      mode: stream, metric: false, role: baseline}   # training-free streaming (wraps Pi3); pinhole
+  # rerun-v3 (decisions D28): the same two baselines on the 360 deg capture as 4 cube
+  # faces per timestep (variant cube4, seed 0). Windows count IMAGES: VGGT-SLAM submap
+  # 64 = 16 timesteps; LASER 32/8 = 8 timesteps with 2 shared (window boundaries fall on
+  # timestep boundaries). VRAM at these sizes is checked by the pod precheck.
+  - {name: vggtslam_cube, camera: cube, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, limited_seeds: true, runner: vggtslam, run_env: {VGGTSLAM_SUBMAP_SIZE: "64"}}
+  - {name: laser_cube,    camera: cube, env: submodules/LASER,     mode: stream, metric: false, role: baseline, limited_seeds: true, runner: laser,    run_env: {LASER_WINDOW: "32", LASER_OVERLAP: "8"}}
 
 # Feed-forward baselines process every frame at once. `max_frames` would subsample to
 # keep them under the VRAM ceiling — deliberately left null so they are NOT protected:
 # we want the real capacity limit, recorded. Set it only if you need a run to complete
 # for some other reason, and say so in the paper if you do.
+#
+# rerun-v2: CAPPED at 200. Measured peaks at <=200 frames were Pi3 93 GB, MapAnything
+# 72 GB, PanoVGGT 50 GB on the 96 GB card, so the 300-frame sequences would OOM and
+# Table II would lose them. The cap uniformly subsamples to 200 frames — state it in
+# the paper. `seeds` limits these OFFLINE reference methods to the listed seed indices
+# (0 = _s0): Table II is a quality reference, not the variance study, and this cuts
+# their GPU time by 2/3. Use [0, 1, 2] for full error bars on Table II too.
+#
+# `run: false` (or BENCH_OFFLINE=0 in the environment) drops the offline methods from
+# the matrix entirely — needed on a 32 GB card (RTX 5090), where all three OOM.
+# `seeds` also applies to every arm flagged `limited_seeds: true` below (the PRISM
+# alignment ablations and VGGT-SLAM without loop closure): an ablation compares arms
+# on the same sequences, it does not need the 3-seed variance study.
 baselines:
-  max_frames: null
+  run: true
+  max_frames: 200
+  seeds: [0]
 
 # ── PRISM ablations (engine-contribution study) ───────────────────────────────
 # Each is a PRISM run (runner: prism) with engine behaviour toggled via run_env. They
@@ -253,14 +335,24 @@ ablations:
   # Alignment-group study. `prism` (main) is Sim(3) — the deployed default — so the
   # arms below measure the OTHER two groups against it (PRISM_ALIGN switch in the
   # PRISM repo). Every arm names its group explicitly; none relies on a repo default.
-  - {name: prism_sl4,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sl4,  run_env: {PRISM_ALIGN: "sl4"}}
-  - {name: prism_se3,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: se3,  run_env: {PRISM_ALIGN: "se3"}}
+  # rerun-v2: all three groups fit from the same dense overlap points. prism_sim3lock
+  # isolates the per-window scale: Sim(3) with the scale frozen after the warm-up (what
+  # the old `prism` arm actually was, but now from dense points).
+  - {name: prism_sl4,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: sl4,  run_env: {PRISM_ALIGN: "sl4"}}
+  - {name: prism_se3,      camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: se3,  run_env: {PRISM_ALIGN: "se3"}}
+  #  prism_sim3lock DROPPED in rerun-v3 (decisions D24): within 0.1 cm of prism_se3 on
+  #  every scene in the rerun-v2 diag, so it measured nothing new.
+  # - {name: prism_sim3lock, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, limited_seeds: true, role: ablation, runner: prism, align_group: sim3lock, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "lock"}}
+  #  The pre-v2 engine behaviour (Sim(3) from the 4 overlap camera centres, scale frozen)
+  #  for a before/after row. Off by default to save GPU; it does not need the full grid.
+  # - {name: prism_sim3cam, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: ablation, runner: prism, align_group: sim3cam, run_env: {PRISM_ALIGN: "sim3_cam"}}
   #  (c) VGGT-SLAM FAIRNESS arms — the baseline in both configurations, so the paper can
   #      show the head-to-head against VGGT-SLAM's *native* mode (loop closure ON, its
   #      headline feature) rather than only against the hobbled OFF mode used in 2026-07.
   #      Named arms, not a mutable global, so a results tree is always self-describing.
-  - {name: vggtslam_noloop, camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "0"}}
-  - {name: vggtslam_loop,   camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "1"}}
+  #      rerun-v2: `vggtslam_loop` REMOVED — it was the same configuration as `vggtslam`
+  #      (w=32, max_loops=1) and every one of its runs duplicated a `vggtslam` run.
+  - {name: vggtslam_noloop, camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, limited_seeds: true, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_MAX_LOOPS: "0"}}
   #  (d) FIDELITY-vs-MEMORY SWEEP (PRISM only). The engine's voxel size and max_depth
   #      are the two knobs that trade map fidelity against memory, and PRISM is the only
   #      method here that HAS such a knob — the feed-forward baselines have exactly one
@@ -272,15 +364,19 @@ ablations:
   #      `prism` itself (voxel 0.02, max_depth 4.5) is the reference point on the curve.
   #      These run on a REDUCED scene/traj set (see scripts/run_overnight.sh Phase 5),
   #      not the whole matrix, and are excluded from the headline tables.
-  - {name: prism_vox010,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.01"}}
-  - {name: prism_vox040,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.04"}}
-  - {name: prism_vox080,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.08"}}
-  - {name: prism_depth30, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_MAX_DEPTH: "3.0"}}
-  - {name: prism_depth60, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_MAX_DEPTH: "6.0"}}
+  #  OFF in rerun-v2 (single pod): the paper does not use the fidelity/memory sweep.
+  #  Uncomment the five arms to bring it back (~40 min on one scene).
+  # - {name: prism_vox010,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.01"}}
+  # - {name: prism_vox040,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.04"}}
+  # - {name: prism_vox080,  camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_VOXEL_SIZE: "0.08"}}
+  # - {name: prism_depth30, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_MAX_DEPTH: "3.0"}}
+  # - {name: prism_depth60, camera: pano, env: submodules/PRISM-VGGT, mode: stream, metric: true, role: sweep, runner: prism, run_env: {PRISM_ALIGN: "sim3", PRISM_MAX_DEPTH: "6.0"}}
   #      A matched-window arm kept for the ablation story: same submap size as OUR
   #      engine window (16). It is NOT the published configuration — cite vggtslam
   #      (w=32) for the head-to-head and use this only to show the effect of w.
-  - {name: vggtslam_w16,    camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: ablation,  runner: vggtslam, run_env: {VGGTSLAM_SUBMAP_SIZE: "16", VGGTSLAM_MAX_LOOPS: "1"}}
+  #      Off in rerun-v2: with every frame kept (min_disparity 0) w=32 already builds
+  #      ~9 submaps per 300-frame sequence, which was the only reason this arm existed.
+  # - {name: vggtslam_w16,    camera: pinhole, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: ablation,  runner: vggtslam, run_env: {VGGTSLAM_SUBMAP_SIZE: "16", VGGTSLAM_MAX_LOOPS: "1"}}
 
 # VGGT-SLAM (streaming) tuning — drives its own main.py.
 #
@@ -307,10 +403,22 @@ ablations:
 # registration and no loop closure, i.e. the entire method is inactive. The runner
 # now parses the submap/loop-closure counts out of the log and writes them to
 # arm_config.json, and warns loudly when submaps < 2. Check that before citing.
+#
+# rerun-v2 — KEYFRAMING. min_disparity is VGGT-SLAM's keyframe gate (mean optical flow,
+# px, since the last keyframe). 50 px is right for the 30 fps video it was designed for,
+# where most frames are redundant. Our inputs are ALREADY sampled at 2-5 Hz (0.25 /
+# 0.10 m apart), and at 50 px VGGT-SLAM kept only ~35% (2 Hz) / ~17% (5 Hz) of the
+# frames every other method receives — it ran at an effective ~0.7 Hz with 16-29 deg
+# between keyframes, and at w=32 built ONE submap in 21 of 28 runs, so loop closure
+# could never fire. 0 keeps every frame (the same input as every other method); the
+# kept fraction is recorded per run (arm_config.json `keyframe_ratio`).
 vggtslam:
   max_loops: 1               # loop closure ON (its native mode). 0 disables.
   submap_size: 32            # PUBLISHED headline config (was 16 = our window size)
-  min_disparity: 50          # repo default + VGGT-SLAM 2.0; the 1.0 paper text says 25
+  min_disparity: 0           # keep every input frame (was 50 px, the 30 fps video default)
+  lc_thres: 0.95             # repo / eval-script default retrieval threshold
+  conf_threshold: 25         # repo default: drop the lowest 25% confidence points
+  cloud_dedup_voxel: 0.005   # VGGT units (~2 cm); dedups the ~5M-point raw dump
 # PanoVGGT-no-SLAM ablation intentionally EXCLUDED: full-batch of ours = benchmarking
 # PanoVGGT alone, not the streaming engine. (Decision 2026-07-13.)
 
@@ -329,7 +437,7 @@ eval:
     max_dist_m: 0.15
   metric_accuracy:
     enabled: true            # OUR benchmark: absolute-scale error vs. rendered GT
-    # measured only for methods with metric=true (prism, mapanything); others N/A
+    # measured only for methods with metric=true (prism, pi3); others N/A
   cleanliness:               # cloud sharpness/size — captures "fluffy floaters" F-score misses
     noise_threshold_m: 0.10  # a pred point > this from GT counts as a noise floater
     precision_threshold_m: 0.02   # tight precision (pred within 2 cm of GT surface)

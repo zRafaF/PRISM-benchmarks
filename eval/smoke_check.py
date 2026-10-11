@@ -253,6 +253,29 @@ def main():
                            f"(needs ~80+ frames at submap_size=32). MUST be re-checked "
                            f"on the real matrix: see completion.csv `n_degenerate`")
 
+    # (b2) rerun-v2: VGGT-SLAM must see (nearly) every frame, and with loop closure ON
+    # it must close at least one loop somewhere on the loop trajectories.
+    for method in [m for m in methods if m.startswith("vggtslam")]:
+        low, loops, loop_runs = [], 0, 0
+        for d in _runs(method):
+            arm = _load(d / "arm_config.json") or {}
+            kr = arm.get("keyframe_ratio")
+            if kr is not None and kr < 0.8:
+                low.append(f"{d.parent.name}:{100 * kr:.0f}%")
+            if d.parent.name.startswith("loop_") and arm.get("loop_closure"):
+                loop_runs += 1
+                loops += int(arm.get("n_loop_closures") or 0)
+        r.check(not low, f"{method}: keeps >=80% of input frames",
+                bad_detail=f"{len(low)} run(s) dropped frames at the keyframe gate "
+                           f"[{', '.join(low[:3])}] — check vggtslam.min_disparity "
+                           f"(every other method sees every frame)")
+        if loop_runs:
+            r.check(loops > 0, f"{method}: loop closure fired on loop trajectories",
+                    warn_only=True,
+                    ok_detail=f"{loops} loop closure(s) over {loop_runs} loop run(s)",
+                    bad_detail=f"0 loop closures over {loop_runs} loop run(s) — the "
+                               f"loop-ON vs loop-OFF comparison will be identical")
+
     # (c) loop must differ from smooth, else the loop family is not looping
     def _mean_ate(method, fam):
         vals = []
@@ -278,7 +301,8 @@ def main():
                        f"is UNTESTED")
 
     # (d) the alignment arms must diverge, else PRISM_ALIGN is doing nothing
-    align_arms = [m for m in ("prism", "prism_sl4", "prism_se3") if m in methods]
+    align_arms = [m for m in ("prism", "prism_sl4", "prism_se3", "prism_sim3lock")
+                  if m in methods]
     if len(align_arms) > 1:
         per_arm = {m: _mean_ate(m, "") for m in align_arms}
         vals = [v for v in per_arm.values() if v]

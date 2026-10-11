@@ -84,9 +84,17 @@ def main():
     # room -> ~12 frames), clamp to a single batch window over all frames so a map is
     # still produced instead of nothing.
     n = len(frames)
-    ws = min(int(eng["window_size"]), n)
-    ov = min(int(eng["overlap"]), max(0, ws - 1))
-    if ws < int(eng["window_size"]):
+    # Window sweep (rerun-v3 pilot): PRISM_WINDOW / PRISM_OVERLAP override the engine
+    # window per arm via run_env, like PRISM_VOXEL_SIZE. Runners read config.yaml
+    # directly (no overlay), so an arm cannot change cfg["engine"] any other way.
+    win_cfg = int(_os.environ.get("PRISM_WINDOW", eng["window_size"]))
+    ov_cfg = int(_os.environ.get("PRISM_OVERLAP", eng["overlap"]))
+    if (win_cfg, ov_cfg) != (int(eng["window_size"]), int(eng["overlap"])):
+        print(f"[prism_runner] SWEEP override: window={win_cfg} overlap={ov_cfg} "
+              f"(cfg {eng['window_size']}/{eng['overlap']})")
+    ws = min(win_cfg, n)
+    ov = min(ov_cfg, max(0, ws - 1))
+    if ws < win_cfg:
         print(f"[prism_runner] short sequence ({n} frames) -> single batch window={ws} overlap={ov}")
     per_window = []
     t_prev = time.perf_counter()
@@ -123,16 +131,42 @@ def main():
     _scale = {
         "metric_scale": float(getattr(engine, "current_metric_scale", float("nan"))),
         "scale_locked": bool(getattr(engine, "_scale_committed", False)),
+        # True when the lock happened because the pre-lock buffer filled up, NOT because
+        # the floor estimates agreed. The map is then at ONE scale (good) but that scale
+        # was never verified (bad) — a distinct population from a properly locked run.
+        "scale_locked_forced": bool(getattr(engine, "_scale_lock_forced", False)),
         "scale_provisional": (None if getattr(engine, "_provisional_scale", None) is None
                               else float(engine._provisional_scale)),
         "floor_scale_samples": [round(float(x), 5)
                                 for x in getattr(engine, "floor_scale_samples", [])],
         "scale_buffer_enabled": bool(getattr(engine, "scale_buffer_enabled", False)),
     }
+    if _scale["scale_locked_forced"]:
+        print(f"[prism_runner] WARNING: metric scale committed by FORCE at the buffer "
+              f"limit from {len(_scale['floor_scale_samples'])} sample(s) — the map is "
+              f"internally consistent but its scale is unverified")
     if not _scale["scale_locked"]:
         print(f"[prism_runner] WARNING: metric scale NEVER LOCKED "
               f"({len(_scale['floor_scale_samples'])} confident floor sample(s)) — "
               f"scale-dependent metrics for this run are unverified")
+    # prism-v2: how every window was aligned and which guards fired. Old engines lack
+    # get_alignment_report(); the run still records everything else.
+    if hasattr(engine, "get_alignment_report"):
+        try:
+            _rep = engine.get_alignment_report()
+            (out / "alignment.json").write_text(_json.dumps(_rep, indent=2, default=float))
+            _scale.update({
+                "align_mode": _rep.get("align_mode"),
+                "level_source": _rep.get("level_source"),
+                "align_fit_sources": _rep.get("fit_sources"),
+                "align_guards": _rep.get("guards"),
+                "dense_rmse_median_m": _rep.get("dense_rmse_median_m"),
+                "sl4_nonsim_pct_median": _rep.get("sl4_nonsim_pct_median"),
+            })
+            if _rep.get("level_source") is None:
+                print("[prism_runner] WARNING: the world was NEVER LEVELLED in this run")
+        except Exception as _e:   # never lose a run to a diagnostic
+            print(f"[prism_runner] alignment report failed: {_e}")
     (out / "arm_config.json").write_text(_json.dumps(
         {"voxel_size": _voxel, "max_depth": _maxd,
          "window_size": ws, "overlap": ov,

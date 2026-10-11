@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# ============================================================================
+# pod.sh — ONE fresh GPU pod from zero to downloadable results, unattended.
+#
+#   make pod            # = bash scripts/pod.sh all, detached in tmux session 'pod'
+#   make pod-status     # which stage, progress, last log lines
+#
+# Every run is SEQUENTIAL on the one GPU, so all timing/VRAM numbers are clean.
+#
+# Stages (each can be re-run alone:  bash scripts/pod.sh <stage>):
+#   prep      apt packages, uv, pinned submodules (bench.env), every method env, weights
+#   check     env-check: GPU, CUDA in every env, prism-v2 engine, nvblox FUSES a frame,
+#             VGGT-SLAM reproduces its own office_loop loop closure. If ONLY nvblox
+#             fails, PRISM's env is rebuilt with nvblox from source and re-checked.
+#   data      THE DATASET. Rendered on your PC and uploaded (recommended):
+#               INPUTS_HF_REPO set          -> download + unpack the pre-rendered frames
+#               tars in dataset/inputs/<tag> -> unpack them (you copied them by hand)
+#             otherwise renders here: Replica -> split -> check -> render -> export
+#   precheck  every method on ONE real sequence + validation table + full-run ETA.
+#             The benchmark does not start unless every method PASSES.
+#   bench     the method matrix (no scoring on the GPU box)
+#   capacity  OPTIONAL (POD_CAPACITY=1): VRAM-vs-length prefix sweep for Fig. vram
+#   eval      OPTIONAL (POD_EVAL=1): score on this pod's CPU (else score locally)
+#   pack      raw results + scoring inputs + logs -> results/bundles/pod_*.tar
+#   studio    Gradio Studio with a public link; Download tab lists the pack
+#   all       prep check data precheck bench [capacity] [eval] pack studio
+#
+# Env: POD_CAPACITY=1, POD_EVAL=1, POD_STUDIO=0, RESULTS_HF_REPO + HF_TOKEN (auto-upload),
+#      SHARD=k/N (only if you ever split across pods).
+# ============================================================================
+set -euo pipefail
+cd "$(dirname "$0")/.."
+# Vars given to `make pod` (HF_TOKEN, BENCH_OFFLINE, ...) — tmux does not pass them on.
+[ -f .pod.env ] && { set -a; . ./.pod.env; set +a; }
+# Defaults from bench.env when not in the environment (e.g. run outside make/tmux).
+_benv() { sed -n "s/^$1[[:space:]]*[?:]*=[[:space:]]*//p" bench.env 2>/dev/null | head -1; }
+export INPUTS_TAG="${INPUTS_TAG:-$(_benv INPUTS_TAG)}"
+export INPUTS_HF_REPO="${INPUTS_HF_REPO:-$(_benv INPUTS_HF_REPO)}"
+export RESULTS_HF_REPO="${RESULTS_HF_REPO:-$(_benv RESULTS_HF_REPO)}"
+mkdir -p logs
+STAMP="$(date +%Y%m%d_%H%M%S)"
+LOG="logs/pod_${STAMP}.log"
+ln -sf "pod_${STAMP}.log" logs/pod_latest.log
+exec > >(tee -a "$LOG") 2>&1
+export PATH="$HOME/.local/bin:$PATH"
+
+say() { echo; echo "[$(date +%H:%M:%S)] ===== $* ====="; echo "$(date +%H:%M) $*" > logs/pod_stage; }
+
+# Network steps on a fresh pod (git clone, uv sync, weight downloads) hit transient DNS
+# / mirror errors. Retry each install step a few times before giving up; every step is
+# idempotent, so a retry just continues where the failed attempt stopped.
+retry() {
+  local i
+  for i in 1 2 3; do
+    "$@" && return 0
+    echo "!! '$*' failed (attempt $i/3) — retrying in $((i * 30)) s"; sleep $((i * 30))
+  done
+  echo "!! '$*' failed 3 times"; return 1
+}
+
+stage_prep() {
+  say "prep: system packages"
+  if command -v apt-get >/dev/null 2>&1; then
+    SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+    retry $SUDO apt-get update -qq
+    $SUDO apt-get install -y -qq wget pigz unzip tmux git curl zstd lsb-release \
+        build-essential cmake git-lfs python3-dev bc \
+        libegl1 libgl1 libgomp1 libglib2.0-0 >/dev/null   # open3d (VGGT-SLAM, eval) needs libEGL/libGL
+  fi
+  command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
+  say "prep: pinned submodules (bench.env: PRISM-VGGT @ prism-v2, baselines @ commits)"
+  retry make init
+  say "prep: orchestrator env"
+  retry make setup
+  for m in prism vggtslam laser pi3; do
+    say "prep: setup-$m"
+    retry make "setup-$m"
+  done
+}
+
+stage_check() {
+  if [ "${POD_SKIP_CHECK:-0}" = "1" ]; then say "check: SKIPPED (POD_SKIP_CHECK=1)"; return; fi
+  say "check: env-check"
+  if bash scripts/env_check.sh; then return; fi
+  # Only the nvblox fusion failed? -> rebuild PRISM's nvblox from source, re-check.
+  local fails
+  fails=$(python3 -c "import json;d=json.load(open('logs/env/env_check.json'));print(' '.join(c['check'] for c in d['checks'] if c['status']=='FAIL'))")
+  if [ "$fails" = "nvblox_integrate" ]; then
+    say "check: prebuilt nvblox wheel failed on this GPU -> building nvblox from source (~15-25 min)"
+    NVBLOX_MODE=source make setup-prism
+    bash scripts/env_check.sh
+  else
+    echo "!! env-check failed: $fails — fix before spending GPU time (see logs/env/)"; exit 1
+  fi
+}
+
+stage_data() {
+  local tag="${INPUTS_TAG:-rerun-v2}"
+  if [ -n "${INPUTS_HF_REPO:-}" ]; then
+    say "data: download the frames rendered on your PC ($INPUTS_HF_REPO, $tag)"
+    bash scripts/inputs.sh fetch
+    touch logs/.data_ready; return
+  fi
+  if ls "dataset/inputs/$tag"/*.tar >/dev/null 2>&1; then
+    say "data: unpack the frames you copied into dataset/inputs/$tag"
+    bash scripts/inputs.sh unpack
+    touch logs/.data_ready; return
+  fi
+  say "data: no pre-rendered inputs -> rendering on this pod. Download Replica (no approval)"
+  make replica
+  say "data: freeze the scene split (6 scenes, fixed seed) -> config.local.yaml"
+  make split
+  say "data: pre-flight — every scene x trajectory buildable (no rendering)"
+  make check-scenes
+  say "data: render pano + pinhole + ground truth, then export method inputs"
+  make render SCENES="${BENCH_SCENES:-}" TRAJ=all
+  make export SCENES="${BENCH_SCENES:-}" TRAJ=all
+  bash scripts/inputs.sh verify
+  touch logs/.data_ready
+}
+
+stage_precheck() {
+  [ -f logs/.data_ready ] || { echo "!! run the data stage first"; exit 1; }
+  say "precheck: every method on one real sequence (results are kept and reused)"
+  make precheck
+  # Exercise the END of the pipeline now, so it cannot fail for the first time after
+  # hours of GPU time: pack the pre-check results (then delete the test tar) and push a
+  # first checkpoint to HF (proves the token can write).
+  say "precheck: testing the end of the pipeline (pack + HF checkpoint upload)"
+  bash scripts/results.sh pack
+  rm -f results/bundles/pod_*.tar
+  if [ -n "${INPUTS_HF_REPO:-}${RESULTS_HF_REPO:-}" ]; then
+    bash scripts/results.sh sync-up || { echo "!! HF upload failed: check HF_TOKEN can WRITE to ${RESULTS_HF_REPO:-$INPUTS_HF_REPO}"; exit 1; }
+  fi
+}
+
+stage_bench() {
+  [ -f logs/.data_ready ] || { echo "!! run the data stage first"; exit 1; }
+  # Never mix campaigns: results/ must be stamped with this run's tag (make pod-clean).
+  local tag="${INPUTS_TAG:-rerun-v2}"
+  if [ -f results/.tag ] && [ "$(cat results/.tag)" != "$tag" ]; then
+    echo "!! results/ belongs to tag '$(cat results/.tag)', this run is '$tag' — run 'make pod-clean' first"; exit 1
+  fi
+  if [ ! -f results/.tag ] && ls -d results/*/*/*/*/*/ >/dev/null 2>&1; then
+    echo "!! results/ holds runs with no tag stamp (an earlier campaign?) — run 'make pod-clean' first"; exit 1
+  fi
+  mkdir -p results && echo "$tag" > results/.tag
+  say "bench: resume from the HF checkpoint, if any (finished runs are skipped)"
+  bash scripts/results.sh sync-down || true
+  say "bench: method matrix, sequential on one GPU (SKIP_EVAL=1, SKIP_RENDER=1)"
+  SKIP_EVAL=1 SKIP_RENDER=1 bash scripts/run_overnight.sh
+}
+
+stage_capacity() {
+  say "capacity: VRAM-vs-length prefix sweep (Fig. vram)"
+  make capacity-sweep || echo "!! capacity sweep failed — continuing"
+}
+
+stage_eval() {
+  say "eval: scoring on this pod's CPU"
+  make eval-all publication
+}
+
+stage_pack() {
+  say "pack: raw results + scoring inputs for offline scoring"
+  bash scripts/results.sh pack
+  if [ -n "${RESULTS_HF_REPO:-}${INPUTS_HF_REPO:-}" ]; then
+    say "pack: uploading to HF (${RESULTS_HF_REPO:-$INPUTS_HF_REPO}, results/<tag>/)"
+    bash scripts/results.sh push || echo "!! push failed — download the pack from Studio instead"
+  fi
+}
+
+stage_studio() {
+  if [ "${POD_STUDIO:-1}" = "0" ]; then say "studio: not started (POD_STUDIO=0)"; return; fi
+  say "studio: public Gradio link below; Download tab lists results/bundles/pod_*.tar"
+  make studio
+}
+
+case "${1:-all}" in
+  prep)     stage_prep ;;
+  check)    stage_check ;;
+  data)     stage_data ;;
+  precheck) stage_precheck ;;
+  bench)    stage_bench ;;
+  capacity) stage_capacity ;;
+  eval)     stage_eval ;;
+  pack)     stage_pack ;;
+  studio)   stage_studio ;;
+  all)
+    # Re-running `make pod` resumes: finished setup stages are skipped (delete
+    # logs/.done_<stage> to force one), and the bench skips runs that already have results.
+    once() { if [ -f "logs/.done_$1" ]; then echo ">> $1: already done (rm logs/.done_$1 to redo)";
+             else "stage_$1"; touch "logs/.done_$1"; fi; }
+    once prep; once check; once data; once precheck; stage_bench
+    [ "${POD_CAPACITY:-0}" = "1" ] && stage_capacity
+    [ "${POD_EVAL:-0}" = "1" ] && stage_eval
+    stage_pack; say "DONE"; stage_studio ;;
+  *) sed -n '2,26p' "$0"; exit 1 ;;
+esac

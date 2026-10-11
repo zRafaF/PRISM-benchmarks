@@ -88,6 +88,14 @@ def _statistical_outlier_pct(pts, nb=20, std_ratio=2.0, sample=200000):
 
 def _gt_cloud(dataset, scene, traj, n_sample=400000):
     import open3d as o3d
+    # Real data (360Loc, D31) has no mesh: its GT is a point cloud fused from the
+    # dataset's depth maps (gt_cloud.ply), randomly subsampled to the same budget.
+    cloud_p = _export_base(dataset, scene, traj) / "gt_cloud.ply"
+    if cloud_p.exists():
+        pts = np.asarray(o3d.io.read_point_cloud(str(cloud_p)).points)
+        if len(pts) > n_sample:
+            pts = pts[np.random.default_rng(0).choice(len(pts), n_sample, replace=False)]
+        return pts
     mesh_p = _export_base(dataset, scene, traj) / "gt_mesh.ply"
     mesh = o3d.io.read_triangle_mesh(str(mesh_p))
     pcd = mesh.sample_points_uniformly(number_of_points=n_sample)
@@ -173,9 +181,20 @@ def main():
     # sorted() so the traversal order is reproducible; Path.glob returns raw
     # directory order, which made the 2026-08-09 crash cut an arbitrary — and
     # therefore unexplainable — subset of methods out of the results.
-    clouds = sorted((REPO_ROOT / "results").glob("*/*/*/*/*/cloud.ply"))
-    print(f"[eval_recon] {len(clouds)} cloud(s) to evaluate")
+    import os as _os
+    # EVAL_GLOB narrows the pass (e.g. "laser_cube/replica/apartment_0/*/*");
+    # EVAL_FORCE=1 re-scores everything. Otherwise a run whose recon.json was made
+    # from the current cloud.ply (same point count and file size) is skipped — the
+    # full pass takes hours and most runs don't change between passes.
+    pat = _os.environ.get("EVAL_GLOB", "*/*/*/*/*").rstrip("/") + "/cloud.ply"
+    clouds = sorted((REPO_ROOT / "results").glob(pat))
+    force = _os.environ.get("EVAL_FORCE") == "1"
+    print(f"[eval_recon] {len(clouds)} cloud(s) found ({pat})")
+    n_fresh = 0
     for cloud in clouds:
+        if not force and _recon_fresh(cloud):
+            n_fresh += 1
+            continue
         try:
             res = _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean)
         except Exception as exc:                      # noqa: BLE001 — see below
@@ -191,6 +210,7 @@ def main():
             n_ok += 1
         else:
             n_skip += 1
+    print(f"\n[eval_recon] {n_fresh} up to date (EVAL_FORCE=1 to redo)")
     print(f"\n[eval_recon] SUMMARY: {n_ok} evaluated, {n_skip} skipped "
           f"(empty cloud), {n_err} errored")
     if n_err:
@@ -200,11 +220,97 @@ def main():
     return 0
 
 
+def _ply_vertex_count(p: Path) -> int | None:
+    with open(p, "rb") as f:
+        for _ in range(40):
+            ln = f.readline()
+            if ln.startswith(b"element vertex"):
+                return int(ln.split()[-1])
+            if ln.startswith(b"end_header"):
+                break
+    return None
+
+
+def _ply_subsample(p: Path, n: int, seed: int = 0):
+    """Uniform random n vertices of a binary little-endian PLY via memmap (x,y,z float/
+    double, optional uchar red/green/blue) -> (pts (n,3) float64, cols (n,3) in [0,1] or None)."""
+    tm = {"float": "<f4", "float32": "<f4", "double": "<f8", "float64": "<f8",
+          "uchar": "u1", "uint8": "u1", "int": "<i4", "int32": "<i4"}
+    props, nv, inv = [], 0, False
+    with open(p, "rb") as f:
+        while True:
+            ln = f.readline().decode("ascii", "ignore").strip()
+            if ln.startswith("element"):
+                inv = ln.startswith("element vertex")
+                if inv:
+                    nv = int(ln.split()[-1])
+            elif ln.startswith("property") and inv:
+                _, t, name = ln.split()[:3]
+                props.append((name, tm[t]))
+            elif ln == "end_header":
+                break
+        off = f.tell()
+    mm = np.memmap(p, dtype=np.dtype(props), mode="r", offset=off, shape=(nv,))
+    rng = np.random.default_rng(seed)
+    if nv <= 4 * n:                       # exact: a permutation of <= 80 M indices is fine
+        idx = np.sort(rng.choice(nv, n, replace=False))
+    else:                                 # avoid a 300 M permutation; draws collide rarely
+        idx = np.unique(rng.integers(0, nv, int(n * 1.15)))
+        idx = np.sort(rng.choice(idx, min(n, len(idx)), replace=False))
+    a = mm[idx]
+    pts = np.stack([a["x"], a["y"], a["z"]], 1).astype(np.float64)
+    cols = (np.stack([a["red"], a["green"], a["blue"]], 1).astype(np.float64) / 255.0
+            if "red" in a.dtype.names else None)
+    return pts, cols
+
+
+def _recon_fresh(cloud: Path) -> bool:
+    """recon.json exists and was computed from this exact cloud.ply. The run must also
+    still be valid (a completed run) and, with SAVE_ALIGNED=1, have its aligned copy."""
+    import os as _os
+    rj = cloud.parent / "recon.json"
+    if not rj.exists():
+        return False
+    if _os.environ.get("SAVE_ALIGNED") == "1" and not (cloud.parent / "cloud_aligned.ply").exists():
+        return False
+    try:
+        r = json.loads(rj.read_text())
+    except ValueError:
+        return False
+    return (r.get("point_count") == _ply_vertex_count(cloud)
+            and r.get("map_size_mb") == round(cloud.stat().st_size / 1e6, 2))
+
+
 def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
     """Evaluate a single cloud. Returns False if there was nothing to score."""
     import open3d as o3d
     method, dataset, scene, traj, variant = _run_meta(cloud.parent)
-    pred_pts = np.asarray(o3d.io.read_point_cloud(str(cloud)).points)
+    from eval.eval_traj import run_invalid
+    _ptum = cloud.parent / "poses.tum"
+    _np = sum(1 for _ in open(_ptum) if _.strip()) if _ptum.exists() else 0
+    bad = run_invalid(cloud.parent, _np, _export_base(dataset, scene, traj) / "poses_gt.tum")
+    if bad:
+        (cloud.parent / "recon.json").unlink(missing_ok=True)
+        print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}: NOT SCORED — {bad}")
+        return False
+    # Very large clouds (LASER on 2,324 real cube-face images: 150–320 M points, 2–5 GB)
+    # do not fit the scorer's memory. Above EVAL_MAX_POINTS (default 20 M) a fixed-seed
+    # uniform random subset is scored — the same rule for every method. Accuracy and
+    # precision are unbiased under uniform subsampling; completeness/recall are
+    # measured against a GT sample of a few hundred thousand points, so 20 M predicted
+    # points still cover every 5 cm neighbourhood a dense cloud covers.
+    import os as _os
+    n_raw = _ply_vertex_count(cloud) or 0
+    cap = int(_os.environ.get("EVAL_MAX_POINTS", 20_000_000))
+    if n_raw > cap:
+        sub_pts, sub_cols = _ply_subsample(cloud, cap)
+        pcd_in = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(sub_pts))
+        if sub_cols is not None:
+            pcd_in.colors = o3d.utility.Vector3dVector(sub_cols)
+        print(f"[eval_recon]   {n_raw:,} pts > EVAL_MAX_POINTS — scoring a random {cap:,}")
+    else:
+        pcd_in = o3d.io.read_point_cloud(str(cloud))
+    pred_pts = np.asarray(pcd_in.points)
     print(f"\n[eval_recon] {cloud.parent.relative_to(REPO_ROOT)}")
     print(f"[eval_recon]   pred cloud: {len(pred_pts)} pts "
           f"bbox={np.round(pred_pts.min(0),2)}..{np.round(pred_pts.max(0),2)}"
@@ -221,11 +327,26 @@ def _eval_one(cloud, cfg, thr, correct_scale, icp_cfg, clean) -> bool:
     pred_pts, _sim3 = _align_pred_to_gt(pred_pts, pred_tum, gt_tum, correct_scale)
     if icp_cfg.get("enabled", True) and len(pred_pts) and len(gt_pts):
         pred_pts = _icp_refine(pred_pts, gt_pts, icp_cfg.get("max_dist_m", 0.15))
+    # SAVE_ALIGNED=1: also write the cloud in the GT frame, exactly as scored
+    # (cloud_aligned.ply, float32) — the raw cloud.ply is in the method's own frame and
+    # scale, so it does not line up with the GT mesh in a viewer.
+    import os as _os
+    if _os.environ.get("SAVE_ALIGNED") == "1":
+        pa = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pred_pts))
+        if pcd_in.has_colors():
+            pa.colors = pcd_in.colors
+        o3d.io.write_point_cloud(str(cloud.parent / "cloud_aligned.ply"), pa)
 
-    pin_variants = list((_export_base(dataset, scene, traj) / "pinhole").glob("*"))
+    # The co-visibility mask comes from the ordinary pinhole trajectory, never from a
+    # cube-face variant (4 images per timestep, D28): synthetic_fov first.
+    pin_variants = sorted((p for p in (_export_base(dataset, scene, traj) / "pinhole").glob("*")
+                           if p.is_dir() and not (p / "faces.json").exists()
+                           and (p / "depth").exists()),     # the mask needs GT depth
+                          key=lambda p: (p.name != "synthetic_fov", p.name))
     # Cloud size / compactness (on the saved cloud; voxel-deduped identically for all).
     out = {"threshold_m": thr,
-           "point_count": int(len(pred_pts)),
+           "point_count": int(n_raw or len(pred_pts)),
+           "point_count_scored": int(len(pred_pts)),
            "map_size_mb": round(cloud.stat().st_size / 1e6, 2),
            "sor_outlier_pct": _statistical_outlier_pct(pred_pts)}
     print(f"[eval_recon]   statistical-outlier (fluffiness) = {out['sor_outlier_pct']*100:.1f}%")
