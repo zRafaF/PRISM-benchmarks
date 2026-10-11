@@ -443,6 +443,16 @@ cloud against that map exactly as on Replica (Sim(3)/ICP alignment, F@5 cm in th
 Stand-in check: fused map 10 mm median from the true surface (1024 px fake panoramas,
 cm-quantised depth), pinhole depth within 5 mm of a direct render, a perfect prediction
 scores F = 1.000.
+First real run (atrium ref, 581 frames, RTX 5090, 2026-10-11): PRISM ran out of GPU
+memory at 2 cm voxels — nvblox TSDF 1.04 M blocks at submap 33, and the GPU hash table's
+doubling 2 M -> 4 M blocks failed (34.1 of 34.2 GB; PyTorch 8.8 GB, nvblox 15.3 GB before
+the resize). The network side is bounded; the global TSDF map grows with the area seen
+(275 m through a large building vs a few m^2 of Replica room) and real depth noise fills
+more blocks than rendered depth. Real-data PRISM now uses 4 cm voxels
+(`PRISM_VOXEL_SIZE`, config.real360.yaml); the reconstruction is still scored at 5 cm.
+For the paper: "bounded memory" applies to the streaming inference; the map itself grows
+with the explored area unless pruned (`tsdf_prune_radius`, the deployed local-map mode).
+VGGT-SLAM 11.5 GB / LASER 9.0 GB on the pinhole input; VGGT-SLAM on cube faces 26.7 GB.
 Unverified until the real data is downloaded: the folder layout of `mapping/` (use
 `make real-list`), frame spacing, and the presence/format of the point cloud.
 

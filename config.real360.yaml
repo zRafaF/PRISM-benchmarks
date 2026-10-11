@@ -80,7 +80,13 @@ trajectories:
 # cube4_o20 — both resampled from the real panorama). Same arm names as the Replica
 # matrix, so tables combine; results live under results/<arm>/loc360/.
 methods:
-  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free"}}
+  # PRISM_VOXEL_SIZE 0.04 (Replica: 0.02): at 2 cm the nvblox TSDF on atrium reached
+  # 1.04 M blocks by submap 33 of ~48 and the GPU hash table's doubling to 4 M blocks ran
+  # out of memory (34.1 of 34.2 GB). The map grows with the area seen — atrium is a
+  # 275 m walk through a large building, the Replica rooms are a few m^2 — and real,
+  # noisier depth fills more blocks than rendered depth. 4 cm voxels need ~4x fewer
+  # blocks; the reconstruction is still scored at 5 cm (D31).
+  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_VOXEL_SIZE: "0.04"}}
   - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
   - {name: laser,       camera: pinhole,  env: submodules/LASER,      mode: stream, metric: false, role: baseline}
   - {name: vggtslam_cube, camera: cube, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_SUBMAP_SIZE: "64"}}

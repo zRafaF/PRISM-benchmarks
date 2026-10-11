@@ -656,8 +656,13 @@ real-inputs: setup
 	bash scripts/real360.sh inputs
 real-push:
 	bash scripts/real360.sh push
+# Runs in a detached tmux session 'real' (survives an SSH drop): tmux attach -t real
 real-pod:
-	bash scripts/real360.sh pod
+	@if command -v tmux >/dev/null 2>&1; then \
+	  if tmux has-session -t real 2>/dev/null; then echo "!! tmux session 'real' exists — tmux attach -t real"; exit 1; fi; \
+	  tmux new -d -s real 'bash scripts/real360.sh pod; exec bash'; \
+	  echo ">> real-data run in tmux session 'real' — attach: tmux attach -t real   |   log: tail -f \$$(ls -t logs/real360_*_pod.log | head -1)"; \
+	else bash scripts/real360.sh pod; fi
 real-fetch:
 	bash scripts/real360.sh fetch
 real-report: setup
