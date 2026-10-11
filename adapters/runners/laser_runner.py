@@ -16,6 +16,7 @@ Emits poses.tum, cloud.ply, perf_runner.json.
 from __future__ import annotations
 
 import argparse
+import shutil
 import json
 import time
 from pathlib import Path
@@ -98,38 +99,59 @@ def main():
     model.end()
     wall = time.perf_counter() - t0
 
-    sd = model.parse_inference_cache_summary()
-    npy = lambda k: (sd[k].cpu().numpy().squeeze(0) if hasattr(sd[k], "cpu") else np.asarray(sd[k]).squeeze(0))
-    extr = npy("extrinsic")                     # (S,3,4) or (S,4,4) cam->world
-    intr = npy("intrinsic")                     # (S,3,3)
-    depth = npy("depth")                        # (S,H,W,1) or (S,H,W)
-    images = npy("images")                      # (S,3,H,W) in [0,1]
-    S = len(extr)
-
-    poses = np.tile(np.eye(4), (S, 1, 1))
-    poses[:, :3, :] = extr[:, :3, :]            # c2w (pad 3x4 -> 4x4)
-    _io.write_tum(out / "poses.tum", list(range(S)), poses)
-
-    # Fuse in chunks: unprojecting every frame first and fusing once held all pixels of
-    # all frames in host RAM — fine for 300 pinhole frames, but the cube-face runs have
-    # 4x the images (1,200 on an apartment) and the kernel killed the process. Chunked
-    # voxel dedup gives the same cloud (one point per occupied voxel) in bounded memory.
+    # Read LASER's per-window cache ONE WINDOW AT A TIME. Its own
+    # parse_inference_cache_summary() concatenates every window (local points, colours,
+    # homogenised world points) into single tensors: 2,324 cube-face images on the real
+    # atrium sequence exceeded 123 GB of host RAM (rc -9). This loop applies exactly the
+    # same steps per window — parse_cache_file's overlap slicing (first window kept
+    # whole), _post_process_pred's per-frame depth/intrinsics (estimate_pseudo_depth_and_
+    # intrinsics is independent per frame), extrinsic = camera_poses — so the poses and
+    # the fused cloud are identical, in bounded memory.
+    import glob as _glob
+    from inference_engine.inference_utils import estimate_pseudo_depth_and_intrinsics
+    tdir = Path(model.temp_cache_dir)
+    files = sorted(_glob.glob(str(tdir / "window_cache_*.pt")),
+                   key=lambda q: int(q.rsplit("_", 1)[-1].split(".")[0]))
     vox = cfg["engine"]["voxel_size"]
-    pts = np.zeros((0, 3), np.float32)
-    cols = None
-    CH = 32
-    for s0 in range(0, S, CH):
+    pts, cols = np.zeros((0, 3), np.float32), None
+    pose_list = []
+    for wi, fname in enumerate(files):
+        wc = model.parse_cache_file(fname, overlap=0 if wi == 0 else model.overlap)
+        f32 = lambda t: t.detach().float().cpu() if hasattr(t, "detach") else torch.as_tensor(np.asarray(t)).float()
+        lp = f32(wc["local_points"])
+        if lp.dim() == 5:
+            lp = lp.squeeze(0)
+        if "depth" in wc and "intrinsic" in wc:
+            dep, K = f32(wc["depth"]), f32(wc["intrinsic"])
+        else:
+            dep, K = estimate_pseudo_depth_and_intrinsics(lp)
+        cp = f32(wc["camera_poses"]).numpy().reshape(-1, *wc["camera_poses"].shape[-2:])
+        im = f32(wc["images"]).numpy()
+        if im.ndim == 5:
+            im = im[0]
+        dep = dep.numpy()
+        if dep.ndim == 5 or (dep.ndim == 4 and dep.shape[0] == 1 and len(cp) > 1):
+            dep = dep[0]
+        if dep.ndim == 4 and dep.shape[-1] == 1:
+            dep = dep[..., 0]
+        K = K.numpy().reshape(-1, 3, 3)
+        assert len(dep) == len(cp) == len(K) == len(im), (dep.shape, cp.shape, K.shape, im.shape)
         pw, cw = [], []
-        for i in range(s0, min(S, s0 + CH)):
-            d = np.squeeze(depth[i])
-            w, c = _unproject(d, intr[i], poses[i], images[i])
+        for i in range(len(cp)):
+            T = np.eye(4); T[:3, :] = cp[i][:3, :]
+            pose_list.append(T)
+            w, c = _unproject(np.squeeze(dep[i]), K[i], T, im[i])
             pw.append(w.astype(np.float32)); cw.append(c.astype(np.float32))
         p_, c_ = fuse_pointmaps(pw, cw, vox)
-        del pw, cw
+        del pw, cw, wc, lp, im, dep
         if cols is None:
             pts, cols = p_, c_
         else:
             pts, cols = fuse_pointmaps([pts, p_], [cols, c_], vox)
+    poses = np.stack(pose_list)
+    S = len(poses)
+    _io.write_tum(out / "poses.tum", list(range(S)), poses)
+    shutil.rmtree(tdir, ignore_errors=True)
     _io.write_cloud(out / "cloud.ply", pts, cols)
     cube = _io.collapse_cube_faces(Path(args.in_dir), out)     # D28: per-timestep poses
     (out / "arm_config.json").write_text(json.dumps(
@@ -138,7 +160,6 @@ def main():
     # LASER's per-window inference cache (depth/images of every window) is only needed
     # to build the outputs above; left in the run dir it filled the pod disk on the
     # cube-face runs (2,324 images) and went into the results pack.
-    import shutil
     shutil.rmtree(cache_dir, ignore_errors=True)
     print(f"[laser_runner] {S} frames -> {len(poses)} poses, {len(pts)} pts, {wall:.1f}s")
 
