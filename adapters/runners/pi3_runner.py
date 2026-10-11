@@ -60,6 +60,7 @@ def main():
     # too big for GPU memory — uniformly subsample, keeping the global frame indices as
     # TUM timestamps so eval still associates against GT.
     cap = os.environ.get("OFFLINE_MAX_FRAMES") or (cfg.get("baselines") or {}).get("max_frames")
+    cap = int(cap) if cap else None          # the env var is a string
     idxs = list(range(n_total))
     if cap and n_total > cap:
         idxs = np.linspace(0, n_total - 1, int(cap)).astype(int).tolist()

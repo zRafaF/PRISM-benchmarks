@@ -123,7 +123,13 @@ print(*p.parts[1:6], 'ok' if d.get('completed') else d.get('failure_kind'), 'VRA
   say "offline DONE" ;;
 fetch)
   bash scripts/results.sh fetch
-  bash scripts/results.sh merge
+  # Only the NEWEST offline pack: a later pod re-runs (and supersedes) the runs of an
+  # earlier one, and merging every pack in name order let an old pack overwrite a new one.
+  # newest by the timestamp in the name (pod_<tag>_all_<host>_<YYYYMMDD>_<HHMM>.tar):
+  # file mtimes change when a pack is downloaded again
+  NEWEST="$(ls dataset/_hf/results/"$RESULTS_TAG"/*.tar | awk -F_ '{print $(NF-1) $NF, $0}' | sort | tail -1 | cut -d' ' -f2)"
+  echo ">> merging only the newest pack: $NEWEST"
+  MERGE_OVERWRITE=1 bash scripts/results.sh merge "$NEWEST"
   say "score the new runs (trajectory + reconstruction; existing runs are skipped)"
   unset PRISM_CONFIG_OVERLAY RESULTS_DATASET
   $RUN eval/eval_traj.py --config config.yaml
