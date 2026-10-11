@@ -1,6 +1,8 @@
 method,n_total,n_complete,n_failed,n_oom,n_degenerate,n_scale_unlocked,incomplete_pct,incomplete_by_scene,incomplete_by_motion
 laser,18,18,0,0,0,0,0.0,—,—
 laser_cube,12,12,0,0,0,0,0.0,—,—
+panovggt,6,0,6,0,0,0,100.0,"apartment_0:1, apartment_1:1, office_0:1, room_0:1, room_1:1, room_2:1",smooth:6
+pi3,6,0,6,0,0,0,100.0,"apartment_0:1, apartment_1:1, office_0:1, room_0:1, room_1:1, room_2:1",smooth:6
 prism,18,18,0,0,0,0,0.0,—,—
 prism_se3,6,6,0,0,0,0,0.0,—,—
 prism_sl4,6,6,0,0,0,0,0.0,—,—

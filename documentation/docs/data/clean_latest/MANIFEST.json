@@ -1,10 +1,10 @@
 {
   "generated_by": "eval/export_report_tables.py",
   "source": "live:results/",
-  "n_input_records": 234,
-  "n_seeded_kept": 96,
+  "n_input_records": 246,
+  "n_seeded_kept": 108,
   "n_complete_aggregated": 96,
-  "n_incomplete_excluded": 0,
+  "n_incomplete_excluded": 12,
   "scenes": [
     "apartment_0",
     "apartment_1",
@@ -71,7 +71,7 @@
     },
     "ate_by_motion": {
       "status": "ok",
-      "rows": 8,
+      "rows": 10,
       "csv": "ate_by_motion.csv"
     },
     "voxel_sweep": {
@@ -105,7 +105,7 @@
     },
     "completion": {
       "status": "ok",
-      "rows": 8,
+      "rows": 10,
       "csv": "completion.csv"
     },
     "vram_vs_sequence_length": {
