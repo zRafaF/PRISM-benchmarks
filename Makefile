@@ -671,6 +671,23 @@ real-fetch:
 	bash scripts/real360.sh fetch
 real-report: setup
 	bash scripts/real360.sh report
+# atrium-v3 (D36): PRISM 8 m TSDF range + LASER through the same TSDF, real atrium only.
+atrium3-pod:
+	@env | grep -E '^(HF_TOKEN|INPUTS_HF_REPO|RESULTS_HF_REPO|REAL_HF_REPO|ATRIUM3_TAG|POD_[A-Z_]+)=' \
+	  | sed "s/'/'\\\\''/g; s/=\(.*\)/='\1'/" > .pod.env; chmod 600 .pod.env
+	@if tmux has-session -t atrium3 2>/dev/null; then echo "!! tmux session 'atrium3' exists — tmux attach -t atrium3"; exit 1; fi
+	@tmux new -d -s atrium3 'bash scripts/atrium_v3.sh pod; exec bash'
+	@echo ">> atrium-v3 run in tmux session 'atrium3' — progress: make atrium3-watch   |   raw: tmux attach -t atrium3"
+atrium3-watch:
+	@if command -v uv >/dev/null 2>&1; then PRISM_CONFIG_OVERLAY=config.real360.yaml,config.atrium_v3.yaml $(ORCH_RUN) scripts/progress.py --watch 15; \
+	else echo ">> uv not installed yet (prep is starting) — showing the log"; tail -f logs/pod_latest.log; fi
+atrium3-fetch: setup
+	bash scripts/atrium_v3.sh fetch
+# Map-centric scores for every scored run (Replica + 360Loc), decisions D35. Incremental:
+# a run is skipped when its map.json is newer than its cloud (FORCE=1 redoes all).
+map-metrics: setup
+	$(ORCH_RUN) eval/map_metrics.py --glob 'results/*/replica/*/*/*' $(if $(FORCE),--force,)
+	PRISM_CONFIG_OVERLAY=config.real360.yaml $(ORCH_RUN) eval/map_metrics.py --glob 'results/*/loc360/*/*/*' $(if $(FORCE),--force,)
 lost: setup
 	$(ORCH_RUN) scripts/lost_metrics.py --plot
 

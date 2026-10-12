@@ -500,3 +500,47 @@ the resolved config (`config_resolved.yaml` in the run dir); offline.sh reads sc
 after the fetch and refuses an empty list. The streaming results are unaffected: none of
 their overlays set runner-side keys (PRISM's 4 cm voxels on 360Loc come from an env var).
 
+
+## D35 — Map-centric scores and a second real campaign (real360-v2) *(DECIDED 2026-10-12)*
+
+**Why.** The reconstruction score of eval_recon places each cloud with the Sim(3) of its
+*trajectory* (+15 cm ICP). A map whose trajectory is poor is then judged partly by its
+trajectory, and a map whose trajectory is fine but whose windows disagree (duplicated
+walls) is not singled out. On the atrium, LASER's ATE is lower than PRISM's while its
+map is several times worse; the protocol must be able to show that.
+
+**Map scores (`eval/map_metrics.py`, `map.json` per run).** (1) Best-fit map placement:
+starting from the trajectory Sim(3), a trimmed Sim(3) ICP of the cloud against the GT,
+radii halving (Replica 0.5 -> 0.05 m, real 2 -> 0.25 m). (2) Accuracy (median map->GT),
+completeness, precision / recall / F at 2/5/10 cm (Replica) and 10/20/50 cm (real),
+under both placements. (3) Local accuracy: the placed map cut into square tiles (2 m
+Replica, 5 m real), each re-aligned rigidly on its own; median of tile medians and the
+share of points beyond tau ("ghost share"). Region: map points within the eval range of
+the GT cameras (4.5 m; hall 10 m); on real data also within 3 m of the reference map
+(it exists only where the mapping walk's depth maps saw; the kept share is reported).
+Replica has no surface crop: a first version cropped there too, and a lost VGGT-SLAM
+map then scored 3 cm on the fragment that was left (`--rescore` reapplies the rule to a
+stored placement without redoing the ICP). Completeness has no
+occlusion test (coverage-dependent; accuracy and local scores are not). numpy/scipy
+only. `make map-metrics`.
+
+**real360-v2 (`config.real360.yaml`).** All 360 sequences of atrium (indoor) and hall
+(outdoor courtyard): mapping + 2 day + 2 night query walks each; queries scored against
+the scene's GT map from the mapping walk and given its camera height (importer). One run
+per method and sequence, streaming only: prism, laser, vggtslam; prism_h090 / prism_h110
+(camera height x0.9 / x1.1, mapping walks only, `only_trajs`); `laser_tsdf` = LASER's
+per-frame depth fused with its own poses by a TSDF at PRISM's voxel size and cap
+(`LASER_SAVE_DEPTH`, `eval/fuse_tsdf.py`, numpy TSDF: Open3D 0.20's ScalableTSDFVolume
+returned empty clouds), the same-back-end control. Hall: PRISM 10 m cap, 8 cm voxels
+(`scene_env`), co-visibility range 10 m (`frustum_far_m_by_scene`). Dropped from v1:
+cube-face arms on real data (no better than pinhole on the atrium) and offline methods
+(best case = Replica + v1 atrium). Importer fix: path-keyed GT pose lookup (query pose
+files list several sequences with the same image names).
+
+## D36 — atrium-v3: longer PRISM range + LASER through the same TSDF *(DECIDED 2026-10-12)*
+The real360-v2 campaign (D35) was not run (time). Instead, two runs on the atrium mapping
+walk (inputs real360-v1): `prism_r8` (PRISM, Sim(3), free scale, TSDF range 8 m instead of
+4.5 m so the map reaches the atrium's walls, 6 cm voxels for GPU memory) and `laser` with
+its per-frame depth saved, fused by `eval/fuse_tsdf.py` at prism_r8's voxel and range
+(`laser_tsdf`). Map scores of every atrium run are recomputed with a 10 m evaluation range
+(`config.atrium_v3.yaml`). `make atrium3-pod` / `atrium3-watch` / `atrium3-fetch`.

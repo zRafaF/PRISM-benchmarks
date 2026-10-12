@@ -73,6 +73,11 @@ def main():
 
     seq = _io.load_sequence(args.in_dir)
     ch = seq["meta"].get("camera_height_m", 1.7)
+    # Sensitivity arms (prism_h090 / prism_h110): give the engine a wrong camera height.
+    _hs = float(_os.environ.get("PRISM_HEIGHT_SCALE", "1"))
+    if _hs != 1.0:
+        print(f"[prism_runner] camera height {ch:.3f} m x {_hs} -> {ch * _hs:.3f} m (sensitivity arm)")
+        ch = ch * _hs
     frames = []
     for i, (img, msk) in enumerate(zip(seq["rgb"], seq["mask"])):
         mask = msk if msk is not None else np.ones(img.shape[:2], dtype=np.uint8) * 255

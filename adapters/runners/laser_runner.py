@@ -115,6 +115,11 @@ def main():
     vox = cfg["engine"]["voxel_size"]
     pts, cols = np.zeros((0, 3), np.float32), None
     pose_list = []
+    import os as _os
+    _save_depth = _os.environ.get("LASER_SAVE_DEPTH", "0") == "1"
+    _dd = out / "_depth"
+    if _save_depth:
+        _dd.mkdir(parents=True, exist_ok=True)
     for wi, fname in enumerate(files):
         wc = model.parse_cache_file(fname, overlap=0 if wi == 0 else model.overlap)
         f32 = lambda t: t.detach().float().cpu() if hasattr(t, "detach") else torch.as_tensor(np.asarray(t)).float()
@@ -141,6 +146,14 @@ def main():
             T = np.eye(4); T[:3, :] = cp[i][:3, :]
             pose_list.append(T)
             w, c = _unproject(np.squeeze(dep[i]), K[i], T, im[i])
+            if _save_depth:
+                # LASER_SAVE_DEPTH=1: keep per-frame depth for eval/fuse_tsdf.py (the
+                # same-back-end control: LASER's depth fused by a TSDF like PRISM's).
+                _im = np.transpose(im[i], (1, 2, 0)) if im[i].shape[0] == 3 else im[i]
+                _im = np.clip(_im * (255.0 if _im.max() <= 1.0 else 1.0), 0, 255).astype(np.uint8)
+                np.savez_compressed(_dd / f"f{len(pose_list) - 1:05d}.npz",
+                                    depth=np.squeeze(dep[i]).astype(np.float16), K=K[i].astype(np.float32),
+                                    c2w=T.astype(np.float32), rgb=_im)
             pw.append(w.astype(np.float32)); cw.append(c.astype(np.float32))
         p_, c_ = fuse_pointmaps(pw, cw, vox)
         del pw, cw, wc, lp, im, dep

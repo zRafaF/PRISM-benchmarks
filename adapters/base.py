@@ -142,8 +142,15 @@ def run_method(name: str):
                         hint = cfg.get("hardware", {}).get("hw_id")
                         with open(rp.run_log, "w") as log, \
                                 ResourceSampler(device_index, pid=None, gpu_name_hint=hint) as smp:
+                            # `scene_env`: per-scene overrides on top of run_env (real
+                            # 360Loc: PRISM's range/voxel for the outdoor hall).
+                            env_s = dict(run_env)
+                            sce = (mcfg.get("scene_env") or {}).get(scene) or {}
+                            env_s.update({k: str(v) for k, v in sce.items()})
+                            if sce:
+                                print(f"[{name}] {scene}: scene env {sce}")
                             proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT,
-                                                  cwd=cwd, env=run_env)
+                                                  cwd=cwd, env=env_s)
                         import json
                         meta = json.loads((in_dir / "meta.json").read_text())
                         # n_frames_input  = what the method was ASKED to process.

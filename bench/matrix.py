@@ -93,6 +93,9 @@ def plan(cfg: dict | None = None, scenes: list[str] | None = None) -> list[Unit]
         for m in main_methods(cfg):
             if m in off and not offline_seed_ok(cfg, traj):
                 continue
+            only = next((x.get("only_trajs") for x in cfg.get("methods", []) if x["name"] == m), None)
+            if only and traj not in only:
+                continue
             for sc in scenes:
                 units.append(Unit(m, ds, sc, traj))
     return units

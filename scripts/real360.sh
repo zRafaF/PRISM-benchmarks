@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Real 360 deg data (360Loc, decisions D31): import -> pack -> quick check on a pod.
-# Config: config.real360.yaml (overlay). Tag: real360-v1 (inputs and results), separate
+# Config: config.real360.yaml (overlay). Tag: real360-v2 (inputs and results; v1 = atrium
+# ref only, REAL_TAG=real360-v1 to reproduce it with that config's git version), separate
 # from the Replica matrix — nothing here changes or re-runs the synthetic benchmark.
 #
 #   PC  (WSL):  bash scripts/real360.sh download   # scenes in the overlay, from the authors' links
@@ -15,7 +16,7 @@ cd "$(dirname "$0")/.."
 [ -f .pod.env ] && { set -a; . ./.pod.env; set +a; }
 _benv() { sed -n "s/^$1[[:space:]]*[?:]*=[[:space:]]*//p" bench.env 2>/dev/null | head -1; }
 export PRISM_CONFIG_OVERLAY=config.real360.yaml
-export INPUTS_TAG="${REAL_TAG:-real360-v1}"
+export INPUTS_TAG="${REAL_TAG:-real360-v2}"
 export RESULTS_TAG="$INPUTS_TAG"
 export RESULTS_DATASET=loc360
 # 360Loc states no licence, so its imported frames can go to a separate (e.g. private) HF
@@ -90,10 +91,23 @@ pod)
   say "runs: $ARMS on $SCENES / $TRAJS (finished runs are skipped)"
   for tj in $TRAJS; do
     for a in $ARMS; do
+      # methods with `only_trajs` (the camera-height arms) run on those sequences only
+      case " $(cfgq "m=[m for m in c['methods'] if m['name']=='$a'][0]; print(' '.join(m.get('only_trajs') or ['ALL']))") " in
+        *" ALL "*|*" $tj "*) ;;
+        *) continue ;;
+      esac
       for sc in $SCENES; do
         say "run $a on $sc/$tj"
         $RUN adapters/run.py --method "$a" --config config.yaml --scenes "$sc" --traj "$tj" \
           || echo "!! $a $sc $tj failed (see its run.log; continuing)"
+        # same-back-end control: LASER's per-frame depth through a TSDF like PRISM's
+        if [ "$a" = laser ]; then
+          for rd in results/laser/loc360/"$sc"/"$tj"/*/; do
+            [ -d "$rd/_depth" ] || continue
+            $RUN eval/fuse_tsdf.py --config config.yaml --run "$rd" \
+              || echo "!! fuse_tsdf failed for $rd (continuing)"
+          done
+        fi
       done
     done
     $RUN scripts/real360_report.py || true
@@ -108,6 +122,9 @@ fetch)
   bash scripts/results.sh merge
   say "reconstruction scores vs the GT map (needs this PC's exports: gt_cloud.ply, pinhole depth)"
   $RUN eval/eval_recon.py --config config.yaml || echo "!! eval_recon failed — trajectory metrics below are still valid"
+  $RUN eval/metric_accuracy.py --config config.yaml || true
+  say "map-centric scores (best-fit map alignment, 5 m tiles) -> results/*/loc360/*/*/*/map.json"
+  $RUN eval/map_metrics.py --config config.yaml --glob 'results/*/loc360/*/*/*' || echo "!! map_metrics failed"
   $RUN scripts/real360_report.py ;;
 report)
   $RUN scripts/real360_report.py ;;

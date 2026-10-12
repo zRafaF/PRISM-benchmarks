@@ -1,0 +1,26 @@
+# ============================================================================
+# atrium-v3 (decisions D36): the real 360Loc atrium mapping walk only, two runs.
+# Overlay on config.yaml + config.real360.yaml (scripts/atrium_v3.sh sets both).
+#  - prism_r8: PRISM with a larger TSDF range (8 m instead of 4.5 m) so the map reaches
+#    the walls of the atrium; 6 cm voxels (4 cm at 4.5 m already used 26.6 GB on a
+#    32 GB card). Same Sim(3) alignment and free scale as every other PRISM run.
+#  - laser: LASER as before, plus its per-frame depth saved -> eval/fuse_tsdf.py fuses it
+#    with LASER's own poses at prism_r8's voxel size and range (arm `laser_tsdf`), the
+#    same-back-end control.
+# Map scores on the atrium are recomputed for ALL methods with a 10 m evaluation range
+# (eval.mask.frustum_far_m_by_scene), so a longer PRISM range is compared fairly.
+# Inputs: inputs/real360-v1 (the atrium mapping walk, unchanged).
+# ============================================================================
+datasets:
+  loc360:
+    scenes: [atrium]
+trajectories:
+  sequences: [ref]
+methods:
+  - {name: prism_r8, camera: pano,    env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ablation, runner: prism, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_VOXEL_SIZE: "0.06", PRISM_MAX_DEPTH: "8.0"}}
+  - {name: laser,    camera: pinhole, env: submodules/LASER,      mode: stream, metric: false, role: baseline, run_env: {LASER_SAVE_DEPTH: "1"}}
+eval:
+  mask:
+    frustum_far_m_by_scene: {atrium: 10.0, hall: 10.0}
+report:
+  label: "atrium-v3: PRISM 8 m range + LASER through the same TSDF"

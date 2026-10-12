@@ -104,7 +104,10 @@ def _load_pose_file(p: Path) -> dict:
             T = np.eye(4)
             T[:3, :3] = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
             T[:3, 3] = [x, y, z]
-            out[Path(v[0]).name] = T
+            # Keep the image path as written: query pose files list several sequences
+            # whose images share names (query_360/daytime_360_1/image/0001.jpg,
+            # .../daytime_360_2/image/0001.jpg, ...); keying by name alone mixes them.
+            out[v[0].lstrip("./")] = T
     return out
 
 
@@ -114,11 +117,14 @@ def find_poses(seq_dir: Path, scene_dir: Path, names: list[str]) -> tuple[dict, 
     cands = list(seq_dir.glob("*.json")) + list(seq_dir.glob("*.txt"))
     if (scene_dir / "pose").exists():
         cands += list((scene_dir / "pose").rglob("*.json")) + list((scene_dir / "pose").rglob("*.txt"))
+    rel = seq_dir.relative_to(scene_dir).as_posix()
     best, best_p, best_n = {}, None, 0
-    want = set(names)
     for p in cands:
         d = _load_pose_file(p)
-        n = len(want & set(d))
+        if any("/" in k for k in d):
+            # path keys: only entries of THIS sequence (<seq>/image/<name>) count
+            d = {Path(k).name: v for k, v in d.items() if k.startswith(rel + "/")}
+        n = len(set(names) & set(d))
         if n > best_n:
             best, best_p, best_n = d, p, n
     return best, best_p
@@ -388,6 +394,15 @@ def import_sequence(cfg, ds: str, scene: str, traj: str, seq_rel: str, workers: 
     if h is None:
         h, how = camera_height_from_depth(seq_dir / "depth", [p.name for p in imgs],
                                           float(dcfg.get("depth_scale", 0.01)))
+    if h is None:
+        # Query sequences have no depth maps: same rig and operator as the scene's
+        # reference sequence, so reuse the height measured there (import `ref` first).
+        for mh in sorted((ROOT / "dataset" / "exports" / ds / scene).glob("*/measured_camera_height.json")):
+            src = json.loads((mh.parent / "source.json").read_text()) if (mh.parent / "source.json").exists() else {}
+            if str(src.get("camera_height_from", "")).startswith("depth maps"):
+                h = float(json.loads(mh.read_text())["camera_height_m"])
+                how = f"reference sequence {mh.parent.name} (depth maps)"
+                break
     if h is None:
         h, how = camera_height(P, find_cloud(scene_dir))
     if h is None:

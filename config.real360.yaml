@@ -1,5 +1,6 @@
 # ============================================================================
-# REAL 360 deg data — 360Loc (CVPR 2024), decisions D31. Overlay on config.yaml via
+# REAL 360 deg data — 360Loc (CVPR 2024), decisions D31 (real360-v1: atrium ref only)
+# and D35 (real360-v2: atrium + hall, 5 sequences each, see below). Overlay on config.yaml via
 # PRISM_CONFIG_OVERLAY (scripts/real360.sh sets it). Nothing here touches the Replica
 # matrix: separate dataset (`loc360`), separate input/result tag (`real360-v1`), and the
 # Replica render settings / trajectory code are unchanged, so the rerun-v3 inputs stay
@@ -18,12 +19,12 @@ datasets:
   loc360:
     kind: real_pano
     root: dataset/raw/360loc     # <root>/<scene>/... as unzipped from 360Loc
-    # 360Loc has 4 scenes (one zip each). Only ATRIUM is used: indoor and essentially
-    # static, so PRISM's indoor settings (max_depth 4.5 m, floor-based scale) apply and
-    # every sequence can be scored against one fixed map. Excluded: hall (outdoor
-    # courtyard), concourse (indoor but crowded: moving people, no single static map),
-    # piatrium (half outdoor).
-    scenes: [atrium]
+    # 360Loc has 4 scenes (one zip each). v1 used ATRIUM only (indoor, static). v2 adds
+    # HALL (outdoor courtyard, static): PRISM runs there with a 10 m depth cap and 8 cm
+    # voxels (methods.scene_env below) and the co-visibility mask uses 10 m
+    # (eval.mask.frustum_far_m_by_scene). Still excluded: concourse (crowded: moving
+    # people, no single static map), piatrium (half outdoor, not downloaded).
+    scenes: [atrium, hall]
     # traj id -> sequence folder inside the scene (relative path; `list` shows them).
     # `mapping` = the daytime reference sequence (581 images in atrium). If the scene
     # stores it in sub-folders, point at the one you want, e.g. mapping/<name>.
@@ -33,8 +34,16 @@ datasets:
     # query_360/daytime_360_1` and to trajectories.sequences — import `ref` first so the
     # GT map exists; their reconstruction is then scored against that map, but without
     # depth maps of their own they get no co-visibility mask (full-360 score only).
+    # v2: every 360 sequence of each scene — the mapping route and the four query routes
+    # (two daytime, two at night; other paths through the same building, GT poses in
+    # the same map frame). Only `ref` has depth maps: the others are scored against the
+    # GT map built from `ref` and take its camera height (import_360loc.py).
     sequences:
       ref: mapping
+      day1: query_360/daytime_360_1
+      day2: query_360/daytime_360_2
+      night1: query_360/nighttime_360_1
+      night2: query_360/nighttime_360_2
     # Frames used: the longest continuous segment (a jump > max_step_m, default
     # max(1 m, 8 x median step), splits the sequence), every `stride`-th image, at most
     # `max_frames`. The importer prints the path length and step statistics.
@@ -73,28 +82,35 @@ datasets:
 trajectories:
   rates_hz: []                   # no generated walks: the recorded sequences only
   extra_kinds: {}
-  sequences: [ref]
+  sequences: [ref, day1, day2, night1, night2]
 
-# Streaming methods only (the offline ones need the 96 GB card): PRISM, the pinhole
-# baselines, and the same baselines on the 360 deg data as cube faces (cube4 and
-# cube4_o20 — both resampled from the real panorama). Same arm names as the Replica
-# matrix, so tables combine; results live under results/<arm>/loc360/.
+# real360-v2 (D35): one run per method and sequence, streaming methods only.
+#  - prism: as on Replica (Sim(3), free scale); 4 cm voxels (atrium TSDF at 2 cm ran out
+#    of GPU memory, v1); hall (outdoor): 10 m cap, 8 cm voxels.
+#  - prism_h090 / prism_h110: camera height told to the engine x0.9 / x1.1 (sensitivity of
+#    the metric anchor; ref sequences only: `only_trajs`).
+#  - laser: saves its per-frame depth (LASER_SAVE_DEPTH) so that eval/fuse_tsdf.py can
+#    fuse it through a TSDF at PRISM's voxel size and cap -> arm `laser_tsdf` (same
+#    back-end control, written by scripts/real360.sh right after the run).
+#  - vggtslam: pinhole, as on Replica.
+# Dropped from v1: the cube-face arms (vggtslam_cube, laser_cube) — on the atrium they
+# were worse than or no better than the pinhole arms (real360-v1); the Replica cube-face
+# control stays in the paper. Offline methods: not run here (best case = Replica + the
+# v1 atrium runs).
 methods:
-  # PRISM_VOXEL_SIZE 0.04 (Replica: 0.02): at 2 cm the nvblox TSDF on atrium reached
-  # 1.04 M blocks by submap 33 of ~48 and the GPU hash table's doubling to 4 M blocks ran
-  # out of memory (34.1 of 34.2 GB). The map grows with the area seen — atrium is a
-  # 275 m walk through a large building, the Replica rooms are a few m^2 — and real,
-  # noisier depth fills more blocks than rendered depth. 4 cm voxels need ~4x fewer
-  # blocks; the reconstruction is still scored at 5 cm (D31).
-  - {name: prism,       camera: pano,     env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_VOXEL_SIZE: "0.04"}}
-  - {name: vggtslam,    camera: pinhole,  env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
-  - {name: laser,       camera: pinhole,  env: submodules/LASER,      mode: stream, metric: false, role: baseline}
-  - {name: vggtslam_cube, camera: cube, env: submodules/VGGT-SLAM, mode: stream, metric: false, role: baseline, runner: vggtslam, run_env: {VGGTSLAM_SUBMAP_SIZE: "64"}}
-  - {name: laser_cube,    camera: cube, env: submodules/LASER,     mode: stream, metric: false, role: baseline, runner: laser,    run_env: {LASER_WINDOW: "32", LASER_OVERLAP: "8"}}
+  - {name: prism,      camera: pano,    env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ours, align_group: sim3, run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_VOXEL_SIZE: "0.04"}, scene_env: {hall: {PRISM_MAX_DEPTH: "10.0", PRISM_VOXEL_SIZE: "0.08"}}}
+  - {name: prism_h090, camera: pano,    env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ablation, runner: prism, align_group: sim3, only_trajs: [ref], run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_VOXEL_SIZE: "0.04", PRISM_HEIGHT_SCALE: "0.9"}, scene_env: {hall: {PRISM_MAX_DEPTH: "10.0", PRISM_VOXEL_SIZE: "0.08"}}}
+  - {name: prism_h110, camera: pano,    env: submodules/PRISM-VGGT, mode: stream, metric: true,  role: ablation, runner: prism, align_group: sim3, only_trajs: [ref], run_env: {PRISM_ALIGN: "sim3", PRISM_SCALE_MODE: "free", PRISM_VOXEL_SIZE: "0.04", PRISM_HEIGHT_SCALE: "1.1"}, scene_env: {hall: {PRISM_MAX_DEPTH: "10.0", PRISM_VOXEL_SIZE: "0.08"}}}
+  - {name: laser,      camera: pinhole, env: submodules/LASER,      mode: stream, metric: false, role: baseline, run_env: {LASER_SAVE_DEPTH: "1"}}
+  - {name: vggtslam,   camera: pinhole, env: submodules/VGGT-SLAM,  mode: stream, metric: false, role: baseline}
 ablations: []
 
 baselines:
   run: false
 
 report:
-  label: "REAL 360 (360Loc) — sanity check"
+  label: "REAL 360 (360Loc) — atrium + hall, 5 sequences each (real360-v2)"
+
+eval:
+  mask:
+    frustum_far_m_by_scene: {hall: 10.0}

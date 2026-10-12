@@ -75,6 +75,9 @@ def build_mask(points_w: np.ndarray, pinhole_export_dir: Path, cfg: dict) -> np.
     K = np.array([[intr["fx"], 0, intr["cx"]], [0, intr["fy"], intr["cy"]], [0, 0, 1]])
     W, H = intr["width"], intr["height"]
     far = cfg["eval"]["mask"]["frustum_far_m"]
+    # per-scene range (outdoor 360Loc hall: PRISM runs with a 10 m cap there)
+    _scene = pinhole_export_dir.parent.parent.parent.name
+    far = float((cfg["eval"]["mask"].get("frustum_far_m_by_scene") or {}).get(_scene, far))
     tol = cfg["eval"]["mask"]["occlusion_tol_m"]
     rigorous = cfg["eval"]["mask"]["mode"] == "rigorous"
 
