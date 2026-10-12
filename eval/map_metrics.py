@@ -17,10 +17,12 @@ This script scores the map on its own:
                        ("ghost share"). This is the map analogue of RPE vs. ATE: global
                        drift is removed, doubled / misregistered surfaces are not.
 
-Region: only map points within R of this sequence's GT cameras (R = the eval co-visibility
-range: 4.5 m, 10 m on the hall) and within 3 m of a GT surface point are scored (the GT
-map does not exist farther away; on 360Loc query routes it comes from the reference
-route). Completeness uses GT points within R of the GT cameras (no occlusion test:
+Region: map points within R of this sequence's GT cameras (R = the eval co-visibility
+range: 4.5 m, 10 m on the hall) are scored. On real data the reference map exists only
+where the mapping walk's depth maps saw, so points farther than 3 m from it are not
+scorable and are left out; their share is reported (kept_share_*). Replica's GT mesh
+covers the scene, so nothing is left out there (a lost map cannot hide its stray parts).
+The ICP ignores its 10 % farthest pairs in each fit; scoring uses every point. Completeness uses GT points within R of the GT cameras (no occlusion test:
 coverage-dependent, so it favours wide-FoV input; accuracy and the local scores do not).
 
 Numpy/scipy only. Output: <run>/map.json; summary printed.
@@ -43,6 +45,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 import lost_metrics as lm  # noqa: E402
 
+REGION_RULE = "range-of-gt-cams; +3m-of-reference on real data (v2)"
 SKIP = ("report", "bundles", "figures", "lost", "real360", "_deepdive")
 
 
@@ -139,7 +142,7 @@ def icp(X, tree, Y, T0, radii, iters=8, scale=True, trim=0.9):
 _GT: dict = {}
 
 
-def score(run, cfg_far, taus, tile, radii, n_pred=600_000, n_gt=1_000_000):
+def score(run, cfg_far, taus, tile, radii, n_pred=600_000, n_gt=1_000_000, reuse=None):
     arm, ds, sc, tj, var = run.parts[-5:]
     exp = ROOT / "dataset" / "exports" / ds / sc / tj
     est, gt = lm.load_tum(run / "poses.tum"), lm.load_tum(exp / "poses_gt.tum")
@@ -161,16 +164,29 @@ def score(run, cfg_far, taus, tile, radii, n_pred=600_000, n_gt=1_000_000):
     X = np.load(run / "cloud.npz")["xyz"].astype(np.float64) if (run / "cloud.npz").exists() \
         else read_points(run / "cloud.ply", n_pred, seed=1)
 
+    near_gt = ds != "replica"      # Replica's GT mesh covers the whole scene: no surface crop
+
+    def in_range(P):
+        return camtree.query(P, distance_upper_bound=cfg_far, workers=-1)[0] < cfg_far
+
     def region(P):
-        return (camtree.query(P, distance_upper_bound=cfg_far, workers=-1)[0] < cfg_far) & \
-               (ytree.query(P, distance_upper_bound=3.0, workers=-1)[0] < 3.0)
+        # Real scenes: the reference map only exists where the mapping walk's depth maps saw;
+        # points farther than 3 m from it cannot be scored (their share is reported).
+        m = in_range(P)
+        if near_gt:
+            m &= ytree.query(P, distance_upper_bound=3.0, workers=-1)[0] < 3.0
+        return m
 
     # map-only alignment (ICP on a 100k subset of the region)
     P0 = apply(Ttraj, X)
     sub = np.where(region(P0))[0]
     rng = np.random.default_rng(2)
     sub = rng.choice(sub, min(len(sub), 100_000), replace=False) if len(sub) else sub
-    Tmap = icp(X[sub], ytree, Y, Ttraj, radii) if len(sub) > 100 else Ttraj
+    if reuse is not None:          # --rescore: keep the stored map placement, skip the ICP
+        T_ = reuse["T_map"]
+        Tmap = (T_["s"], np.asarray(T_["R"]), np.asarray(T_["t"]))
+    else:
+        Tmap = icp(X[sub], ytree, Y, Ttraj, radii) if len(sub) > 100 else Ttraj
 
     out = {"arm": arm, "dataset": ds, "scene": sc, "traj": tj, "variant": var,
            "region_m": cfg_far, "taus_m": taus, "tile_m": tile,
@@ -180,7 +196,10 @@ def score(run, cfg_far, taus, tile, radii, n_pred=600_000, n_gt=1_000_000):
            "map_vs_traj_shift_m": float(np.median(np.linalg.norm(apply(Tmap, X[sub]) - apply(Ttraj, X[sub]), axis=1))) if len(sub) else None}
     for tag, T in (("traj", Ttraj), ("map", Tmap)):
         P = apply(T, X)
-        P = P[region(P)]
+        ir = in_range(P)
+        rg = region(P)
+        out[f"kept_share_{tag}"] = float(rg.sum() / max(ir.sum(), 1))   # in range AND scorable
+        P = P[rg]
         if len(P) < 100:
             out[tag] = None
             continue
@@ -231,6 +250,7 @@ def main():
     ap.add_argument("--glob", default="results/*/*/*/*/*")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--budget", type=float, default=0, help="stop starting new runs after N s (0 = no limit)")
+    ap.add_argument("--rescore", action="store_true", help="reuse T_map of an existing map.json (no ICP), rescore")
     a = ap.parse_args()
     from bench.config import load_config
     cfg = load_config(a.config)
@@ -249,7 +269,10 @@ def main():
         pf = json.loads((run / "perf.json").read_text()) if (run / "perf.json").exists() else {}
         if not pf.get("completed"):
             continue
-        if (run / "map.json").exists() and not a.force and \
+        reuse = json.loads((run / "map.json").read_text()) if (a.rescore and (run / "map.json").exists()) else None
+        if reuse is not None and reuse.get("region_rule") == REGION_RULE:
+            continue
+        if reuse is None and (run / "map.json").exists() and not a.force and \
                 (run / "map.json").stat().st_mtime > max((run / n).stat().st_mtime for n in ("cloud.ply", "cloud.npz") if (run / n).exists()):
             continue
         ds, sc = run.parts[-4], run.parts[-3]
@@ -259,7 +282,8 @@ def main():
         tile = 5.0 if real else 2.0
         radii = [2.0, 1.0, 0.5, 0.25] if real else [0.5, 0.25, 0.10, 0.05]
         try:
-            o = score(run, far, taus, tile, radii)
+            o = score(run, far, taus, tile, radii, reuse=reuse)
+            o["region_rule"] = REGION_RULE
         except Exception as e:  # one broken run must not stop the pass
             print(f"[map] {run}: FAILED {e!r}")
             continue

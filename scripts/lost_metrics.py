@@ -79,10 +79,18 @@ def seg_err(E, G, a, b):
     s, Rm, t = umeyama(pe, pg)
     rmse = float(np.sqrt(((pg - (s * (Rm @ pe.T).T + t)) ** 2).sum(1).mean()))
     Re = np.einsum("ij,njk->nik", Rm, E[a:b, :3, :3])
-    rel = np.einsum("nji,njk->nik", G[a:b, :3, :3], Re)        # G^T (R E)
-    ang = np.degrees(np.arccos(np.clip((np.trace(rel, axis1=1, axis2=2) - 1) / 2, -1, 1)))
-    # remove the window's mean rotation offset (heading of a scale-free method)
-    return rmse, float(np.max(np.abs(ang - np.median(ang)))) if len(ang) else 0.0
+    rel = np.einsum("nji,njk->nik", G[a:b, :3, :3], Re)        # G^T (R E), per frame
+    if not len(rel):
+        return rmse, 0.0
+    # Remove the stretch's constant rotation offset as a ROTATION (chordal mean of the
+    # relative rotations, projected to SO(3)), then take the largest geodesic residual.
+    # (Before 2026-10-12 this compared unsigned angle magnitudes, which lets e.g. +30 and
+    # -30 deg errors pass as consistent; decisions D37.)
+    U, _, Vt = np.linalg.svd(rel.sum(0))
+    R0 = U @ np.diag([1, 1, np.sign(np.linalg.det(U @ Vt))]) @ Vt
+    res = np.einsum("ji,njk->nik", R0, rel)                     # R0^T rel
+    ang = np.degrees(np.arccos(np.clip((np.trace(res, axis1=1, axis2=2) - 1) / 2, -1, 1)))
+    return rmse, float(np.max(ang))
 
 
 def analyse(E, G):

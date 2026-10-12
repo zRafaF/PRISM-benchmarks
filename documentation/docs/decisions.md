@@ -544,3 +544,13 @@ walk (inputs real360-v1): `prism_r8` (PRISM, Sim(3), free scale, TSDF range 8 m 
 its per-frame depth saved, fused by `eval/fuse_tsdf.py` at prism_r8's voxel and range
 (`laser_tsdf`). Map scores of every atrium run are recomputed with a 10 m evaluation range
 (`config.atrium_v3.yaml`). `make atrium3-pod` / `atrium3-watch` / `atrium3-fetch`.
+
+## D37 — Fixes from the independent review *(DECIDED 2026-10-12)*
+(1) `lost_metrics.seg_err`: the rotation part of "tracked" removed the median of unsigned
+error ANGLES; it now removes the stretch's mean ROTATION (chordal mean) and takes the
+largest geodesic residual. PRISM's tracked share drops from 100 % to 97-99 %; the
+ranking is unchanged. (2) `metric_accuracy`: scale was fitted on rows paired by
+position in the file; subsampled runs (Pi3X 200-frame) were matched to the wrong GT
+frames. Now paired by timestamp. Affects only Pi3X's subsampled scale errors.
+(3) Naming: the `pi3` arm runs Pi3X (`yyfz233/Pi3X`); LASER runs original Pi3. VGGT-SLAM
+is 2.0 (min_disparity 0 = every frame kept, our adaptation).

@@ -27,13 +27,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bench.config import REPO_ROOT, load_config
 
 
-def _read_tum_positions(path: Path) -> np.ndarray:
-    pos = []
+def _read_tum(path: Path) -> dict:
+    out = {}
     for line in Path(path).read_text().splitlines():
-        if line.strip():
+        if line.strip() and not line.startswith("#"):
             v = [float(x) for x in line.split()]
-            pos.append(v[1:4])
-    return np.array(pos)
+            out[round(v[0], 6)] = v[1:4]
+    return out
+
+
+def _matched_positions(pred: Path, gt: Path):
+    """Positions associated by TIMESTAMP (frame id), not by row: subsampled runs
+    (200 of 300/581 frames) keep their global frame ids (decisions D37)."""
+    p, g = _read_tum(pred), _read_tum(gt)
+    k = sorted(set(p) & set(g))
+    return np.array([p[i] for i in k]), np.array([g[i] for i in k])
 
 
 def _umeyama_scale(src: np.ndarray, tgt: np.ndarray):
@@ -81,7 +89,7 @@ def main():
         gt = REPO_ROOT / "dataset" / "exports" / dataset / scene / traj / "poses_gt.tum"
         if not gt.exists():
             continue
-        s = _umeyama_scale(_read_tum_positions(pred), _read_tum_positions(gt))
+        s = _umeyama_scale(*_matched_positions(pred, gt))
         if s is None:
             # degenerate run (e.g. too few frames at 0.5 Hz on a small scene -> empty map)
             (pred.parent / "metric.json").write_text(json.dumps(
